@@ -1,0 +1,161 @@
+// Fi — LuxFi WhatsApp agent data model
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ListingType {
+  WTB
+  FS
+}
+
+enum ListingStatus {
+  OPEN
+  MATCHED
+  EXPIRED
+  CANCELLED
+}
+
+enum TrustTier {
+  UNVERIFIED
+  VERIFIED
+  ELITE
+}
+
+model Dealer {
+  id              String    @id @default(cuid())
+  whatsappId      String    @unique // Green API chatId, e.g. 15551234567@c.us
+  name            String?
+  trustTier       TrustTier @default(UNVERIFIED)
+  vouchCount      Int       @default(0)
+  ratingSum       Int       @default(0)
+  ratingCount     Int       @default(0)
+  credits         Int       @default(0)
+  freeMatchesUsed Int       @default(0)
+  createdAt       DateTime  @default(now())
+
+  listings              Listing[]
+  creditTransactions    CreditTransaction[]
+  reviewsGiven          Review[]       @relation("ReviewsGiven")
+  reviewsReceived       Review[]       @relation("ReviewsReceived")
+  vouchRequestsSent     VouchRequest[] @relation("VouchRequester")
+  vouchRequestsReceived VouchRequest[] @relation("VouchTarget")
+  buyerMatches          Match[]        @relation("BuyerDealer")
+  sellerMatches         Match[]        @relation("SellerDealer")
+
+  @@index([name])
+}
+
+model Group {
+  id              String   @id @default(cuid())
+  whatsappGroupId String   @unique // e.g. 120363000000000000@g.us
+  name            String?
+  active          Boolean  @default(true)
+  addedAt         DateTime @default(now())
+
+  listings Listing[]
+}
+
+model Listing {
+  id        String        @id @default(cuid())
+  type      ListingType
+  status    ListingStatus @default(OPEN)
+  category  String        @default("watch")
+  brand     String?
+  reference String?
+  model     String?
+  condition String?
+  priceMin  Int?
+  priceMax  Int?
+  currency  String        @default("USD")
+  location  String?
+  notes     String?
+  rawText   String
+
+  dealerId String
+  dealer   Dealer @relation(fields: [dealerId], references: [id])
+  groupId  String
+  group    Group  @relation(fields: [groupId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  matchesAsWtb Match[] @relation("WtbListing")
+  matchesAsFs  Match[] @relation("FsListing")
+
+  @@index([type, status, category, brand])
+  @@index([reference])
+}
+
+model Match {
+  id           String @id @default(cuid())
+  wtbListingId String
+  wtbListing   Listing @relation("WtbListing", fields: [wtbListingId], references: [id])
+  fsListingId  String
+  fsListing    Listing @relation("FsListing", fields: [fsListingId], references: [id])
+
+  buyerDealerId  String
+  buyerDealer    Dealer @relation("BuyerDealer", fields: [buyerDealerId], references: [id])
+  sellerDealerId String
+  sellerDealer   Dealer @relation("SellerDealer", fields: [sellerDealerId], references: [id])
+
+  creditsChargedBuyer  Int @default(0)
+  creditsChargedSeller Int @default(0)
+
+  createdAt DateTime @default(now())
+}
+
+model CreditTransaction {
+  id           String   @id @default(cuid())
+  dealerId     String
+  dealer       Dealer   @relation(fields: [dealerId], references: [id])
+  amount       Int // negative = charge, positive = purchase/grant
+  reason       String
+  balanceAfter Int
+  createdAt    DateTime @default(now())
+}
+
+model Review {
+  id               String   @id @default(cuid())
+  subjectDealerId  String
+  subjectDealer    Dealer   @relation("ReviewsReceived", fields: [subjectDealerId], references: [id])
+  reviewerDealerId String?
+  reviewerDealer   Dealer?  @relation("ReviewsGiven", fields: [reviewerDealerId], references: [id])
+  rating           Int?
+  text             String
+  source           String   @default("chat_history") // chat_history | vouch_request
+  createdAt        DateTime @default(now())
+
+  @@index([subjectDealerId])
+}
+
+model VouchRequest {
+  id                String   @id @default(cuid())
+  requesterDealerId String
+  requesterDealer   Dealer   @relation("VouchRequester", fields: [requesterDealerId], references: [id])
+  targetDealerId    String
+  targetDealer      Dealer   @relation("VouchTarget", fields: [targetDealerId], references: [id])
+  dealText          String?
+  status            String   @default("PENDING") // PENDING | FULFILLED | EXPIRED
+  createdAt         DateTime @default(now())
+
+  @@index([targetDealerId, status])
+}
+
+model RawMessage {
+  id            String   @id @default(cuid())
+  whatsappMsgId String?  @unique
+  chatId        String
+  senderId      String
+  senderName    String?
+  text          String
+  isGroup       Boolean
+  timestamp     DateTime @default(now())
+
+  @@index([chatId])
+  @@index([senderId])
+}
