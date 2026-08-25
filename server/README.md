@@ -79,22 +79,69 @@ it (e.g. to a Sonnet/Haiku model) if you want to trade quality for lower
 per-message cost at scale — a dealer-group bot can see a lot of chatter, and
 every group message triggers one classification call.
 
-### Green API
+### Green API — connecting Fi to a real WhatsApp number
 
-1. Create an instance at https://console.green-api.com and scan the QR code
-   with the WhatsApp number Fi should run as.
-2. Copy `idInstance` / `apiTokenInstance` into `.env`.
-3. Point the instance's webhook URL at
-   `https://<your-host>/webhook/green-api` (add `?token=<WEBHOOK_TOKEN>` if
-   you set one), with `incomingMessageReceived` enabled.
-4. Add the number to a dealer group as a normal participant — Fi starts
-   reading immediately, no group-admin action needed.
+Green API is an unofficial provider: it links to a real WhatsApp account the
+same way WhatsApp Web/Desktop does (a "linked device"), not Meta's official
+Business Platform. That means **Fi needs its own phone number** — one that
+isn't already active in WhatsApp elsewhere, since linking it hands that
+number's WhatsApp session to Green API. Because this automates a real
+client, WhatsApp can in principle flag and ban the number for bot-like
+behavior — **use a spare/burner number for Fi, never your personal one.**
+
+1. **Get a number.** Any number that can receive WhatsApp's SMS/call
+   verification and isn't already registered elsewhere — a spare SIM, a
+   second line, a prepaid SIM all work.
+2. **Create the instance.** Sign up at https://console.green-api.com and
+   create an instance. Copy the `idInstance` / `apiTokenInstance` it gives
+   you into `.env`.
+3. **Link the number.** Install WhatsApp on a phone using that number and
+   register it normally. Then in that WhatsApp app: **Settings → Linked
+   Devices → Link a Device**, and scan the QR code shown in the Green API
+   console for your instance. Once the console shows the instance as
+   "authorized," Green API is acting as a linked device on that WhatsApp
+   account — this is how Fi stays silent per the landing page copy: it's a
+   real participant in a chat, not a bot with special posting privileges.
+4. **Expose your server publicly.** Green API needs to `POST` webhooks to a
+   real HTTPS URL — `localhost` doesn't work. For local testing, tunnel it:
+   ```bash
+   npx ngrok http 3000
+   ```
+   That prints a URL like `https://abc123.ngrok-free.app`. (For a real
+   deployment, use wherever you host `server/` instead of a tunnel.)
+5. **Wire it together.** With `ANTHROPIC_API_KEY` and the Green API
+   credentials in `.env`, in the Green API console set the instance's
+   webhook URL to `https://<your-tunnel-or-host>/webhook/green-api` (append
+   `?token=<WEBHOOK_TOKEN>` if you set one) and enable
+   `incomingMessageReceived`. Then `npm run dev`.
+6. **Test it for real:**
+   - DM Fi's number directly from your own phone — you should get a real
+     conversational reply routed through `src/llm/dmAgent.ts`.
+   - Create or use a test WhatsApp group, add Fi's number as a normal
+     participant, and have two different numbers post a matching WTB and FS
+     — Fi should silently pick both up and DM each side a match.
+   - Once you're confident it's working, add Fi's number to real dealer
+     groups the same way — no group-admin action needed beyond adding it as
+     a participant.
+
+Once Fi's real number is live, update the placeholder `wa.me/923156320997`
+links in `../index.html` to point at it.
 
 ### Local testing without live WhatsApp
 
 Set `ENABLE_DEV_SIMULATE=true` and POST synthetic messages (still requires a
 real `ANTHROPIC_API_KEY` — Fi's understanding runs through Claude even in
-dev):
+dev). `scripts/test-prompts.sh` runs a broader battery of these — clean
+listings, chatter/negotiation that should *not* be parsed as listings,
+unusual phrasing, a handbag listing, a photo, and a full DM conversation
+including the vouch-request loop — useful for judging prompt quality before
+you go live:
+
+```bash
+./scripts/test-prompts.sh
+```
+
+Or send one-off messages by hand:
 
 ```bash
 curl -X POST localhost:3000/simulate/message -H 'content-type: application/json' -d '{
