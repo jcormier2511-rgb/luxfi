@@ -1,0 +1,25 @@
+{
+  "name": "luxfi-whatsapp-agent",
+  "version": "0.1.0",
+  "description": "WhatsApp outreach + matching agent for LuxFi Tier A/B dealer lists (GreenAPI-based)",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "outreach": "ts-node-dev --transpile-only src/outreach/runBlast.ts"
+  },
+  "dependencies": {
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.9",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.5.3"
+  }
+}

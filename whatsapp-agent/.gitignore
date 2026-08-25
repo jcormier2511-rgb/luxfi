@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+storage/*.json
+!storage/.gitkeep
+data/contacts.csv
+data/wf_inventory.csv
