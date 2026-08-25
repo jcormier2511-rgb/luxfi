@@ -48,6 +48,15 @@ export const config = {
     contactsCsv: path.resolve(process.env.CONTACTS_CSV ?? "./data/contacts.csv"),
     inventoryCsv: path.resolve(process.env.INVENTORY_CSV ?? "./data/wf_inventory.csv"),
   },
+  // Self-hosted alternative to a third-party image host: POST /admin/upload/banner writes
+  // here, and it's served back out at PUBLIC_BASE_URL + /assets/<file>. Lives under the
+  // same volume as data/ so it survives redeploys.
+  assets: {
+    dir: path.resolve(process.env.ASSETS_DIR ?? "./data/assets"),
+  },
+  // Needed to build a usable BANNER_IMAGE_URL after uploading via /admin/upload/banner —
+  // set this to the platform-assigned public domain (e.g. https://your-app.up.railway.app).
+  publicBaseUrl: (process.env.PUBLIC_BASE_URL ?? "").replace(/\/$/, ""),
   trial: {
     maxItems: Number(process.env.TRIAL_MAX_ITEMS ?? 3),
     maxOptionsPerItem: Number(process.env.TRIAL_MAX_OPTIONS_PER_ITEM ?? 5),

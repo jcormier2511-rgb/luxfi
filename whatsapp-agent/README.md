@@ -119,6 +119,14 @@ blast progress are plain JSON files on disk that must survive restarts and redep
    curl --data-binary @wf_inventory.csv "https://<your-railway-domain>/admin/upload/inventory?token=<WEBHOOK_TOKEN>"
    ```
    Each responds with a row count and takes effect immediately (no restart needed).
+7a. **No banner host?** Set `PUBLIC_BASE_URL` to this deployment's own domain (e.g.
+   `https://your-app.up.railway.app`), then push the image straight to this server instead of
+   needing a third-party image host:
+   ```bash
+   curl --data-binary @banner.jpg "https://<your-railway-domain>/admin/upload/banner?token=<WEBHOOK_TOKEN>"
+   ```
+   The response includes the `url` to paste into `BANNER_IMAGE_URL` (it's served back out at
+   `/assets/banner.jpg`). Requires a volume at `/app/data` (step 3) so it survives redeploys.
 8. Kick off the blast: `curl -X POST "https://<your-railway-domain>/outreach/start?token=<WEBHOOK_TOKEN>"`,
    then poll `GET /outreach/status` the same way.
 

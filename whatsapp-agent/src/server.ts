@@ -101,5 +101,31 @@ export function createServer() {
     res.json({ ok: true, bytes: req.body.length, listings: listings.length });
   });
 
+  // Self-hosts the banner image when there's no third-party URL to point BANNER_IMAGE_URL at:
+  // `curl --data-binary @banner.jpg "https://<host>/admin/upload/banner?token=..."` writes it
+  // to the persisted assets dir, served back out at /assets/<file>. Whapi's /messages/image
+  // endpoint fetches media from a URL server-side, so this host must be public — that's why
+  // PUBLIC_BASE_URL has to be set for the response's suggested `url` field to be usable.
+  app.post("/admin/upload/banner", express.raw({ type: "*/*", limit: "15mb" }), (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const ext = typeof req.query.ext === "string" ? req.query.ext.replace(/[^a-z0-9]/gi, "") || "jpg" : "jpg";
+    const filename = `banner.${ext}`;
+    fs.mkdirSync(config.assets.dir, { recursive: true });
+    fs.writeFileSync(path.join(config.assets.dir, filename), req.body);
+    const url = config.publicBaseUrl ? `${config.publicBaseUrl}/assets/${filename}` : `/assets/${filename}`;
+    res.json({
+      ok: true,
+      bytes: req.body.length,
+      url,
+      note: config.publicBaseUrl
+        ? `Set BANNER_IMAGE_URL to this url.`
+        : "PUBLIC_BASE_URL isn't set — set it to this deployment's public domain, then use <that domain>/assets/" + filename + " as BANNER_IMAGE_URL.",
+    });
+  });
+
+  app.use("/assets", express.static(config.assets.dir));
+
   return app;
 }
