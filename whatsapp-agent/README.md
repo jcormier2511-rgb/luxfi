@@ -71,13 +71,17 @@ Configure the GreenAPI instance's webhook URL (Settings → webhookUrl, with
 https://<your-host>/webhook?token=<WEBHOOK_TOKEN>
 ```
 
-Kick off the Tier A/B blast (only contacts still at stage `new` are messaged, so re-running is
-safe):
+Kick off the Tier A/B blast (only contacts still at stage `new` are messaged, capped at
+`OUTREACH_BATCH_LIMIT` per run and paced at `OUTREACH_RATE_PER_HOUR`, so re-running is safe and
+picks up where the last batch left off — current defaults: 50 contacts, 5/hour):
 
 ```bash
-npm run outreach
-# or, once the server is running:
+npm run outreach   # blocks until the whole batch is sent (can take hours at low rates)
+
+# or, once the server is running — plans the batch and returns immediately,
+# sending happens in the background:
 curl -X POST "http://localhost:3000/outreach/start?token=<WEBHOOK_TOKEN>"
+curl "http://localhost:3000/outreach/status?token=<WEBHOOK_TOKEN>"
 ```
 
 ## Conversation flow
