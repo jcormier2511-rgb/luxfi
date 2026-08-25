@@ -95,9 +95,11 @@ blast progress are plain JSON files on disk that must survive restarts and redep
 1. **New Project → Deploy from GitHub repo**, pick this repo.
 2. **Settings → Root Directory**: set to `whatsapp-agent` (this is a subfolder of a monorepo).
    Railway will pick up `railway.json` and `Dockerfile` from there automatically.
-3. **Add a Volume** (Settings → Volumes), mounted at `/app/storage`. Also mount one at
-   `/app/data` if you want CSVs uploaded via the endpoints below to survive a redeploy —
-   otherwise each redeploy resets `/app/data` back to the sample CSVs baked into the image.
+3. **Add a Volume**, mounted at `/app/persist`. In Railway's canvas UI this is attached to
+   the service directly — right-click the service card and look for "Attach Volume" (it's
+   not in the "+ Add" menu, which is only for new services/databases). One volume covers
+   everything: conversation state, blast status, and anything uploaded via the endpoints
+   below all live under `PERSIST_DIR` (`/app/persist` by default) so they survive redeploys.
 4. **Variables** — set at minimum:
    - `WHAPI_TOKEN`, `WEBHOOK_TOKEN` (pick a real random value, not `change-me`)
    - `INTRO_MESSAGE`, `BANNER_IMAGE_URL`, `MEMBERSHIP_URL`, `DEMO_URL`

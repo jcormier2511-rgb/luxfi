@@ -21,9 +21,11 @@ RUN npx playwright install --with-deps chromium
 COPY --from=builder /app/dist ./dist
 COPY data ./data
 
-# Overwritten by the Railway volume once mounted — created here so the app has somewhere
-# to write before a volume is attached (e.g. first local `docker run`).
-RUN mkdir -p /app/storage
+# /app/persist holds everything that needs to survive a restart/redeploy (conversation
+# state, blast status, uploaded contacts/inventory CSVs, uploaded banner image) — mount one
+# Railway volume here. Created here too so the app has somewhere to write before a volume
+# is attached (e.g. first local `docker run`).
+RUN mkdir -p /app/persist/storage /app/persist/data /app/persist/assets
 
 EXPOSE 3000
 CMD ["node", "dist/index.js"]

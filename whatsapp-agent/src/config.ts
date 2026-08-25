@@ -9,6 +9,11 @@ function required(name: string, fallback?: string): string {
   return v;
 }
 
+// Everything that needs to survive a restart/redeploy lives under one directory, so one
+// Railway volume mounted at /app/persist covers it all — no need to hunt for a way to
+// attach a second volume to the same service.
+const persistDir = path.resolve(process.env.PERSIST_DIR ?? "./persist");
+
 export const config = {
   whapi: {
     token: process.env.WHAPI_TOKEN ?? "",
@@ -45,14 +50,13 @@ export const config = {
     },
   },
   data: {
-    contactsCsv: path.resolve(process.env.CONTACTS_CSV ?? "./data/contacts.csv"),
-    inventoryCsv: path.resolve(process.env.INVENTORY_CSV ?? "./data/wf_inventory.csv"),
+    contactsCsv: path.resolve(process.env.CONTACTS_CSV ?? path.join(persistDir, "data/contacts.csv")),
+    inventoryCsv: path.resolve(process.env.INVENTORY_CSV ?? path.join(persistDir, "data/wf_inventory.csv")),
   },
   // Self-hosted alternative to a third-party image host: POST /admin/upload/banner writes
-  // here, and it's served back out at PUBLIC_BASE_URL + /assets/<file>. Lives under the
-  // same volume as data/ so it survives redeploys.
+  // here, and it's served back out at PUBLIC_BASE_URL + /assets/<file>.
   assets: {
-    dir: path.resolve(process.env.ASSETS_DIR ?? "./data/assets"),
+    dir: path.resolve(process.env.ASSETS_DIR ?? path.join(persistDir, "assets")),
   },
   // Needed to build a usable BANNER_IMAGE_URL after uploading via /admin/upload/banner —
   // set this to the platform-assigned public domain (e.g. https://your-app.up.railway.app).
@@ -73,5 +77,5 @@ export const config = {
     email: process.env.WATCHFACTS_EMAIL ?? "",
     password: process.env.WATCHFACTS_PASSWORD ?? "",
   },
-  storageDir: path.resolve("./storage"),
+  storageDir: path.join(persistDir, "storage"),
 };
