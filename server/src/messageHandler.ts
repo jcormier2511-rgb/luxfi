@@ -4,17 +4,18 @@ import { findOrCreateDealer } from "./domain/dealerService.js";
 import { findOrCreateGroup } from "./domain/groupService.js";
 import { createListing } from "./domain/listingService.js";
 import { attemptMatch } from "./domain/matchingService.js";
-import { parseListing } from "./parsing/listingParser.js";
-import { handleDmMessage } from "./domain/commandRouter.js";
+import { extractListing } from "./llm/listingExtractor.js";
+import { handleDmMessage } from "./llm/dmAgent.js";
 import { sendDirectMessage } from "./green-api/client.js";
 
 /**
  * Entry point for every normalized incoming WhatsApp message, whether it
  * came from a live Green API webhook or the dev /simulate/message endpoint.
  *
- * Group messages are only ever read — Fi extracts listings and DMs the
- * relevant dealers, but never posts back into the group. DMs to Fi are
- * routed through the command router instead.
+ * Group messages are only ever read — Claude decides whether the message is
+ * a WTB/FS listing, and if so Fi extracts it and DMs the relevant dealers,
+ * but never posts back into the group. DMs to Fi are handled by Claude
+ * directly instead of a fixed command grammar.
  */
 export async function handleIncomingMessage(msg: NormalizedMessage): Promise<void> {
   const existing = await prisma.rawMessage.findUnique({ where: { whatsappMsgId: msg.whatsappMsgId } });
@@ -44,7 +45,7 @@ export async function handleIncomingMessage(msg: NormalizedMessage): Promise<voi
 }
 
 async function handleGroupMessage(msg: NormalizedMessage, dealerId: string): Promise<void> {
-  const parsed = parseListing(msg.text);
+  const parsed = await extractListing(msg.text);
   if (!parsed) return; // not a WTB/FS post — ignore silently, as Fi never posts to groups
 
   const group = await findOrCreateGroup(msg.chatId, msg.chatName);

@@ -1,14 +1,15 @@
 import type { Listing } from "@prisma/client";
 import { prisma } from "../db.js";
-import type { ParsedListing } from "../parsing/listingParser.js";
+import type { ExtractedListing } from "../llm/listingExtractor.js";
 
 export async function createListing(
-  parsed: ParsedListing,
+  parsed: ExtractedListing,
   context: { dealerId: string; groupId: string; rawText: string },
 ): Promise<Listing> {
   return prisma.listing.create({
     data: {
       type: parsed.type,
+      category: parsed.category,
       brand: parsed.brand,
       reference: parsed.reference,
       model: parsed.model,
@@ -17,7 +18,6 @@ export async function createListing(
       priceMax: parsed.priceMax,
       currency: parsed.currency,
       location: parsed.location,
-      notes: parsed.notes,
       rawText: context.rawText,
       dealerId: context.dealerId,
       groupId: context.groupId,

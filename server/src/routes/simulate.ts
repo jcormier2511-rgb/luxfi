@@ -24,16 +24,20 @@ simulateRouter.post("/message", async (req, res) => {
     return;
   }
 
-  await handleIncomingMessage({
-    whatsappMsgId: `sim-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    chatId,
-    senderId,
-    senderName: senderName ?? null,
-    chatName: chatName ?? null,
-    text,
-    isGroup: Boolean(isGroup),
-    timestamp: new Date(),
-  });
-
-  res.status(200).json({ ok: true });
+  try {
+    await handleIncomingMessage({
+      whatsappMsgId: `sim-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      chatId,
+      senderId,
+      senderName: senderName ?? null,
+      chatName: chatName ?? null,
+      text,
+      isGroup: Boolean(isGroup),
+      timestamp: new Date(),
+    });
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("Failed to process simulated message:", err);
+    res.status(500).json({ error: "failed to process message", detail: err instanceof Error ? err.message : String(err) });
+  }
 });

@@ -48,30 +48,12 @@ export function formatInsufficientCreditsNotice(listing: Listing): string {
   return `Fi found a verified match for your ${desc} listing, but you're out of credits. Top up to unlock it: https://luxfi.ai/signup`;
 }
 
-export function formatReviewProfileReply(dealerName: string, review: ReviewProfile): string {
-  const fragment = formatReviewFragment(review.dealer, review.avgRating);
-  const recent = review.recentReviews[0]?.text;
-  return recent ? `${fragment} · "${recent}"` : `${fragment} — no reviews on file yet for ${dealerName}.`;
-}
-
 export function formatVouchRequestToTarget(requesterName: string, dealText: string | null): string {
   const dealLine = dealText ? ` for your recent deal (${dealText})` : "";
   return `Hi — ${requesterName} is requesting a vouch${dealLine}. Reply with a rating 1-5 and a short comment (e.g. "5 fast and reliable") to vouch for them.`;
-}
-
-export function formatVouchRequestSentConfirmation(targetName: string): string {
-  return `Vouch request sent to ${targetName}.`;
 }
 
 export function formatVouchReceivedNotice(reviewerName: string, rating: number | null): string {
   const ratingLine = rating ? `${rating}★` : "a review";
   return `You've received a new vouch from ${reviewerName}: ${ratingLine}.`;
 }
-
-export const HELP_TEXT = [
-  "Fi commands:",
-  "- check reviews for @name — pull a dealer's review profile",
-  "- request a review from @name for the <deal> deal — ask a counterparty to vouch for you",
-  "- balance — check your credit balance",
-  "Add Fi to a dealer group and it'll start matching WTB/FS posts automatically.",
-].join("\n");

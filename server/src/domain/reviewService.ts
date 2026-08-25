@@ -97,32 +97,32 @@ export async function requestVouch(
 }
 
 /**
- * If `sender` has a pending vouch request against them, and this message
- * reads like a reply to it (leading 1-5 rating, optionally with a comment),
- * fulfill it: records a Review for the original requester and returns it.
- * Returns null if there's no pending request or the message doesn't parse
- * as a vouch reply, so normal command routing continues.
+ * The oldest pending vouch request awaiting this dealer's reply, if any.
+ * Fi's DM agent uses this both to decide whether a "record_vouch" tool call
+ * is contextually valid and to compose the request details into its prompt.
  */
-export async function tryFulfillVouchReply(
-  sender: Dealer,
-  text: string,
-): Promise<{ requesterDealerId: string; rating: number | null } | null> {
-  const pending = await prisma.vouchRequest.findFirst({
-    where: { targetDealerId: sender.id, status: "PENDING" },
+export async function getPendingVouchRequest(
+  targetDealerId: string,
+): Promise<{ id: string; requesterDealerId: string; dealText: string | null } | null> {
+  return prisma.vouchRequest.findFirst({
+    where: { targetDealerId, status: "PENDING" },
     orderBy: { createdAt: "asc" },
   });
-  if (!pending) return null;
+}
 
-  const match = text.trim().match(/^([1-5])\b\s*(.*)$/s);
-  const rating = match?.[1] ? Number.parseInt(match[1], 10) : null;
-  const reviewText = (match?.[2] || text).trim().slice(0, 280) || "(no comment)";
-
+/** Records a Review for the original requester and marks the request fulfilled. */
+export async function fulfillVouchRequest(
+  pending: { id: string; requesterDealerId: string },
+  reviewerDealerId: string,
+  rating: number | null,
+  comment: string,
+): Promise<void> {
   await prisma.review.create({
     data: {
       subjectDealerId: pending.requesterDealerId,
-      reviewerDealerId: sender.id,
+      reviewerDealerId,
       rating,
-      text: reviewText,
+      text: comment.slice(0, 280) || "(no comment)",
       source: "vouch_request",
     },
   });
@@ -137,6 +137,4 @@ export async function tryFulfillVouchReply(
   });
 
   await prisma.vouchRequest.update({ where: { id: pending.id }, data: { status: "FULFILLED" } });
-
-  return { requesterDealerId: pending.requesterDealerId, rating };
 }

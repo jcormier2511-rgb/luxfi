@@ -27,6 +27,14 @@ export const config = {
     freeMatchesPerDealer: Number(process.env.FREE_MATCHES_PER_DEALER ?? 3),
   },
 
+  // Fi's "brain": Claude reads every group message to decide whether it's a
+  // WTB/FS listing (and extracts it), and drives DM conversations — picking
+  // when to check reviews, request a vouch, or just reply naturally.
+  // Requires ANTHROPIC_API_KEY. Override LLM_MODEL for cost/latency tuning.
+  llm: {
+    model: process.env.LLM_MODEL ?? "claude-opus-5",
+  },
+
   // Allows POSTing synthetic WhatsApp events at /simulate/message for local
   // development without a live Green API instance. Never enable in production.
   devSimulateEndpoint: process.env.ENABLE_DEV_SIMULATE === "true",
