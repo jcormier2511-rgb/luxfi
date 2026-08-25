@@ -1,10 +1,11 @@
 import { config } from "../config";
 import { Contact, ConversationState, ItemRequest } from "../types";
-import { findMatches, formatMatch } from "../matching/engine";
+import { findMatches, formatMatchAnonymous, formatMatchRevealed } from "../matching/engine";
 import { suggestListings } from "../data/inventoryStore";
 import { getState, saveState } from "./stateStore";
 
 const OPT_OUT_WORDS = ["stop", "unsubscribe", "cancel", "opt out", "optout"];
+const AFFIRMATIVE = /^(y|yes|yeah|yep|yup|sure|please|ok|okay|send it|send them|send)\b/i;
 
 function normalize(text: string): string {
   return text.trim().toLowerCase();
@@ -13,6 +14,15 @@ function normalize(text: string): string {
 function isOptOut(text: string): boolean {
   const n = normalize(text);
   return OPT_OUT_WORDS.some((w) => n === w || n.startsWith(`${w} `));
+}
+
+function isAffirmative(text: string): boolean {
+  return AFFIRMATIVE.test(text.trim());
+}
+
+function trialEndedMessage(): string {
+  const demo = config.outreach.demoUrl ? ` or schedule a demo here: ${config.outreach.demoUrl}` : "";
+  return `Reached my free quota — you're welcome to start a trial membership here: ${config.outreach.membershipUrl}${demo}.`;
 }
 
 /** Suggested items pulled from the WF feed, tailored to the contact's specialty when known. */
@@ -104,6 +114,48 @@ export interface FlowResult {
   messages: string[];
 }
 
+/**
+ * Pulls queued items through search + consent one at a time (only one pendingReveal can be
+ * open at once), then either continues the queue, prompts for the next item, or ends the trial.
+ * Mutates `state` and appends to `messages` in place; caller persists + returns the result.
+ */
+function advance(state: ConversationState, messages: string[]): void {
+  while (
+    state.itemsRequested.length < config.trial.maxItems &&
+    (state.queuedItems?.length ?? 0) > 0 &&
+    !state.pendingReveal
+  ) {
+    const request = state.queuedItems!.shift()!;
+    state.itemsRequested.push(request);
+    state.itemsCompleted += 1;
+
+    const matches = findMatches(request, config.trial.maxOptionsPerItem);
+    const searchingLine =
+      request.action === "buy" ? config.outreach.searchingMessageBuyer : config.outreach.searchingMessageSeller;
+
+    if (matches.length === 0) {
+      messages.push(`${searchingLine}\n\nNo live matches yet for that one — I'll keep watching the network.`);
+      continue;
+    }
+
+    const body = matches.map((m, i) => formatMatchAnonymous(m, i)).join("\n");
+    messages.push(`${searchingLine}\n\n${body}\n\nHere are the people requesting "${request.query}"… do you want their info?`);
+    state.pendingReveal = { request, matches };
+    state.stage = "awaiting_reveal_consent";
+  }
+
+  if (!state.pendingReveal) {
+    if (state.itemsRequested.length >= config.trial.maxItems) {
+      state.stage = "trial_ended";
+      messages.push(trialEndedMessage());
+    } else {
+      state.stage = "awaiting_items";
+      const left = config.trial.maxItems - state.itemsRequested.length;
+      messages.push(`Send me your next item (buy or sell) whenever you're ready — you have ${left} left.`);
+    }
+  }
+}
+
 export function handleIncomingMessage(phone: string, text: string, contact?: Contact): FlowResult {
   const state = getState(phone);
 
@@ -122,16 +174,31 @@ export function handleIncomingMessage(phone: string, text: string, contact?: Con
   }
 
   if (state.stage === "trial_ended") {
-    return {
-      state,
-      messages: [`Your free trial has ended. Start your membership to keep getting matches: ${config.outreach.membershipUrl}`],
-    };
+    return { state, messages: [trialEndedMessage()] };
   }
 
-  const remainingSlots = config.trial.maxItems - state.itemsRequested.length;
+  const messages: string[] = [];
 
-  // First inbound message: try parsing directly in case they jumped straight to naming items;
-  // otherwise show the suggestion menu.
+  if (state.stage === "awaiting_reveal_consent" && state.pendingReveal) {
+    const wantsInfo = isAffirmative(text);
+    if (wantsInfo) {
+      const revealed = state.pendingReveal.matches.map((m, i) => formatMatchRevealed(m, i)).join("\n");
+      messages.push(revealed);
+    }
+    state.pendingReveal = undefined;
+
+    // If they didn't just say yes, treat the message as a possible new item instead of silently dropping it.
+    const extra = wantsInfo ? [] : parseItemRequests(text, state.lastSuggestions);
+    if (extra.length > 0) {
+      const remainingSlots = config.trial.maxItems - state.itemsRequested.length - (state.queuedItems?.length ?? 0);
+      state.queuedItems = [...(state.queuedItems ?? []), ...extra.slice(0, Math.max(0, remainingSlots))];
+    }
+
+    advance(state, messages);
+    saveState(state);
+    return { state, messages };
+  }
+
   const parsed = parseItemRequests(text, state.stage === "awaiting_items" ? state.lastSuggestions : undefined);
 
   if (state.stage === "new" && parsed.length === 0) {
@@ -151,33 +218,10 @@ export function handleIncomingMessage(phone: string, text: string, contact?: Con
     };
   }
 
-  const toProcess = parsed.slice(0, Math.max(0, remainingSlots));
-  const messages: string[] = [];
+  const remainingSlots = config.trial.maxItems - state.itemsRequested.length;
+  state.queuedItems = [...(state.queuedItems ?? []), ...parsed.slice(0, Math.max(0, remainingSlots))];
 
-  for (const request of toProcess) {
-    state.itemsRequested.push(request);
-    const matches = findMatches(request, config.trial.maxOptionsPerItem);
-    const header = `🔎 Match ${state.itemsRequested.length}/${config.trial.maxItems} — ${request.action === "buy" ? "buying" : "selling"} "${request.query}"`;
-    const body =
-      matches.length > 0
-        ? matches.map((m, i) => formatMatch(m, i)).join("\n")
-        : "No live matches yet for that one — I'll keep watching the network.";
-    messages.push(`${header}\n${body}`);
-    state.itemsCompleted += 1;
-  }
-
-  if (state.itemsRequested.length >= config.trial.maxItems) {
-    state.stage = "trial_ended";
-    messages.push(
-      `That's your free trial complete — ${config.trial.maxItems} items matched with up to ${config.trial.maxOptionsPerItem} options each. 🎉\n\n` +
-        `To keep getting matches (plus full contact details and review checks), start your LuxFi membership:\n${config.outreach.membershipUrl}`
-    );
-  } else {
-    state.stage = "awaiting_items";
-    const left = config.trial.maxItems - state.itemsRequested.length;
-    messages.push(`That's ${state.itemsRequested.length}/${config.trial.maxItems} free items used. Send me your next item (buy or sell) whenever you're ready — you have ${left} left.`);
-  }
-
+  advance(state, messages);
   saveState(state);
   return { state, messages };
 }

@@ -43,10 +43,20 @@ export function findMatches(request: ItemRequest, limit: number): InventoryListi
     .slice(0, limit);
 }
 
-export function formatMatch(listing: InventoryListing, index: number): string {
-  const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
-  const name = listing.item.toLowerCase().startsWith(listing.brand.toLowerCase())
+function displayName(listing: InventoryListing): string {
+  return listing.item.toLowerCase().startsWith(listing.brand.toLowerCase())
     ? listing.item
     : `${listing.brand} ${listing.item}`;
-  return `${index + 1}. ${name}${listing.ref ? ` (${listing.ref})` : ""} — ${listing.condition}, ${priceText}, ${listing.location}\n   Contact: ${listing.contactName} · ${listing.rating ? `${listing.rating}★` : "unrated"} · ${listing.source}`;
+}
+
+/** Shown before consent to reveal contact info — item details only, no way to identify or reach the counterparty. */
+export function formatMatchAnonymous(listing: InventoryListing, index: number): string {
+  const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
+  return `${index + 1}. ${displayName(listing)}${listing.ref ? ` (${listing.ref})` : ""} — ${listing.condition}, ${priceText}, ${listing.location} · ${listing.rating ? `${listing.rating}★` : "unrated"}`;
+}
+
+/** Shown once the contact says yes to "do you want their info?" — adds name + phone. */
+export function formatMatchRevealed(listing: InventoryListing, index: number): string {
+  const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
+  return `${index + 1}. ${displayName(listing)}${listing.ref ? ` (${listing.ref})` : ""} — ${listing.condition}, ${priceText}, ${listing.location}\n   Contact: ${listing.contactName} · ${listing.contactPhone} · ${listing.rating ? `${listing.rating}★` : "unrated"} · ${listing.source}`;
 }

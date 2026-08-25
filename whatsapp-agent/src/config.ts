@@ -24,6 +24,15 @@ export const config = {
       "Hi {{name}} — this is Fi from LuxFi. Tell me up to 3 items you're looking to buy or sell and I'll find you matches — free for your first 3 items.",
     bannerImageUrl: process.env.BANNER_IMAGE_URL ?? "",
     membershipUrl: process.env.MEMBERSHIP_URL ?? "https://luxfi.ai/signup",
+    demoUrl: process.env.DEMO_URL ?? "",
+    // Sent as the header when a search kicks off for one item, per the provided copy —
+    // phrased from the recipient's side of the trade (buying needs sellers, selling needs buyers).
+    searchingMessageBuyer:
+      process.env.SEARCHING_MESSAGE_BUYER ??
+      "September Special: I'll match you with 3 verified sellers, free — checking what's out there now and flagging anything that hits the moment it's posted.",
+    searchingMessageSeller:
+      process.env.SEARCHING_MESSAGE_SELLER ??
+      "September Special: I'll match you with 3 verified buyers, free — checking what's out there now and flagging anything that hits the moment it's posted.",
     // Cap how many never-contacted Tier A/B contacts a single blast run will message —
     // keeps a pilot run bounded regardless of how large the underlying CSV is.
     batchLimit: Number(process.env.OUTREACH_BATCH_LIMIT ?? 50),

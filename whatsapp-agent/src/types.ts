@@ -36,9 +36,14 @@ export interface ItemRequest {
 export type ConversationStage =
   | "new"
   | "awaiting_items"
-  | "matching"
+  | "awaiting_reveal_consent"
   | "trial_ended"
   | "opted_out";
+
+export interface PendingReveal {
+  request: ItemRequest;
+  matches: InventoryListing[];
+}
 
 export interface ConversationState {
   phone: string;
@@ -46,5 +51,7 @@ export interface ConversationState {
   itemsRequested: ItemRequest[];
   itemsCompleted: number; // how many items have received their match results
   lastSuggestions?: ItemRequest[]; // the 3 suggested items shown, so numeric replies can resolve
+  queuedItems?: ItemRequest[]; // items parsed but not yet searched (e.g. picked "1,3" at once)
+  pendingReveal?: PendingReveal; // matches found but contact info not yet consented to
   updatedAt: string;
 }

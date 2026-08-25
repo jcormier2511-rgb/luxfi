@@ -110,11 +110,19 @@ cards from screenshots rather than real markup. Before trusting it on a real run
 2. **First reply**: bot shows 3 suggested items pulled from the WF feed and asks the contact to
    pick numbers (`1,3`) or name their own items (`buy: Omega Speedmaster`, `selling: Cartier
    Love bracelet`).
-3. **Matching**: each item is searched against the WF inventory (buy → `FS` listings, sell →
-   `WTB` listings) and up to `TRIAL_MAX_OPTIONS_PER_ITEM` (default 5) options are returned.
-4. **Trial gate**: after `TRIAL_MAX_ITEMS` (default 3) items have been matched, the bot sends
-   the trial-ended message with the membership link and stops taking new item requests.
-5. Replying `STOP`/`UNSUBSCRIBE` at any point opts a contact out permanently (`START` re-enables).
+3. **Searching**: each item is searched against the WF inventory (buy → `FS` listings, sell →
+   `WTB` listings). The bot opens with `SEARCHING_MESSAGE_BUYER`/`_SELLER` ("September Special:
+   I'll match you with 3 verified sellers/buyers, free…"), then lists up to
+   `TRIAL_MAX_OPTIONS_PER_ITEM` (default 5) options **without contact details** and asks
+   *"Here are the people requesting '\<item\>'… do you want their info?"*
+4. **Consent-gated reveal**: only on an affirmative reply does the bot send the same options
+   back with the counterparty's name and phone number attached. Any other reply (or a new item
+   request instead) skips the reveal and moves on — the item still counts toward the trial
+   either way, since the search itself was the delivered value.
+5. **Trial gate**: after `TRIAL_MAX_ITEMS` (default 3) items have been searched, the bot sends
+   *"Reached my free quota — you're welcome to start a trial membership here: `MEMBERSHIP_URL`"*
+   (plus `or schedule a demo here: DEMO_URL` if that's set), and stops taking new item requests.
+6. Replying `STOP`/`UNSUBSCRIBE` at any point opts a contact out permanently (`START` re-enables).
 
 State per phone number is persisted to `storage/conversations.json` (git-ignored) so the bot
 survives restarts.
