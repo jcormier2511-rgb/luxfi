@@ -4,7 +4,8 @@ import { extractIncomingText, IncomingWebhook, sendText } from "./greenapi/clien
 import { alreadyProcessed } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { getTierABContacts } from "./data/contactsStore";
-import { runOutreachBlast } from "./outreach/blast";
+import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
+import { readBlastStatus } from "./outreach/status";
 
 export function createServer() {
   const app = express();
@@ -41,17 +42,35 @@ export function createServer() {
   });
 
   // Manual trigger to kick off the Tier A/B blast over HTTP instead of the CLI script.
+  // At OUTREACH_RATE_PER_HOUR pacing a batch can take hours, so this only plans the
+  // batch synchronously and returns immediately — the actual sends happen in the
+  // background and progress is polled via GET /outreach/status.
   // Protect this behind the same webhook token since it sends real messages.
-  app.post("/outreach/start", async (req, res) => {
+  app.post("/outreach/start", (req, res) => {
     if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
-    try {
-      const summary = await runOutreachBlast();
-      res.json(summary);
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+    if (readBlastStatus().state === "running") {
+      return res.status(409).json({ error: "a blast is already running — check /outreach/status" });
     }
+    const plan = planOutreachBatch();
+    res.json({
+      started: true,
+      batchSize: plan.batch.length,
+      alreadyContacted: plan.alreadyContacted,
+      remainingAfterBatch: plan.remainingAfterBatch,
+      etaHours: config.outreach.ratePerHour > 0 ? +(plan.batch.length / config.outreach.ratePerHour).toFixed(1) : null,
+    });
+    executeOutreachBatch(plan).catch((err) => {
+      console.error("[outreach] batch failed:", err);
+    });
+  });
+
+  app.get("/outreach/status", (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    res.json(readBlastStatus());
   });
 
   return app;
