@@ -1,9 +1,12 @@
 import express from "express";
+import fs from "fs";
+import path from "path";
 import { config } from "./config";
 import { extractIncomingMessages, IncomingWebhook, sendText } from "./whapi/client";
 import { alreadyProcessed } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
-import { getTierABContacts } from "./data/contactsStore";
+import { getTierABContacts, loadContacts } from "./data/contactsStore";
+import { loadInventory } from "./data/inventoryStore";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 
@@ -70,6 +73,32 @@ export function createServer() {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(readBlastStatus());
+  });
+
+  // Real contacts.csv / wf_inventory.csv are git-ignored on purpose, so a fresh deploy's
+  // persistent volume starts empty. These let you push the real files onto a running
+  // deployment (e.g. `curl --data-binary @contacts.csv "https://<host>/admin/upload/contacts?token=..."`)
+  // without needing shell/SSH access to the container.
+  const csvUpload = express.text({ type: "*/*", limit: "20mb" });
+
+  app.post("/admin/upload/contacts", csvUpload, (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    fs.mkdirSync(path.dirname(config.data.contactsCsv), { recursive: true });
+    fs.writeFileSync(config.data.contactsCsv, req.body);
+    const contacts = loadContacts(true);
+    res.json({ ok: true, bytes: req.body.length, contacts: contacts.length });
+  });
+
+  app.post("/admin/upload/inventory", csvUpload, (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    fs.mkdirSync(path.dirname(config.data.inventoryCsv), { recursive: true });
+    fs.writeFileSync(config.data.inventoryCsv, req.body);
+    const listings = loadInventory(true);
+    res.json({ ok: true, bytes: req.body.length, listings: listings.length });
   });
 
   return app;

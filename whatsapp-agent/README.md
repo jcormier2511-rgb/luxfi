@@ -85,6 +85,50 @@ curl -X POST "http://localhost:3000/outreach/start?token=<WEBHOOK_TOKEN>"
 curl "http://localhost:3000/outreach/status?token=<WEBHOOK_TOKEN>"
 ```
 
+## Deploy (Railway)
+
+This needs an **always-on** host with **persistent disk** — not serverless (Vercel, Cloudflare
+Workers, Cloud Run's default scale-to-zero). The outreach blast runs as a long background loop
+*inside* the Node process (hours, at low `OUTREACH_RATE_PER_HOUR`), and conversation state /
+blast progress are plain JSON files on disk that must survive restarts and redeploys.
+
+1. **New Project → Deploy from GitHub repo**, pick this repo.
+2. **Settings → Root Directory**: set to `whatsapp-agent` (this is a subfolder of a monorepo).
+   Railway will pick up `railway.json` and `Dockerfile` from there automatically.
+3. **Add a Volume** (Settings → Volumes), mounted at `/app/storage`. Also mount one at
+   `/app/data` if you want CSVs uploaded via the endpoints below to survive a redeploy —
+   otherwise each redeploy resets `/app/data` back to the sample CSVs baked into the image.
+4. **Variables** — set at minimum:
+   - `WHAPI_TOKEN`, `WEBHOOK_TOKEN` (pick a real random value, not `change-me`)
+   - `INTRO_MESSAGE`, `BANNER_IMAGE_URL`, `MEMBERSHIP_URL`, `DEMO_URL`
+   - `SEARCHING_MESSAGE_BUYER`, `SEARCHING_MESSAGE_SELLER` (defaults match the provided copy —
+     only set these if you want to override them)
+   - Leave `OUTREACH_BATCH_LIMIT`, `OUTREACH_RATE_PER_HOUR`, `TRIAL_MAX_ITEMS`,
+     `TRIAL_MAX_OPTIONS_PER_ITEM` unset to use the defaults (50, 5/hr, 3, 5), or override.
+   - `WATCHFACTS_ENABLED`, `WATCHFACTS_EMAIL`, `WATCHFACTS_PASSWORD` if using that feature.
+   - Do **not** set `PORT` — Railway injects it.
+5. **Deploy.** Railway assigns a public domain under Settings → Networking (or attach a custom
+   one). `numReplicas` is pinned to `1` in `railway.json` — don't scale this past one instance,
+   since the blast loop and file-based state assume a single process.
+6. In the **Whapi.Cloud dashboard**, set the channel's webhook URL to
+   `https://<your-railway-domain>/webhook?token=<WEBHOOK_TOKEN>`.
+7. **Seed the real data** onto the (now-empty) volume — the real CSVs are git-ignored, so they
+   aren't in the deployed image:
+   ```bash
+   curl --data-binary @contacts.csv "https://<your-railway-domain>/admin/upload/contacts?token=<WEBHOOK_TOKEN>"
+   curl --data-binary @wf_inventory.csv "https://<your-railway-domain>/admin/upload/inventory?token=<WEBHOOK_TOKEN>"
+   ```
+   Each responds with a row count and takes effect immediately (no restart needed).
+8. Kick off the blast: `curl -X POST "https://<your-railway-domain>/outreach/start?token=<WEBHOOK_TOKEN>"`,
+   then poll `GET /outreach/status` the same way.
+
+The Dockerfile installs Playwright's Chromium at build time (needed only if
+`WATCHFACTS_ENABLED=true`, but included unconditionally so toggling that var doesn't need a
+rebuild) — this was written but never build-tested end-to-end, since this sandbox's network
+policy blocks pulling the base image from Docker Hub. Railway's own build environment has
+unrestricted internet, so this should just work there; if the build fails, that's the first
+thing to check the logs for.
+
 ## WatchFacts intro personalization (optional)
 
 Set `WATCHFACTS_ENABLED=true` and fill in `WATCHFACTS_EMAIL`/`WATCHFACTS_PASSWORD` in `.env` to
@@ -130,6 +174,10 @@ survives restarts.
 ## Not yet wired up
 
 - No real payment/membership gate — the trial-ended message just links out to `MEMBERSHIP_URL`.
-- Matching is keyword-based against the CSV snapshot, not a live feed — refreshing
-  `wf_inventory.csv` requires a restart (or extending `inventoryStore.ts` to poll/reload).
+- Matching is keyword-based against a CSV snapshot, not a live feed — refresh it by re-running
+  `POST /admin/upload/inventory` (takes effect immediately, no restart) or editing the file and
+  restarting the process.
 - No delivery-status or read-receipt handling — only inbound text messages are processed.
+- `/admin/upload/*` and `/outreach/*` share one bearer-style token (`WEBHOOK_TOKEN`) passed as a
+  URL query param — fine for a single-operator pilot, not a substitute for real auth if more
+  people get access to these endpoints.
