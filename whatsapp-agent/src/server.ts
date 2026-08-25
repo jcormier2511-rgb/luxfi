@@ -1,6 +1,6 @@
 import express from "express";
 import { config } from "./config";
-import { extractIncomingText, IncomingWebhook, sendText } from "./greenapi/client";
+import { extractIncomingMessages, IncomingWebhook, sendText } from "./whapi/client";
 import { alreadyProcessed } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { getTierABContacts } from "./data/contactsStore";
@@ -15,29 +15,28 @@ export function createServer() {
     res.json({ ok: true });
   });
 
-  // GreenAPI webhook receiver. Configure this URL (with ?token=WEBHOOK_TOKEN) as the
-  // instance's webhookUrl in the GreenAPI console, with incomingMessageReceived enabled.
+  // Whapi.Cloud webhook receiver. Configure this URL as the channel's webhook (Settings →
+  // Webhooks) with the "messages" event enabled.
   app.post("/webhook", async (req, res) => {
     if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
-    // Ack immediately — GreenAPI retries on slow/failed responses.
+    // Ack immediately — Whapi retries on slow/failed responses.
     res.status(200).json({ ok: true });
 
     const body = req.body as IncomingWebhook;
-    if (alreadyProcessed(body.idMessage)) return;
+    const incoming = extractIncomingMessages(body).filter((m) => !alreadyProcessed(m.id));
 
-    const incoming = extractIncomingText(body);
-    if (!incoming) return;
-
-    const contact = getTierABContacts().find((c) => c.phone === incoming.phone);
-    try {
-      const { messages } = handleIncomingMessage(incoming.phone, incoming.text, contact);
-      for (const message of messages) {
-        await sendText(incoming.phone, message);
+    for (const message of incoming) {
+      const contact = getTierABContacts().find((c) => c.phone === message.phone);
+      try {
+        const { messages } = handleIncomingMessage(message.phone, message.text, contact);
+        for (const reply of messages) {
+          await sendText(message.phone, reply);
+        }
+      } catch (err) {
+        console.error(`[webhook] failed handling message from ${message.phone}:`, err);
       }
-    } catch (err) {
-      console.error(`[webhook] failed handling message from ${incoming.phone}:`, err);
     }
   });
 

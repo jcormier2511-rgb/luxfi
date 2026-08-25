@@ -10,10 +10,9 @@ function required(name: string, fallback?: string): string {
 }
 
 export const config = {
-  greenApi: {
-    idInstance: process.env.GREEN_API_ID_INSTANCE ?? "",
-    tokenInstance: process.env.GREEN_API_TOKEN_INSTANCE ?? "",
-    baseUrl: process.env.GREEN_API_BASE_URL ?? "https://api.green-api.com",
+  whapi: {
+    token: process.env.WHAPI_TOKEN ?? "",
+    baseUrl: process.env.WHAPI_BASE_URL ?? "https://gate.whapi.cloud",
   },
   server: {
     port: Number(process.env.PORT ?? 3000),
@@ -43,6 +42,18 @@ export const config = {
   trial: {
     maxItems: Number(process.env.TRIAL_MAX_ITEMS ?? 3),
     maxOptionsPerItem: Number(process.env.TRIAL_MAX_OPTIONS_PER_ITEM ?? 5),
+  },
+  // Optional: personalizes each contact's intro with their own most recent WatchFacts
+  // listing. Requires Playwright + a Chromium install in whatever environment actually
+  // runs the blast — see src/watchfacts/README or the top-level README for setup.
+  watchfacts: {
+    enabled: (process.env.WATCHFACTS_ENABLED ?? "false").toLowerCase() === "true",
+    loginUrl: process.env.WATCHFACTS_LOGIN_URL ?? "https://watchfacts.com/login",
+    listingsUrlTemplate:
+      process.env.WATCHFACTS_LISTINGS_URL_TEMPLATE ??
+      "https://watchfacts.com/profile-listings?profileId={id}&profileAccessType=id",
+    email: process.env.WATCHFACTS_EMAIL ?? "",
+    password: process.env.WATCHFACTS_PASSWORD ?? "",
   },
   storageDir: path.resolve("./storage"),
 };

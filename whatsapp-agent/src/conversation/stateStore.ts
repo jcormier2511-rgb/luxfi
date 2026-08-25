@@ -38,7 +38,7 @@ export function saveState(state: ConversationState): void {
   writeAll(all);
 }
 
-/** De-dupe GreenAPI webhook retries by remembering processed message ids. */
+/** De-dupe Whapi webhook retries by remembering processed message ids. */
 const processedIdsPath = path.join(config.storageDir, "processed-messages.json");
 
 export function alreadyProcessed(messageId: string | undefined): boolean {

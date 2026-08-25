@@ -1,5 +1,5 @@
-phone,name,tier,specialty
-15551230001,Marco D.,A,watches
-15551230002,James K.,A,handbags
-15551230003,Priya S.,B,jewelry
-15551230004,Elena V.,B,watches
+phone,name,tier,specialty,wf_profile_id
+15551230001,Marco D.,A,watches,830
+15551230002,James K.,A,handbags,
+15551230003,Priya S.,B,jewelry,
+15551230004,Elena V.,B,watches,

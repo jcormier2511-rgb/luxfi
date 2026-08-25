@@ -5,6 +5,7 @@ export interface Contact {
   name: string;
   tier: Tier;
   specialty?: string;
+  wfProfileId?: string; // WatchFacts profile-listings id, e.g. watchfacts.com/profile-listings?profileId=830
 }
 
 export type ListingType = "FS" | "WTB"; // For Sale / Want To Buy

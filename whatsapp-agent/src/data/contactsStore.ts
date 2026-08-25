@@ -26,6 +26,7 @@ export function loadContacts(forceReload = false): Contact[] {
     name: row.name,
     tier: (row.tier?.toUpperCase() as Tier) ?? "B",
     specialty: row.specialty || undefined,
+    wfProfileId: row.wf_profile_id || undefined,
   }));
   return cache;
 }
