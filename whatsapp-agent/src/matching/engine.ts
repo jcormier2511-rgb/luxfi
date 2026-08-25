@@ -45,5 +45,8 @@ export function findMatches(request: ItemRequest, limit: number): InventoryListi
 
 export function formatMatch(listing: InventoryListing, index: number): string {
   const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
-  return `${index + 1}. ${listing.brand} ${listing.item}${listing.ref ? ` (${listing.ref})` : ""} — ${listing.condition}, ${priceText}, ${listing.location}\n   Contact: ${listing.contactName} · ${listing.rating ? `${listing.rating}★` : "unrated"} · ${listing.source}`;
+  const name = listing.item.toLowerCase().startsWith(listing.brand.toLowerCase())
+    ? listing.item
+    : `${listing.brand} ${listing.item}`;
+  return `${index + 1}. ${name}${listing.ref ? ` (${listing.ref})` : ""} — ${listing.condition}, ${priceText}, ${listing.location}\n   Contact: ${listing.contactName} · ${listing.rating ? `${listing.rating}★` : "unrated"} · ${listing.source}`;
 }

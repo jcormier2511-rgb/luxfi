@@ -20,7 +20,9 @@ export function buildSuggestions(contact?: Contact): ItemRequest[] {
   const listings = suggestListings(3, contact?.specialty);
   return listings.map((listing) => ({
     action: listing.type === "FS" ? "buy" : "sell",
-    query: `${listing.brand} ${listing.item}`,
+    query: listing.item.toLowerCase().startsWith(listing.brand.toLowerCase())
+      ? listing.item
+      : `${listing.brand} ${listing.item}`,
   }));
 }
 
@@ -39,11 +41,14 @@ const BUY_KEYWORDS = /\b(buy|buying|wtb|looking for|want|need)\b/i;
 const SELL_KEYWORDS = /\b(sell|selling|fs|for sale)\b/i;
 
 function classify(segment: string): ItemRequest | null {
-  let text = segment.trim();
+  const text = segment.trim();
   if (!text) return null;
-  let action: ItemRequest["action"] = "buy";
+  // Require an explicit buy/sell signal — otherwise plain chatter ("hi", "ok", "thanks")
+  // would get misread as an item request and silently burn a trial slot.
+  let action: ItemRequest["action"];
   if (SELL_KEYWORDS.test(text)) action = "sell";
   else if (BUY_KEYWORDS.test(text)) action = "buy";
+  else return null;
   const query = text
     .replace(/^(buy|buying|wtb|looking for|want|need|sell|selling|fs|for sale)\s*:?\s*/i, "")
     .trim();
