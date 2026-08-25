@@ -17,7 +17,7 @@ export const simulateRouter = Router();
  *   }'
  */
 simulateRouter.post("/message", async (req, res) => {
-  const { chatId, senderId, senderName, chatName, text, isGroup } = req.body ?? {};
+  const { chatId, senderId, senderName, chatName, text, isGroup, imageUrl } = req.body ?? {};
 
   if (typeof chatId !== "string" || typeof senderId !== "string" || typeof text !== "string") {
     res.status(400).json({ error: "chatId, senderId, and text are required strings" });
@@ -32,6 +32,7 @@ simulateRouter.post("/message", async (req, res) => {
       senderName: senderName ?? null,
       chatName: chatName ?? null,
       text,
+      imageUrl: typeof imageUrl === "string" ? imageUrl : null,
       isGroup: Boolean(isGroup),
       timestamp: new Date(),
     });

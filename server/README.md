@@ -39,6 +39,26 @@ conversations are driven by Claude, not a fixed keyword grammar.
    Fi looks up the counterparty's on-file reviews, or — if none exist yet —
    heuristically scans stored group chat history for vouch-like mentions of
    that dealer's name.
+7. **Authenticity and price checks** (`src/domain/verificationService.ts`)
+   run once, in parallel, right after a listing is created — never gating
+   the match, just surfaced as an advisory line on the notification:
+   - If the dealer posted a photo with their listing (a captioned WhatsApp
+     image), Claude looks at it (`src/llm/authenticityChecker.ts`) for
+     visual authenticity red flags — proportions, engraving/font quality,
+     stock-photo tells. It defaults to "inconclusive" whenever the photo
+     doesn't show enough to judge, rather than a false accusation.
+   - Every listing with a stated price gets checked against current
+     secondary-market pricing via Claude + web search
+     (`src/llm/priceChecker.ts`) — flagging "below market" (a common scam
+     signal) or "above market".
+
+## Advisory checks, not gates
+
+Both the review lookup and the authenticity/price checks are informational —
+none of them block a match or the credit charge. They're LLM-driven signals
+for a human dealer to weigh, not verified facts; a wrong "possible_concern"
+or "below_market" call is a false-positive risk you should expect and design
+around (e.g., dealers can always ask Fi to re-check or ignore the flag).
 
 ## Setup
 
@@ -86,6 +106,17 @@ curl -X POST localhost:3000/simulate/message -H 'content-type: application/json'
   "isGroup": true
 }'
 
+# Same, with a photo attached — triggers the authenticity check too
+curl -X POST localhost:3000/simulate/message -H 'content-type: application/json' -d '{
+  "chatId": "120363000000000000@g.us",
+  "senderId": "15551230000@c.us",
+  "senderName": "Marco D.",
+  "chatName": "Watch Dealers NYC",
+  "text": "FS Rolex Daytona 116500LN $18,500 CH",
+  "imageUrl": "https://example.com/watch-photo.jpg",
+  "isGroup": true
+}'
+
 curl -X POST localhost:3000/simulate/message -H 'content-type: application/json' -d '{
   "chatId": "15559990000@c.us",
   "senderId": "15559990000@c.us",
@@ -116,9 +147,18 @@ integration-level coverage.
 
 ## Known limitations / next steps
 
-- Every group message costs one Claude call to classify; at high group
+- Every group message costs one Claude call to classify, and every listing
+  with a price costs a second call with web search for the price check
+  (plus a third, vision, call if a photo was attached). At high group
   volume, consider batching, a cheaper `LLM_MODEL`, or a cheap local
-  pre-filter before the LLM call if cost becomes a concern.
+  pre-filter before the classification call if cost becomes a concern.
+- The Green API webhook shape assumed for photo messages
+  (`messageData.fileMessageData.downloadUrl`/`.caption`) is based on Green
+  API's documented notification format but hasn't been verified against a
+  live instance — check it against a real webhook payload before relying on
+  the authenticity check in production.
+- Authenticity and price checks are advisory signals, not verified facts —
+  see "Advisory checks, not gates" above.
 - Review "chat history" scanning is a keyword heuristic
   (`src/domain/reviewService.ts`), not verified/moderated vouches.
 - Telegram is mentioned on the landing page but out of scope here — this

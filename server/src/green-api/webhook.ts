@@ -13,6 +13,7 @@ export interface NormalizedMessage {
   senderName: string | null;
   chatName: string | null; // group name, when isGroup
   text: string;
+  imageUrl: string | null; // set when the message is a photo — `text` is then its caption (may be empty)
   isGroup: boolean;
   timestamp: Date;
 }
@@ -28,6 +29,7 @@ interface GreenApiMessageData {
   typeMessage: string;
   textMessageData?: { textMessage: string };
   extendedTextMessageData?: { text: string };
+  fileMessageData?: { downloadUrl: string; caption?: string; mimeType?: string };
 }
 
 interface GreenApiWebhookBody {
@@ -48,8 +50,16 @@ export function normalizeGreenApiWebhook(body: unknown): NormalizedMessage | nul
   const { senderData, messageData } = payload;
   if (!senderData || !messageData) return null;
 
-  const text = messageData.textMessageData?.textMessage ?? messageData.extendedTextMessageData?.text ?? null;
-  if (!text) return null; // ignore media/system messages — Fi only reads text listings/commands
+  let text: string | null;
+  let imageUrl: string | null = null;
+
+  if (messageData.typeMessage === "imageMessage" && messageData.fileMessageData) {
+    imageUrl = messageData.fileMessageData.downloadUrl;
+    text = messageData.fileMessageData.caption ?? ""; // listings need a caption; a bare photo is stored but not parsed
+  } else {
+    text = messageData.textMessageData?.textMessage ?? messageData.extendedTextMessageData?.text ?? null;
+  }
+  if (text === null) return null; // ignore other media/system message types — Fi only reads text and captioned photos
 
   const chatId = senderData.chatId;
   const isGroup = chatId.endsWith("@g.us");
@@ -61,6 +71,7 @@ export function normalizeGreenApiWebhook(body: unknown): NormalizedMessage | nul
     senderName: senderData.senderName ?? null,
     chatName: senderData.chatName ?? null,
     text,
+    imageUrl,
     isGroup,
     timestamp: payload.timestamp ? new Date(payload.timestamp * 1000) : new Date(),
   };

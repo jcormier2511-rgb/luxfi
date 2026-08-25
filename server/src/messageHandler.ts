@@ -4,6 +4,7 @@ import { findOrCreateDealer } from "./domain/dealerService.js";
 import { findOrCreateGroup } from "./domain/groupService.js";
 import { createListing } from "./domain/listingService.js";
 import { attemptMatch } from "./domain/matchingService.js";
+import { runListingChecks } from "./domain/verificationService.js";
 import { extractListing } from "./llm/listingExtractor.js";
 import { handleDmMessage } from "./llm/dmAgent.js";
 import { sendDirectMessage } from "./green-api/client.js";
@@ -49,6 +50,7 @@ async function handleGroupMessage(msg: NormalizedMessage, dealerId: string): Pro
   if (!parsed) return; // not a WTB/FS post — ignore silently, as Fi never posts to groups
 
   const group = await findOrCreateGroup(msg.chatId, msg.chatName);
-  const listing = await createListing(parsed, { dealerId, groupId: group.id, rawText: msg.text });
+  let listing = await createListing(parsed, { dealerId, groupId: group.id, rawText: msg.text, imageUrl: msg.imageUrl });
+  listing = await runListingChecks(listing);
   await attemptMatch(listing);
 }

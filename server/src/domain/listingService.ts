@@ -4,7 +4,7 @@ import type { ExtractedListing } from "../llm/listingExtractor.js";
 
 export async function createListing(
   parsed: ExtractedListing,
-  context: { dealerId: string; groupId: string; rawText: string },
+  context: { dealerId: string; groupId: string; rawText: string; imageUrl: string | null },
 ): Promise<Listing> {
   return prisma.listing.create({
     data: {
@@ -19,6 +19,7 @@ export async function createListing(
       currency: parsed.currency,
       location: parsed.location,
       rawText: context.rawText,
+      imageUrl: context.imageUrl,
       dealerId: context.dealerId,
       groupId: context.groupId,
     },

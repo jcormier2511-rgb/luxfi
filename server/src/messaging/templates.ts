@@ -22,6 +22,32 @@ export function formatReviewFragment(dealer: Dealer, avgRating: number | null): 
   return `${nameOrHandle} · ${tierLabel} · ${dealer.vouchCount} vouches · ${ratingFragment}`;
 }
 
+/**
+ * Fi's advisory checks on the counterparty's listing — never a reason to
+ * block the match, just something worth the dealer's attention. Silent when
+ * a check wasn't run (no photo posted) or came back inconclusive/unknown.
+ */
+function formatAdvisoryLines(listing: Listing): string[] {
+  const lines: string[] = [];
+
+  if (listing.authenticityVerdict === "possible_concern") {
+    lines.push(`⚠️ Photo check: ${listing.authenticityNotes ?? "possible authenticity concern — verify in person."}`);
+  } else if (listing.authenticityVerdict === "likely_authentic") {
+    lines.push("✅ Photo checked — no obvious authenticity red flags.");
+  }
+
+  if (listing.priceVerdict === "below_market" || listing.priceVerdict === "above_market") {
+    const range = listing.marketPriceMin != null && listing.marketPriceMax != null
+      ? ` (typical: $${listing.marketPriceMin.toLocaleString()}-${listing.marketPriceMax.toLocaleString()})`
+      : "";
+    lines.push(`⚠️ Price check: ${listing.priceVerdict === "below_market" ? "below" : "above"} market${range} — ${listing.priceNotes ?? "verify carefully."}`);
+  } else if (listing.priceVerdict === "in_line") {
+    lines.push("✅ Price checked — in line with market.");
+  }
+
+  return lines;
+}
+
 export function formatMatchNotification(params: {
   role: "buyer" | "seller";
   counterpartyListing: Listing;
@@ -40,6 +66,7 @@ export function formatMatchNotification(params: {
     `Match found — ${desc}${price ? `, ${price}` : ""}${counterpartyListing.condition ? `, ${counterpartyListing.condition}` : ""}.`,
     `${roleLine}: ${reviewLine}.`,
     creditLine,
+    ...formatAdvisoryLines(counterpartyListing),
   ].join(" ");
 }
 
