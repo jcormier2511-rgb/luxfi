@@ -169,6 +169,40 @@ export function createServer() {
     res.json({ ok: true, phone, reset: true });
   });
 
+  // One-shot diagnostic to root-cause "why is it showing sample data" without guessing —
+  // shows the actual resolved paths, what's on disk at each, and a peek at loaded inventory
+  // so we can tell real WatchFacts data from the bundled sample from the response alone.
+  app.get("/admin/debug-info", (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const describe = (p: string) => {
+      if (!fs.existsSync(p)) return { path: p, exists: false };
+      const stat = fs.statSync(p);
+      return {
+        path: p,
+        exists: true,
+        isDirectory: stat.isDirectory(),
+        size: stat.isFile() ? stat.size : undefined,
+        mtime: stat.mtime,
+      };
+    };
+    const persistDir = path.resolve(process.env.PERSIST_DIR ?? "./persist");
+    const listings = loadInventory(true);
+    res.json({
+      cwd: process.cwd(),
+      env: { PERSIST_DIR: process.env.PERSIST_DIR ?? null, CONTACTS_CSV: process.env.CONTACTS_CSV ?? null, INVENTORY_CSV: process.env.INVENTORY_CSV ?? null },
+      persistDir: describe(persistDir),
+      contactsCsv: describe(config.data.contactsCsv),
+      inventoryCsv: describe(config.data.inventoryCsv),
+      groupListingsCsv: describe(config.data.groupListingsCsv),
+      persistDirListing: fs.existsSync(persistDir) ? fs.readdirSync(persistDir) : null,
+      persistDataListing: fs.existsSync(path.join(persistDir, "data")) ? fs.readdirSync(path.join(persistDir, "data")) : null,
+      loadedInventoryCount: listings.length,
+      loadedInventorySample: listings.slice(0, 3).map((l) => ({ id: l.id, contactName: l.contactName, item: l.item, source: l.source })),
+    });
+  });
+
   app.use("/assets", express.static(config.assets.dir));
 
   // Logs into WatchFacts and re-scrapes the Trading Floor feed (both FS and WTB) into
