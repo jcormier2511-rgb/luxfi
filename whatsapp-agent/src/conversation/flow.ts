@@ -2,6 +2,7 @@ import { config } from "../config";
 import { Contact, ConversationState, ItemRequest } from "../types";
 import { findMatches, formatMatchCard, formatMatchApproved } from "../matching/engine";
 import { getState, saveState } from "./stateStore";
+import { parsePriceRange, parseFreeformPreference } from "./preferences";
 
 const OPT_OUT_WORDS = ["stop", "unsubscribe", "cancel", "opt out", "optout"];
 
@@ -69,7 +70,7 @@ export interface FlowResult {
 
 /** Runs a fresh search for `request`, showing Match Cards and arming them for approve/pass. */
 function startSearch(state: ConversationState, request: ItemRequest, messages: string[]): void {
-  const matches = findMatches(request, config.trial.maxOptionsPerItem);
+  const matches = findMatches(request, config.trial.maxOptionsPerItem, state.preferences);
   if (matches.length === 0) {
     messages.push(`No live matches yet for "${request.query}" — I'll keep watching the network.`);
     state.pendingMatches = undefined;
@@ -117,6 +118,49 @@ function handleDecision(state: ConversationState, decision: DecisionCommand, mes
   }
 }
 
+const PRICE_QUESTION = 'What\'s your price range? (e.g. "$5,000–$8,000", or say "any")';
+const LOCATION_QUESTION = 'Any location preference? (city or country, or say "any")';
+const DIAL_QUESTION = 'Preferred dial color? (or say "any")';
+const CONDITION_QUESTION = "Condition preference — new, pre-owned, or any?";
+
+/**
+ * Collected once per contact, on their first search only (spec extension, not in v3 itself).
+ * Walks price → location → dial color → condition one question at a time, then runs the
+ * item request that triggered it. Later searches reuse `state.preferences` without re-asking.
+ */
+function handlePreferenceAnswer(state: ConversationState, text: string, messages: string[]): void {
+  const pending = state.pendingPreferenceCollection!;
+  state.preferences = state.preferences ?? {};
+
+  if (pending.step === "price") {
+    const range = parsePriceRange(text);
+    state.preferences.priceMin = range?.min;
+    state.preferences.priceMax = range?.max;
+    pending.step = "location";
+    messages.push(LOCATION_QUESTION);
+    return;
+  }
+  if (pending.step === "location") {
+    state.preferences.location = parseFreeformPreference(text);
+    pending.step = "dial";
+    messages.push(DIAL_QUESTION);
+    return;
+  }
+  if (pending.step === "dial") {
+    state.preferences.dialColor = parseFreeformPreference(text);
+    pending.step = "condition";
+    messages.push(CONDITION_QUESTION);
+    return;
+  }
+
+  state.preferences.condition = parseFreeformPreference(text);
+  state.preferencesCollected = true;
+  const request = pending.request;
+  state.pendingPreferenceCollection = undefined;
+  messages.push("Got it — searching now.");
+  startSearch(state, request, messages);
+}
+
 export function handleIncomingMessage(phone: string, text: string, contact?: Contact): FlowResult {
   const state = getState(phone);
   const messages: string[] = [];
@@ -143,6 +187,12 @@ export function handleIncomingMessage(phone: string, text: string, contact?: Con
       state,
       messages: ["You're all set — Fi will keep working for you. I'll flag every match and you can approve whenever you're ready."],
     };
+  }
+
+  if (state.pendingPreferenceCollection) {
+    handlePreferenceAnswer(state, text, messages);
+    saveState(state);
+    return { state, messages };
   }
 
   const decision = parseDecisionCommand(text);
@@ -180,6 +230,14 @@ export function handleIncomingMessage(phone: string, text: string, contact?: Con
   if (parsed.length > 1) {
     messages.push(`I'll start with the first one — send me the others one at a time whenever you're ready.`);
   }
+
+  if (!state.preferencesCollected) {
+    state.pendingPreferenceCollection = { step: "price", request: parsed[0] };
+    messages.push("Before I search, a few quick preferences — just this once:\n\n" + PRICE_QUESTION);
+    saveState(state);
+    return { state, messages };
+  }
+
   startSearch(state, parsed[0], messages);
 
   saveState(state);

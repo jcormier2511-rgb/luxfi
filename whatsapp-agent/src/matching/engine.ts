@@ -1,5 +1,5 @@
 import { loadInventory } from "../data/inventoryStore";
-import { InventoryListing, ItemRequest } from "../types";
+import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
 
 function tokenize(text: string): string[] {
   return text
@@ -18,29 +18,80 @@ function score(listing: InventoryListing, tokens: string[]): number {
   return matches;
 }
 
+function parseListingPrice(raw: string): number | undefined {
+  const cleaned = raw.replace(/[^0-9.]/g, "");
+  if (!cleaned) return undefined;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** True if a listing's price falls inside the preference range, or no range was set. */
+function inPriceRange(listing: InventoryListing, preferences?: SearchPreferences): boolean {
+  if (!preferences || (preferences.priceMin === undefined && preferences.priceMax === undefined)) return true;
+  const price = parseListingPrice(listing.price);
+  if (price === undefined) return false; // "ASK"/unknown price can't be judged against a range
+  if (preferences.priceMin !== undefined && price < preferences.priceMin) return false;
+  if (preferences.priceMax !== undefined && price > preferences.priceMax) return false;
+  return true;
+}
+
+/** How far outside the preferred range a listing's price sits — used to sort the fallback pool. */
+function priceDistance(listing: InventoryListing, preferences?: SearchPreferences): number {
+  if (!preferences || (preferences.priceMin === undefined && preferences.priceMax === undefined)) return 0;
+  const price = parseListingPrice(listing.price);
+  if (price === undefined) return Infinity;
+  if (preferences.priceMin !== undefined && price < preferences.priceMin) return preferences.priceMin - price;
+  if (preferences.priceMax !== undefined && price > preferences.priceMax) return price - preferences.priceMax;
+  return 0;
+}
+
+/** Location/dial/condition are freeform text, so they nudge sort order rather than hard-exclude. */
+function softPreferenceScore(listing: InventoryListing, preferences?: SearchPreferences): number {
+  if (!preferences) return 0;
+  let s = 0;
+  const haystack = `${listing.description} ${listing.item}`.toLowerCase();
+  if (preferences.location && listing.location.toLowerCase().includes(preferences.location)) s += 1;
+  if (preferences.dialColor && haystack.includes(preferences.dialColor)) s += 1;
+  if (preferences.condition && listing.condition.toLowerCase().includes(preferences.condition)) s += 1;
+  return s;
+}
+
 /**
  * A buyer's request ("buy") matches against FS (for sale) listings;
  * a seller's request ("sell") matches against WTB (want to buy) listings.
+ * `preferences` (price/location/dial/condition, collected once per contact) filters price
+ * hard when set — falling back to sorting by closest price if that empties the pool — and
+ * nudges sort order for the freeform fields.
  */
-export function findMatches(request: ItemRequest, limit: number): InventoryListing[] {
+export function findMatches(request: ItemRequest, limit: number, preferences?: SearchPreferences): InventoryListing[] {
   const wantType = request.action === "buy" ? "FS" : "WTB";
   const tokens = tokenize(request.query);
   const candidates = loadInventory().filter((l) => l.type === wantType);
 
-  const scored = candidates
-    .map((listing) => ({ listing, score: score(listing, tokens) }))
-    .filter((s) => s.score > 0)
-    .sort((a, b) => b.score - a.score || Number(b.listing.rating) - Number(a.listing.rating));
+  const priceFiltered = candidates.filter((l) => inPriceRange(l, preferences));
+  const pool = priceFiltered.length > 0 ? priceFiltered : candidates;
 
-  const results = scored.map((s) => s.listing);
-  if (results.length > 0) return results.slice(0, limit);
+  const ranked = pool
+    .map((listing) => ({
+      listing,
+      tokenScore: score(listing, tokens),
+      prefScore: softPreferenceScore(listing, preferences),
+      priceDist: priceDistance(listing, preferences),
+    }))
+    .sort(
+      (a, b) =>
+        b.tokenScore - a.tokenScore ||
+        b.prefScore - a.prefScore ||
+        a.priceDist - b.priceDist ||
+        Number(b.listing.rating) - Number(a.listing.rating)
+    );
 
-  // No token overlap — fall back to top-rated listings in the same category guess
+  // No token overlap — fall back to the full ranked pool (still price/pref/rating sorted)
   // so the trial always demonstrates value instead of returning nothing.
-  return candidates
-    .slice()
-    .sort((a, b) => Number(b.rating) - Number(a.rating))
-    .slice(0, limit);
+  const withTokenMatch = ranked.filter((r) => r.tokenScore > 0);
+  const finalPool = withTokenMatch.length > 0 ? withTokenMatch : ranked;
+
+  return finalPool.slice(0, limit).map((r) => r.listing);
 }
 
 function watchName(listing: InventoryListing): string {

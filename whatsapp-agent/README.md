@@ -234,20 +234,28 @@ charged — "join" just unlocks unlimited approvals going forward.
    is `INTRO_MESSAGE`, the outbound blast opener (short, gets them to reply).
 2. **First reply**: the first time a contact replies at all, the bot sends `FI_INTRO_MESSAGE`
    (Fi's own concierge introduction, spec §1) once, then waits for an item.
-3. **Searching is unlimited**: `buy: Rolex Daytona` / `selling: Hermes Birkin` (or `sell`, `fs`,
+3. **Preferences (once per contact)**: the very first item request a contact sends triggers
+   four quick questions, one at a time — price range, location, dial color, condition — before
+   any search runs (`src/conversation/preferences.ts` does the loose parsing: "$5k-8k", "under
+   10000", "Miami", "any", etc; any answer maps to "no preference"). Answers are stored on
+   `state.preferences` and reused for every later search — they're never asked again.
+4. **Searching is unlimited**: `buy: Rolex Daytona` / `selling: Hermes Birkin` (or `sell`, `fs`,
    `wtb`, `looking for`, etc.) searches the inventory (buy → `FS` listings, sell → `WTB`
    listings) and shows up to `TRIAL_MAX_OPTIONS_PER_ITEM` (default 5) **Match Cards** — spec §2,
    minus the "Fi Intelligence" block (dealer reputation/price trend/market range/authenticity),
    since no data source for any of that exists yet. Only one search's cards are "live" for
-   decisions at a time — starting a new search replaces the previous one.
-4. **Approve / Pass**: reply `approve <number>` or `pass <number>` against the cards just
+   decisions at a time — starting a new search replaces the previous one. Price preference is a
+   hard filter (falls back to sorting by closest price if it would empty the results); location/
+   dial/condition nudge sort order rather than excluding listings outright, since they're
+   freeform text and a strict match would too easily zero out results.
+5. **Approve / Pass**: reply `approve <number>` or `pass <number>` against the cards just
    shown. Passing is free and unlimited. Approving reveals the counterparty's phone number —
    and is the only thing metered against the trial.
-5. **Trial gate**: after `TRIAL_MAX_APPROVED_MATCHES` (default 3) *approvals* — not searches —
+6. **Trial gate**: after `TRIAL_MAX_APPROVED_MATCHES` (default 3) *approvals* — not searches —
    the bot sends the conversion pitch (spec §5) once. Every approve attempt after that, until
    they reply `join`, gets the decline-path message (spec §7) instead; searching and passing
    keep working the whole time.
-6. Replying `STOP`/`UNSUBSCRIBE` at any point opts a contact out permanently (`START` re-enables).
+7. Replying `STOP`/`UNSUBSCRIBE` at any point opts a contact out permanently (`START` re-enables).
 
 State per phone number is persisted to `storage/conversations.json` (git-ignored) so the bot
 survives restarts — which also means it survives redeploys. If you've already tested with your

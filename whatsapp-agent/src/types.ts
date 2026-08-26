@@ -48,11 +48,31 @@ export interface PendingMatchSet {
 
 export type ConversationStage = "new" | "active" | "opted_out";
 
+/** Collected once per contact on their first search, then reused for every later search. */
+export interface SearchPreferences {
+  priceMin?: number;
+  priceMax?: number;
+  location?: string;
+  dialColor?: string;
+  condition?: string;
+}
+
+export type PreferenceStep = "price" | "location" | "dial" | "condition";
+
+/** Mid-collection state — which question is outstanding and the item request waiting on it. */
+export interface PendingPreferenceCollection {
+  step: PreferenceStep;
+  request: ItemRequest;
+}
+
 export interface ConversationState {
   phone: string;
   stage: ConversationStage;
   approvedCount: number; // trial = TRIAL_MAX_APPROVED_MATCHES approved matches, not searches
   hired: boolean; // said "join" after the trial — unlocks unlimited approvals (tracked only, no real billing yet)
   pendingMatches?: PendingMatchSet;
+  preferencesCollected: boolean;
+  preferences?: SearchPreferences;
+  pendingPreferenceCollection?: PendingPreferenceCollection;
   updatedAt: string;
 }
