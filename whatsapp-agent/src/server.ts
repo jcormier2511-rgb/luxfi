@@ -145,12 +145,17 @@ export function createServer() {
       return res.status(409).json({ error: "a sync is already running" });
     }
     inventorySyncRunning = true;
+    const debugBase = config.publicBaseUrl || "";
+    const debugScreenshots = {
+      sale: `${debugBase}/assets/debug-trading-fs.png`,
+      wtb: `${debugBase}/assets/debug-trading-wtb.png`,
+    };
     try {
       const result = await runInventorySync();
       loadInventory(true);
-      res.json({ ok: true, ...result });
+      res.json({ ok: true, ...result, debugScreenshots });
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: (err as Error).message, debugScreenshots });
     } finally {
       inventorySyncRunning = false;
     }

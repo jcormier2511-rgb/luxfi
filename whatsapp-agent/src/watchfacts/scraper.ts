@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import { chromium, Browser, Page } from "playwright";
 import { config } from "../config";
 import { InventoryListing, ListingType } from "../types";
@@ -147,12 +149,30 @@ async function extractTradingListings(page: Page): Promise<RawTradingListing[]> 
 async function fetchTradingListings(page: Page, type: ListingType): Promise<InventoryListing[]> {
   await page.goto("https://watchfacts.com/buy/all?listing_type=sale", { waitUntil: "domcontentloaded" });
   if (type === "WTB") {
-    await page.getByRole("button", { name: /ntq\s*\/\s*wtb/i }).click();
-    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    try {
+      await page.getByRole("button", { name: /ntq\s*\/\s*wtb/i }).click({ timeout: 5000 });
+      await page.waitForLoadState("domcontentloaded").catch(() => {});
+    } catch (err) {
+      console.error("[watchfacts] couldn't click the NTQ/WTB toggle — staying on the FS view:", err);
+    }
   }
-  await page.waitForTimeout(1500); // let client-rendered cards populate
+  await page.waitForTimeout(2500); // let client-rendered cards populate
 
   const raw = await extractTradingListings(page);
+
+  // Debug aid: since this scraper was built from screenshots rather than a live test,
+  // always save what the page actually looked like — lets us diagnose a 0-result run
+  // (still on the login page? cards not rendered? different markup?) via /assets/ on the
+  // deployed instance, without needing a local Playwright setup.
+  try {
+    fs.mkdirSync(config.assets.dir, { recursive: true });
+    const debugPath = path.join(config.assets.dir, `debug-trading-${type.toLowerCase()}.png`);
+    await page.screenshot({ path: debugPath, fullPage: true });
+    console.log(`[watchfacts] (${type}) found ${raw.length} listings — url: ${page.url()} — screenshot: ${debugPath}`);
+  } catch (err) {
+    console.error("[watchfacts] failed to save debug screenshot:", err);
+  }
+
   return raw.map((r) => ({
     id: r.id || r.contactPhone,
     type,
