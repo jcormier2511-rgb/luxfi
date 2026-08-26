@@ -52,7 +52,7 @@ optional and steers which category of WF listing gets suggested first. `wf_profi
 optional — see [WatchFacts intro personalization](#watchfacts-intro-personalization-optional).
 
 WatchFacts inventory (FS + WTB) isn't a file you drop in at all — it's synced automatically
-from WatchFacts' own API into a SQLite database on the persisted volume. See
+from WatchFacts' own API into a Postgres database (`DATABASE_URL`). See
 [WatchFacts Trading Floor sync](#watchfacts-trading-floor-sync-live-inventory-feed).
 
 ## Running
@@ -104,6 +104,8 @@ blast progress are plain JSON files on disk that must survive restarts and redep
    - Leave `OUTREACH_BATCH_LIMIT`, `OUTREACH_RATE_PER_HOUR`, `TRIAL_MAX_ITEMS`,
      `TRIAL_MAX_OPTIONS_PER_ITEM` unset to use the defaults (50, 5/hr, 3, 5), or override.
    - `WATCHFACTS_ENABLED`, `WATCHFACTS_EMAIL`, `WATCHFACTS_PASSWORD` if using that feature.
+   - `DATABASE_URL` — required if `WATCHFACTS_EMAIL`/`PASSWORD` are set, since the sync
+     scheduler starts on boot. See [Adding Postgres on Railway](#adding-postgres-on-railway).
    - Do **not** set `PORT` — Railway injects it.
 5. **Deploy.** Railway assigns a public domain under Settings → Networking (or attach a custom
    one). `numReplicas` is pinned to `1` in `railway.json` — don't scale this past one instance,
@@ -191,13 +193,22 @@ GET https://watchfacts.com/available-flash-sales?pageSize=25&page=1&auction_type
   page (a raw array vs `{data:[...]}`) — `fetchFlashSalesPage()` in `api.ts` handles either
   shape defensively rather than assuming one.
 
-**Storage**: a SQLite database at `PERSIST_DIR/data/inventory.sqlite` (`better-sqlite3`) —
-replacing the old wholesale-overwrite CSV. Each row's key is `(source, type, external_id)`,
+**Storage**: a real **Postgres** database (`DATABASE_URL`, the `pg` package — no ORM) —
+not SQLite, and not a file on this app's own container/volume, so inventory isn't tied to a
+single container's lifecycle. (An earlier version of this used `better-sqlite3` on the
+mounted volume; that broke the Docker build because `better-sqlite3`'s latest major requires
+Node ≥22 while this image runs Node 20, forcing a from-source compile with no build toolchain
+in the stage that needed it. Rather than patch around that, storage moved to Postgres
+entirely.) `inventoryDb.ts`'s `ensureSchema()` runs `CREATE TABLE IF NOT EXISTS` on first use
+— no separate migration step or tool needed. Each row's key is `(source, type, external_id)`,
 so an FS and a WTB listing that happen to share the same WatchFacts id stay two separate rows.
-A sync **upserts** (new listings inserted, existing ones updated, `first_seen_at` preserved)
-and only marks a side's stale rows `is_active = 0` if that side's fetch returned at least one
-result — a 0-row fetch (network hiccup, WatchFacts change) never wipes out good data, matching
-the guard the old CSV-based sync had.
+Columns include seller details (`contact_name`, `contact_phone`), item details (`item`,
+`brand`, `ref`, `condition`), `price`, `description`, `detail_url` (the listing's own
+`watchfacts.com/flash-sales/<id>` page), `is_active`, `first_seen_at`, `last_seen_at`. A sync
+**upserts** (new listings inserted, existing ones updated, `first_seen_at` preserved) and only
+marks a side's stale rows `is_active = FALSE` if that side's fetch returned at least one result
+— a 0-row fetch, or the sync failing partway through login/API/pagination, never wipes out
+good data; the previous successful data is simply left as-is.
 
 **Scheduling**: `src/index.ts` runs a sync on boot and every `INVENTORY_SYNC_INTERVAL_MINUTES`
 (default 5) as long as `WATCHFACTS_EMAIL`/`WATCHFACTS_PASSWORD` are set — no external cron
@@ -214,14 +225,35 @@ re-entrancy guard, so they can't run two logged-in sessions at once.
 logic (`isActive`, `mapToInventoryListing` — including that a 0 top-level price maps to
 `"ASK"` and contact fields never end up as CTA text) and the DB layer (upsert-not-duplicate,
 FS/WTB-same-id-stay-separate, `markMissingInactive` never touching the other type or wiping
-everything on an empty result). These don't hit the real network — this sandbox can't reach
+everything on an empty result) against a **real Postgres**, not a mock — see "Local test
+database" below. These don't hit the real WatchFacts network — this sandbox can't reach
 watchfacts.com — so they can't catch a change in WatchFacts' actual response shape; only a
 live `/admin/sync-inventory` run can.
+
+**Local test database**: `npm test` needs a real Postgres reachable at `DATABASE_URL` (or the
+default `postgres://postgres:postgres@127.0.0.1:5432/luxfi_test` if unset, matching
+`NODE_ENV=test`'s fallback in `config.ts`). Locally: `createdb luxfi_test` (or point
+`DATABASE_URL` at any Postgres you have — a local install, Docker, or even the same Railway
+Postgres instance). Each test file resets its own tables via `_resetDbForTests()`, so nothing
+needs seeding beforehand.
 
 Known gaps: no persistent session reuse across scheduler ticks (fresh login every 5 min);
 `category_id=19` and `category: "watches"` are hardcoded since that's all the Trading Floor
 currently shows; the response-envelope shape (raw array vs `{data:[...]}`) is handled
 defensively but not confirmed either way.
+
+### Adding Postgres on Railway
+
+1. In your Railway project, click **+ New** → **Database** → **Add PostgreSQL**. This creates
+   a separate Postgres service in the same project.
+2. Attach it to the `whatsapp-agent` service: open the app service → **Variables** → **New
+   Variable** → **Add Reference** (or drag the Postgres service's `DATABASE_URL` onto the app
+   service in the canvas) — this sets `DATABASE_URL` on the app automatically, pointing at the
+   Postgres service's private network address. You don't type in a connection string by hand.
+3. Redeploy the app service so it picks up the new variable.
+4. On boot, `ensureSchema()` creates the tables automatically — no separate migration command
+   to run.
+5. Verify with `GET /admin/inventory-status?token=<WEBHOOK_TOKEN>` once a sync has run.
 
 ## Group monitoring (passive listening)
 

@@ -25,6 +25,7 @@ export interface InventoryListing {
   source: string;
   rating: string;
   description: string; // full original listing text, e.g. from the WF detail page — richer than `item`
+  detailUrl?: string; // e.g. https://watchfacts.com/flash-sales/<id> — optional, WF listings only
 }
 
 export type RequestAction = "buy" | "sell";

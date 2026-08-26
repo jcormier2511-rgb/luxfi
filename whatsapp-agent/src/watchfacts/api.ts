@@ -85,6 +85,7 @@ export function mapToInventoryListing(sale: RawFlashSale, type: ListingType): In
     source: "WF",
     rating: sale.companyStars != null ? String(sale.companyStars) : "",
     description: sale.title ?? "",
+    detailUrl: `https://watchfacts.com/flash-sales/${sale.id}`,
   };
 }
 

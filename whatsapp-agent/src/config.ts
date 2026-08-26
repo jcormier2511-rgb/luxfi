@@ -46,14 +46,17 @@ export const config = {
   },
   data: {
     contactsCsv: path.resolve(process.env.CONTACTS_CSV ?? path.join(persistDir, "data/contacts.csv")),
-    // WatchFacts Trading Floor listings, synced via the real available-flash-sales API (see
-    // src/watchfacts/api.ts + inventoryDb.ts) — upserted with last-seen tracking rather than
-    // overwritten wholesale, so a sync failure or transient 0-row fetch can't wipe it out.
-    inventoryDb: process.env.INVENTORY_DB ?? path.resolve(path.join(persistDir, "data/inventory.sqlite")),
     // Kept as a separate CSV on purpose: group-monitor captures accumulate by appending and
     // are merged with the DB at read time (getActiveListings), so a WatchFacts sync can never
     // wipe out anything a dealer group has posted.
     groupListingsCsv: path.resolve(process.env.GROUP_LISTINGS_CSV ?? path.join(persistDir, "data/group_listings.csv")),
+  },
+  // WatchFacts Trading Floor listings, synced via the real available-flash-sales API (see
+  // src/watchfacts/api.ts + inventoryDb.ts) — a real Postgres database, not a file, so it
+  // isn't tied to the app's own volume/container lifecycle. Attach a Railway Postgres plugin
+  // to this service; Railway injects DATABASE_URL automatically once it's attached.
+  database: {
+    url: required("DATABASE_URL", process.env.NODE_ENV === "test" ? "postgres://postgres:postgres@127.0.0.1:5432/luxfi_test" : undefined),
   },
   // Self-hosted alternative to a third-party image host: POST /admin/upload/banner writes
   // here, and it's served back out at PUBLIC_BASE_URL + /assets/<file>.

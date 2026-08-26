@@ -69,8 +69,8 @@ export interface FlowResult {
 }
 
 /** Runs a fresh search for `request`, showing Match Cards and arming them for approve/pass. */
-function startSearch(state: ConversationState, request: ItemRequest, messages: string[]): void {
-  const matches = findMatches(request, config.trial.maxOptionsPerItem, state.preferences);
+async function startSearch(state: ConversationState, request: ItemRequest, messages: string[]): Promise<void> {
+  const matches = await findMatches(request, config.trial.maxOptionsPerItem, state.preferences);
   if (matches.length === 0) {
     messages.push(`No live matches yet for "${request.query}" — I'll keep watching the network.`);
     state.pendingMatches = undefined;
@@ -128,7 +128,7 @@ const CONDITION_QUESTION = "Condition preference — new, pre-owned, or any?";
  * Walks price → location → dial color → condition one question at a time, then runs the
  * item request that triggered it. Later searches reuse `state.preferences` without re-asking.
  */
-function handlePreferenceAnswer(state: ConversationState, text: string, messages: string[]): void {
+async function handlePreferenceAnswer(state: ConversationState, text: string, messages: string[]): Promise<void> {
   const pending = state.pendingPreferenceCollection!;
   state.preferences = state.preferences ?? {};
 
@@ -158,10 +158,10 @@ function handlePreferenceAnswer(state: ConversationState, text: string, messages
   const request = pending.request;
   state.pendingPreferenceCollection = undefined;
   messages.push("Got it — searching now.");
-  startSearch(state, request, messages);
+  await startSearch(state, request, messages);
 }
 
-export function handleIncomingMessage(phone: string, text: string, contact?: Contact): FlowResult {
+export async function handleIncomingMessage(phone: string, text: string, contact?: Contact): Promise<FlowResult> {
   const state = getState(phone);
   const messages: string[] = [];
   const firstName = contact?.name?.trim().split(/\s+/)[0] || "there";
@@ -190,7 +190,7 @@ export function handleIncomingMessage(phone: string, text: string, contact?: Con
   }
 
   if (state.pendingPreferenceCollection) {
-    handlePreferenceAnswer(state, text, messages);
+    await handlePreferenceAnswer(state, text, messages);
     saveState(state);
     return { state, messages };
   }
@@ -238,7 +238,7 @@ export function handleIncomingMessage(phone: string, text: string, contact?: Con
     return { state, messages };
   }
 
-  startSearch(state, parsed[0], messages);
+  await startSearch(state, parsed[0], messages);
 
   saveState(state);
   return { state, messages };

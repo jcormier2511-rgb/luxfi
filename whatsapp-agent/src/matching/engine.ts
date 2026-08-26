@@ -63,10 +63,10 @@ function softPreferenceScore(listing: InventoryListing, preferences?: SearchPref
  * hard when set — falling back to sorting by closest price if that empties the pool — and
  * nudges sort order for the freeform fields.
  */
-export function findMatches(request: ItemRequest, limit: number, preferences?: SearchPreferences): InventoryListing[] {
+export async function findMatches(request: ItemRequest, limit: number, preferences?: SearchPreferences): Promise<InventoryListing[]> {
   const wantType = request.action === "buy" ? "FS" : "WTB";
   const tokens = tokenize(request.query);
-  const candidates = getActiveListings(wantType);
+  const candidates = await getActiveListings(wantType);
 
   const priceFiltered = candidates.filter((l) => inPriceRange(l, preferences));
   const pool = priceFiltered.length > 0 ? priceFiltered : candidates;

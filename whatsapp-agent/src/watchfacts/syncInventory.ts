@@ -32,7 +32,7 @@ export async function runInventorySync(): Promise<SyncResult> {
     throw new Error("a sync is already running");
   }
   syncRunning = true;
-  recordSyncAttempt();
+  await recordSyncAttempt();
   const browser: Browser = await chromium.launch();
   const page = await browser.newPage();
   try {
@@ -53,18 +53,18 @@ export async function runInventorySync(): Promise<SyncResult> {
 
     const syncedAt = now.toISOString();
     if (fsListings.length > 0) {
-      upsertListings(fsListings, syncedAt);
-      markMissingInactive("WF", "FS", fsListings.map((l) => l.id), syncedAt);
+      await upsertListings(fsListings, syncedAt);
+      await markMissingInactive("WF", "FS", fsListings.map((l) => l.id), syncedAt);
     }
     if (wtbListings.length > 0) {
-      upsertListings(wtbListings, syncedAt);
-      markMissingInactive("WF", "WTB", wtbListings.map((l) => l.id), syncedAt);
+      await upsertListings(wtbListings, syncedAt);
+      await markMissingInactive("WF", "WTB", wtbListings.map((l) => l.id), syncedAt);
     }
 
-    recordSyncSuccess(fsListings.length, wtbListings.length);
+    await recordSyncSuccess(fsListings.length, wtbListings.length);
     return { forSale: fsListings.length, wtb: wtbListings.length, total };
   } catch (err) {
-    recordSyncError((err as Error).message);
+    await recordSyncError((err as Error).message);
     throw err;
   } finally {
     await browser.close();

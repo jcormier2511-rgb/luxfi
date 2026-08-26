@@ -40,7 +40,7 @@ export function createServer() {
           continue;
         }
         const contact = getTierABContacts().find((c) => c.phone === message.phone);
-        const { messages } = handleIncomingMessage(message.phone, message.text, contact);
+        const { messages } = await handleIncomingMessage(message.phone, message.text, contact);
         for (const reply of messages) {
           await sendText(message.phone, reply);
         }
@@ -163,7 +163,7 @@ export function createServer() {
   // One-shot diagnostic to root-cause "why is it showing sample data" without guessing —
   // shows the actual resolved paths, what's on disk at each, and a peek at loaded inventory
   // so we can tell real WatchFacts data from the bundled sample from the response alone.
-  app.get("/admin/debug-info", (req, res) => {
+  app.get("/admin/debug-info", async (req, res) => {
     if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
@@ -179,13 +179,12 @@ export function createServer() {
       };
     };
     const persistDir = path.resolve(process.env.PERSIST_DIR ?? "./persist");
-    const listings = getActiveListings();
+    const listings = await getActiveListings();
     res.json({
       cwd: process.cwd(),
-      env: { PERSIST_DIR: process.env.PERSIST_DIR ?? null, CONTACTS_CSV: process.env.CONTACTS_CSV ?? null, INVENTORY_DB: process.env.INVENTORY_DB ?? null },
+      env: { PERSIST_DIR: process.env.PERSIST_DIR ?? null, CONTACTS_CSV: process.env.CONTACTS_CSV ?? null, DATABASE_URL: process.env.DATABASE_URL ? "set" : null },
       persistDir: describe(persistDir),
       contactsCsv: describe(config.data.contactsCsv),
-      inventoryDb: describe(config.data.inventoryDb),
       groupListingsCsv: describe(config.data.groupListingsCsv),
       persistDirListing: fs.existsSync(persistDir) ? fs.readdirSync(persistDir) : null,
       persistDataListing: fs.existsSync(path.join(persistDir, "data")) ? fs.readdirSync(path.join(persistDir, "data")) : null,
@@ -197,11 +196,11 @@ export function createServer() {
   // Sync health at a glance — when it last succeeded, current FS/WTB/total active counts,
   // and the last error if the most recent attempt failed (data from the previous success
   // is kept either way; see runInventorySync's "0 results" guard).
-  app.get("/admin/inventory-status", (req, res) => {
+  app.get("/admin/inventory-status", async (req, res) => {
     if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
-    res.json(getSyncStatus());
+    res.json(await getSyncStatus());
   });
 
   app.use("/assets", express.static(config.assets.dir));
