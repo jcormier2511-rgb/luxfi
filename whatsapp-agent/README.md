@@ -250,7 +250,16 @@ charged — "join" just unlocks unlimited approvals going forward.
 6. Replying `STOP`/`UNSUBSCRIBE` at any point opts a contact out permanently (`START` re-enables).
 
 State per phone number is persisted to `storage/conversations.json` (git-ignored) so the bot
-survives restarts.
+survives restarts — which also means it survives redeploys. If you've already tested with your
+own number, it's no longer `"new"`, so you won't see `FI_INTRO_MESSAGE` again just by redeploying.
+Reset it with:
+
+```
+curl -X POST "https://<your-railway-domain>/admin/reset-state?phone=<digits-only>&token=<WEBHOOK_TOKEN>"
+```
+
+(phone is digits only, no leading `+`, e.g. `15551234567`). Check current state anytime with
+`GET /admin/conversation-state?phone=<digits-only>&token=<WEBHOOK_TOKEN>`.
 
 ## Not yet wired up
 

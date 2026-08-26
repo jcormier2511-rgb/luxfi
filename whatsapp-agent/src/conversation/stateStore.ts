@@ -38,6 +38,13 @@ export function saveState(state: ConversationState): void {
   writeAll(all);
 }
 
+/** Drops a phone's saved state so their next message is treated as brand new (for testing). */
+export function resetState(phone: string): void {
+  const all = readAll();
+  delete all[phone];
+  writeAll(all);
+}
+
 /** De-dupe Whapi webhook retries by remembering processed message ids. */
 const processedIdsPath = path.join(config.storageDir, "processed-messages.json");
 

@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { config } from "./config";
 import { extractIncomingMessages, IncomingWebhook, sendText } from "./whapi/client";
-import { alreadyProcessed } from "./conversation/stateStore";
+import { alreadyProcessed, getState, resetState } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
@@ -145,6 +145,28 @@ export function createServer() {
         ? `Set BANNER_IMAGE_URL to this url.`
         : "PUBLIC_BASE_URL isn't set — set it to this deployment's public domain, then use <that domain>/assets/" + filename + " as BANNER_IMAGE_URL.",
     });
+  });
+
+  // Testing helpers — conversation state persists on the volume across redeploys, so a
+  // number that already passed "new" won't see the intro/trial-start behavior again
+  // without this. `phone` is digits-only, no leading +, matching webhook payloads.
+  app.get("/admin/conversation-state", (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const phone = String(req.query.phone ?? "");
+    if (!phone) return res.status(400).json({ error: "?phone=... required" });
+    res.json(getState(phone));
+  });
+
+  app.post("/admin/reset-state", (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const phone = String(req.query.phone ?? "");
+    if (!phone) return res.status(400).json({ error: "?phone=... required" });
+    resetState(phone);
+    res.json({ ok: true, phone, reset: true });
   });
 
   app.use("/assets", express.static(config.assets.dir));
