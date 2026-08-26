@@ -3,6 +3,7 @@ import { Contact, ConversationState, ItemRequest } from "../types";
 import { findMatches, formatMatchCard, formatMatchApproved } from "../matching/engine";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
+import { getEntitlement, recordBillingRequested } from "../billing/entitlementStore";
 
 const OPT_OUT_WORDS = ["stop", "unsubscribe", "cancel", "opt out", "optout"];
 
@@ -82,8 +83,16 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
   state.pendingMatches = { request, matches, decisions: matches.map(() => "pending") };
 }
 
-/** Handles an "approve <n>" / "pass <n>" reply against the currently pending match set. */
-function handleDecision(state: ConversationState, decision: DecisionCommand, messages: string[], firstName: string): void {
+/**
+ * Handles an "approve <n>" / "pass <n>" reply against the currently pending match set.
+ *
+ * Fi Build Spec v4 §11: after the 3rd complimentary approval, further approvals are locked
+ * until Fi billing is authorized. No payment processor exists yet, so the entitlement check
+ * is against `account_entitlements.manual_override_enabled` (Postgres) — the ONLY way to
+ * unlock further approvals is an admin action (POST /admin/entitlement/override), never a
+ * self-service command and never a live charge. Passing/monitoring stay unrestricted either way.
+ */
+async function handleDecision(state: ConversationState, decision: DecisionCommand, messages: string[], firstName: string): Promise<void> {
   const pending = state.pendingMatches!;
   const idx = decision.index - 1;
   const current = pending.decisions[idx];
@@ -104,16 +113,19 @@ function handleDecision(state: ConversationState, decision: DecisionCommand, mes
   }
 
   // Approving is the only thing metered against the trial.
-  if (state.approvedCount >= config.trial.maxApprovedMatches && !state.hired) {
-    messages.push(config.fiFlow.declineMessage);
-    return;
+  if (state.approvedCount >= config.trial.maxApprovedMatches) {
+    const entitlement = await getEntitlement(state.phone);
+    if (!entitlement.manualOverrideEnabled) {
+      messages.push(config.fiFlow.declineMessage);
+      return;
+    }
   }
 
   pending.decisions[idx] = "approved";
   state.approvedCount += 1;
   messages.push(formatMatchApproved(pending.matches[idx], idx));
 
-  if (state.approvedCount === config.trial.maxApprovedMatches && !state.hired) {
+  if (state.approvedCount === config.trial.maxApprovedMatches) {
     messages.push(config.fiFlow.conversionPitch(firstName));
   }
 }
@@ -181,11 +193,17 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
 
   if (/^join$/i.test(text.trim())) {
-    state.hired = true;
+    // Not a self-service unlock — there's no live payment processor to authorize against.
+    // Records intent for an admin to review; only POST /admin/entitlement/override actually
+    // enables further approvals (see handleDecision).
+    await recordBillingRequested(state.phone);
+    state.hired = true; // informational only now — reflects "has asked to join", not entitlement
     saveState(state);
     return {
       state,
-      messages: ["You're all set — Fi will keep working for you. I'll flag every match and you can approve whenever you're ready."],
+      messages: [
+        "Thanks — I've noted that you'd like to keep working with Fi. Our team will review your account, and you'll be able to approve more matches as soon as that's turned on.",
+      ],
     };
   }
 
@@ -197,7 +215,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
 
   const decision = parseDecisionCommand(text);
   if (decision && state.pendingMatches) {
-    handleDecision(state, decision, messages, firstName);
+    await handleDecision(state, decision, messages, firstName);
     saveState(state);
     return { state, messages };
   }

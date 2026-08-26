@@ -98,6 +98,12 @@ export const config = {
       "https://watchfacts.com/profile-listings?profileId={id}&profileAccessType=id",
     email: process.env.WATCHFACTS_EMAIL ?? "",
     password: process.env.WATCHFACTS_PASSWORD ?? "",
+    // WTB's auction_type value isn't confirmed against the real API yet (the toggle button
+    // that would reveal it isn't reliably clickable, and guessing candidate values is
+    // explicitly out — see syncInventory.ts). Off by default: FS syncs and saves on its own,
+    // WTB is reported as "disabled" rather than as a recurring error, until a real captured
+    // value is available to hardcode.
+    enableWtbSync: (process.env.ENABLE_WTB_SYNC ?? "false").toLowerCase() === "true",
   },
   storageDir: path.join(persistDir, "storage"),
 };

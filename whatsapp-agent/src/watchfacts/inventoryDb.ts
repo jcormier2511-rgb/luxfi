@@ -40,15 +40,43 @@ async function ensureSchema(): Promise<void> {
           last_seen_at TIMESTAMPTZ NOT NULL,
           PRIMARY KEY (source, type, external_id)
         );
+        -- Legacy columns (last_success_at/last_error/fs_count/wtb_count) are created here too,
+        -- even on a brand-new table, so a rollback to the previous deployed version — which
+        -- still reads/writes only those columns — keeps working against this same schema
+        -- without a second migration. They are NOT written to going forward by this version;
+        -- see the backfill comment below for how they stay non-empty despite that.
         CREATE TABLE IF NOT EXISTS sync_meta (
           id INTEGER PRIMARY KEY CHECK (id = 1),
-          last_success_at TIMESTAMPTZ,
           last_attempt_at TIMESTAMPTZ,
+          last_success_at TIMESTAMPTZ,
           last_error TEXT,
           fs_count INTEGER NOT NULL DEFAULT 0,
           wtb_count INTEGER NOT NULL DEFAULT 0
         );
+        -- Additive migration for a table created by an earlier deploy (which only had the
+        -- legacy columns above): add the new per-type columns. Legacy columns are
+        -- deliberately kept (not dropped) so a Railway rollback to the previous version can
+        -- still operate against this same, now-migrated-forward table.
+        ALTER TABLE sync_meta ADD COLUMN IF NOT EXISTS fs_last_success_at TIMESTAMPTZ;
+        ALTER TABLE sync_meta ADD COLUMN IF NOT EXISTS fs_last_error TEXT;
+        ALTER TABLE sync_meta ADD COLUMN IF NOT EXISTS wtb_last_success_at TIMESTAMPTZ;
+        ALTER TABLE sync_meta ADD COLUMN IF NOT EXISTS wtb_last_error TEXT;
         INSERT INTO sync_meta (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+        -- Backfill: the legacy schema had one shared status for both sides, so on first
+        -- migration (before this version has ever written its own per-type columns) seed
+        -- both FS and WTB from whatever the old shared value was — the best available
+        -- approximation, since the old schema can't tell us which side it came from. Each
+        -- UPDATE is guarded on the new column still being NULL, so this never overwrites a
+        -- real value written by this version's own recordTypeSyncSuccess/Error, and is safe
+        -- to re-run every boot (idempotent).
+        UPDATE sync_meta SET fs_last_success_at = last_success_at
+          WHERE fs_last_success_at IS NULL AND last_success_at IS NOT NULL;
+        UPDATE sync_meta SET wtb_last_success_at = last_success_at
+          WHERE wtb_last_success_at IS NULL AND last_success_at IS NOT NULL;
+        UPDATE sync_meta SET fs_last_error = last_error
+          WHERE fs_last_error IS NULL AND last_error IS NOT NULL;
+        UPDATE sync_meta SET wtb_last_error = last_error
+          WHERE wtb_last_error IS NULL AND last_error IS NOT NULL;
         `
       )
       .then(() => undefined);
@@ -73,6 +101,16 @@ export async function _resetDbForTests(): Promise<void> {
 export async function _closePoolForTests(): Promise<void> {
   await pool?.end();
   pool = null;
+  schemaReady = null;
+}
+
+/**
+ * Test-only — forces the next call through ensureSchema() to actually re-run its migration
+ * SQL, without dropping any tables first (unlike _resetDbForTests). Lets a test seed a raw
+ * "old schema" table directly via its own client, then verify this version's migration
+ * upgrades it correctly in place.
+ */
+export function _forceSchemaRecheckForTests(): void {
   schemaReady = null;
 }
 
@@ -239,33 +277,83 @@ export async function getActiveListings(type?: ListingType): Promise<InventoryLi
   return [...dbListings, ...loadGroupListings(type)];
 }
 
-export interface SyncStatus {
+export type TypeSyncState = "ok" | "error" | "disabled" | "never_run";
+
+export interface TypeSyncStatus {
+  status: TypeSyncState;
   lastSuccessAt: string | null;
-  lastAttemptAt: string | null;
   lastError: string | null;
-  fsCount: number;
-  wtbCount: number;
+  activeCount: number;
+}
+
+export interface SyncStatus {
+  lastAttemptAt: string | null;
+  fs: TypeSyncStatus;
+  wtb: TypeSyncStatus;
   totalActiveCount: number;
 }
 
-export async function getSyncStatus(): Promise<SyncStatus> {
+/**
+ * FS and WTB are tracked separately (spec requirement, and a real bug this fixes): the two
+ * sides of a sync can succeed/fail independently — e.g. WTB failing to resolve its
+ * auction_type shouldn't erase or mask that FS just succeeded. See runInventorySync().
+ */
+/** pg returns TIMESTAMPTZ columns as Date objects, not strings — coerce so the `string | null`
+ *  types in SyncStatus are actually honest rather than lying about the runtime shape. */
+function toIso(value: Date | string | null): string | null {
+  if (value === null) return null;
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function deriveState(enabled: boolean, lastSuccessAt: string | null, lastError: string | null): TypeSyncState {
+  if (!enabled) return "disabled";
+  if (lastError) return "error";
+  if (lastSuccessAt) return "ok";
+  return "never_run";
+}
+
+/**
+ * `wtbEnabled` reflects config.watchfacts.enableWtbSync — when false, WTB is reported as
+ * "disabled" (status + activeCount from whatever's already in the DB, but lastError forced
+ * to null) rather than showing a stale or misleading error from before the flag was turned
+ * off. This function stays free of the config import itself; the caller (server.ts) passes
+ * the flag in, keeping this module's own concerns limited to the database.
+ */
+export async function getSyncStatus(wtbEnabled: boolean): Promise<SyncStatus> {
   await ensureSchema();
   const metaResult = await getPool().query(`SELECT * FROM sync_meta WHERE id = 1`);
   const meta = metaResult.rows[0] as {
-    last_success_at: string | null;
-    last_attempt_at: string | null;
-    last_error: string | null;
-    fs_count: number;
-    wtb_count: number;
+    last_attempt_at: Date | string | null;
+    fs_last_success_at: Date | string | null;
+    fs_last_error: string | null;
+    wtb_last_success_at: Date | string | null;
+    wtb_last_error: string | null;
   };
-  const countResult = await getPool().query(`SELECT COUNT(*)::int as count FROM inventory_listings WHERE is_active = TRUE`);
+  const countsResult = await getPool().query(
+    `SELECT type, COUNT(*)::int as count FROM inventory_listings WHERE is_active = TRUE GROUP BY type`
+  );
+  const counts: Record<string, number> = { FS: 0, WTB: 0 };
+  for (const row of countsResult.rows as { type: string; count: number }[]) counts[row.type] = row.count;
+
+  const fsLastSuccessAt = toIso(meta.fs_last_success_at);
+  const wtbLastSuccessAt = wtbEnabled ? toIso(meta.wtb_last_success_at) : null;
+  const wtbLastError = wtbEnabled ? meta.wtb_last_error : null;
+
   return {
-    lastSuccessAt: meta.last_success_at,
-    lastAttemptAt: meta.last_attempt_at,
-    lastError: meta.last_error,
-    fsCount: meta.fs_count,
-    wtbCount: meta.wtb_count,
-    totalActiveCount: countResult.rows[0].count,
+    lastAttemptAt: toIso(meta.last_attempt_at),
+    fs: {
+      status: deriveState(true, fsLastSuccessAt, meta.fs_last_error),
+      lastSuccessAt: fsLastSuccessAt,
+      lastError: meta.fs_last_error,
+      activeCount: counts.FS,
+    },
+    wtb: {
+      status: deriveState(wtbEnabled, wtbLastSuccessAt, wtbLastError),
+      lastSuccessAt: wtbLastSuccessAt,
+      lastError: wtbLastError,
+      activeCount: counts.WTB,
+    },
+    totalActiveCount: counts.FS + counts.WTB,
   };
 }
 
@@ -274,15 +362,21 @@ export async function recordSyncAttempt(): Promise<void> {
   await getPool().query(`UPDATE sync_meta SET last_attempt_at = $1 WHERE id = 1`, [new Date().toISOString()]);
 }
 
-export async function recordSyncSuccess(fsCount: number, wtbCount: number): Promise<void> {
+export async function recordTypeSyncSuccess(type: ListingType): Promise<void> {
   await ensureSchema();
-  await getPool().query(
-    `UPDATE sync_meta SET last_success_at = $1, last_error = NULL, fs_count = $2, wtb_count = $3 WHERE id = 1`,
-    [new Date().toISOString(), fsCount, wtbCount]
-  );
+  const now = new Date().toISOString();
+  if (type === "FS") {
+    await getPool().query(`UPDATE sync_meta SET fs_last_success_at = $1, fs_last_error = NULL WHERE id = 1`, [now]);
+  } else {
+    await getPool().query(`UPDATE sync_meta SET wtb_last_success_at = $1, wtb_last_error = NULL WHERE id = 1`, [now]);
+  }
 }
 
-export async function recordSyncError(message: string): Promise<void> {
+export async function recordTypeSyncError(type: ListingType, message: string): Promise<void> {
   await ensureSchema();
-  await getPool().query(`UPDATE sync_meta SET last_error = $1 WHERE id = 1`, [message]);
+  if (type === "FS") {
+    await getPool().query(`UPDATE sync_meta SET fs_last_error = $1 WHERE id = 1`, [message]);
+  } else {
+    await getPool().query(`UPDATE sync_meta SET wtb_last_error = $1 WHERE id = 1`, [message]);
+  }
 }

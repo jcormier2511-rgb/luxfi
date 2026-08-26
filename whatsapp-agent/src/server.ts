@@ -8,6 +8,7 @@ import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { getActiveListings, getSyncStatus } from "./watchfacts/inventoryDb";
+import { getEntitlement, setManualOverride } from "./billing/entitlementStore";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
@@ -160,6 +161,30 @@ export function createServer() {
     res.json({ ok: true, phone, reset: true });
   });
 
+  // Fi Build Spec v4 §11: after the 3rd complimentary approval, further approvals are locked
+  // until Fi billing is authorized. No payment processor exists yet, so this admin action is
+  // the ONLY way to unlock further approvals for an account — never self-service, never a
+  // live charge. See src/billing/entitlementStore.ts.
+  app.get("/admin/entitlement", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const phone = String(req.query.phone ?? "");
+    if (!phone) return res.status(400).json({ error: "?phone=... required" });
+    res.json(await getEntitlement(phone));
+  });
+
+  app.post("/admin/entitlement/override", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const phone = String(req.query.phone ?? "");
+    if (!phone) return res.status(400).json({ error: "?phone=... required" });
+    const enabled = req.query.enabled !== "false"; // ?enabled=false to revoke; anything else (including omitted) enables
+    const entitlement = await setManualOverride(phone, enabled);
+    res.json({ ok: true, entitlement });
+  });
+
   // One-shot diagnostic to root-cause "why is it showing sample data" without guessing —
   // shows the actual resolved paths, what's on disk at each, and a peek at loaded inventory
   // so we can tell real WatchFacts data from the bundled sample from the response alone.
@@ -193,14 +218,15 @@ export function createServer() {
     });
   });
 
-  // Sync health at a glance — when it last succeeded, current FS/WTB/total active counts,
-  // and the last error if the most recent attempt failed (data from the previous success
-  // is kept either way; see runInventorySync's "0 results" guard).
+  // Sync health at a glance — FS and WTB tracked separately (lastSuccessAt/lastError/
+  // activeCount each), since the two sides can succeed/fail independently — see
+  // runInventorySync/syncOneSide. A failure on one side never clears or masks the other's
+  // last success, and existing rows for a failed side are never touched.
   app.get("/admin/inventory-status", async (req, res) => {
     if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
-    res.json(await getSyncStatus());
+    res.json(await getSyncStatus(config.watchfacts.enableWtbSync));
   });
 
   app.use("/assets", express.static(config.assets.dir));

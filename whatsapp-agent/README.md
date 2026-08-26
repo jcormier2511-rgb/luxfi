@@ -283,10 +283,20 @@ body around that time to see the actual field names Whapi sent, and adjust
 
 ## Conversation flow
 
-Implements the **Fi Conversation Flow Spec (v3)** — a hired-concierge framing, not a
-WatchFacts subscription. Billing is **tracked only right now**: `approvedCount` and `hired`
-live on each contact's state, but no payment processor is wired in, so nothing is actually
-charged — "join" just unlocks unlimited approvals going forward.
+Implements the **Fi Conversation Flow Spec** — a hired-concierge framing, not a WatchFacts
+subscription. Per the v4 spec's billing/entitlement rules: there's no payment processor wired
+in, so **nothing is ever charged**. "Join" no longer self-unlocks anything — it just records
+that the contact wants to keep using Fi (`account_entitlements.payment_status = 'requested'`,
+Postgres) for an admin to review. The only way to unlock approvals past the trial is an admin
+action:
+```
+curl -X POST "https://<your-railway-domain>/admin/entitlement/override?phone=<digits-only>&enabled=true&token=<WEBHOOK_TOKEN>"
+```
+(`enabled=false` re-locks). Check current state with
+`GET /admin/entitlement?phone=<digits-only>&token=<WEBHOOK_TOKEN>`. The entitlement table also
+carries `membershipVerified`/`paymentAuthorized`/`paymentStatus` — unused placeholder columns
+so wiring in real WatchFacts membership verification or a payment processor later is an
+`UPDATE`, not another migration.
 
 1. **Outreach**: intro message (+ banner, if configured) sent to each Tier A/B contact — this
    is `INTRO_MESSAGE`, the outbound blast opener (short, gets them to reply).
@@ -310,9 +320,9 @@ charged — "join" just unlocks unlimited approvals going forward.
    shown. Passing is free and unlimited. Approving reveals the counterparty's phone number —
    and is the only thing metered against the trial.
 6. **Trial gate**: after `TRIAL_MAX_APPROVED_MATCHES` (default 3) *approvals* — not searches —
-   the bot sends the conversion pitch (spec §5) once. Every approve attempt after that, until
-   they reply `join`, gets the decline-path message (spec §7) instead; searching and passing
-   keep working the whole time.
+   the bot sends the conversion pitch once. Every approve attempt after that gets the
+   decline-path message instead, **until an admin manually enables the account** (see above —
+   "join" alone does not unlock anything); searching and passing keep working the whole time.
 7. Replying `STOP`/`UNSUBSCRIBE` at any point opts a contact out permanently (`START` re-enables).
 
 State per phone number is persisted to `storage/conversations.json` (git-ignored) so the bot
@@ -329,8 +339,11 @@ curl -X POST "https://<your-railway-domain>/admin/reset-state?phone=<digits-only
 
 ## Not yet wired up
 
-- No real billing — `approvedCount`/`hired` are tracked per contact but nothing is actually
-  charged (no payment processor wired in). "Join" is a trust-based unlock, not a checkout.
+- No real billing — `approvedCount` is tracked per contact and `account_entitlements` in
+  Postgres tracks the unlock state, but nothing is ever charged (no payment processor wired
+  in). The only unlock path is an admin action (`POST /admin/entitlement/override`); schema
+  has placeholder columns (`membershipVerified`, `paymentAuthorized`, `paymentStatus`) ready
+  for when a processor/membership check exists.
 - No "Fi Intelligence" data (dealer reputation/vouch, price trend, market range, price signal,
   authenticity check) — Match Cards ship without that block per spec §2 until a real data
   source for any of it exists.

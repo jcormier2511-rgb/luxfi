@@ -70,7 +70,9 @@ export interface ConversationState {
   phone: string;
   stage: ConversationStage;
   approvedCount: number; // trial = TRIAL_MAX_APPROVED_MATCHES approved matches, not searches
-  hired: boolean; // said "join" after the trial — unlocks unlimited approvals (tracked only, no real billing yet)
+  hired: boolean; // said "join" after the trial — informational only; does NOT unlock approvals.
+  // The actual gate is account_entitlements.manual_override_enabled (Postgres, admin-only —
+  // see src/billing/entitlementStore.ts). Kept here to remember they've expressed interest.
   pendingMatches?: PendingMatchSet;
   preferencesCollected: boolean;
   preferences?: SearchPreferences;

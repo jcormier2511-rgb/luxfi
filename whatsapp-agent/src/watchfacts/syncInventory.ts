@@ -1,12 +1,17 @@
-import { chromium, Browser } from "playwright";
+import { chromium, Browser, Page } from "playwright";
+import { config } from "../config";
 import { login } from "./scraper";
 import { fetchAllFlashSales, isActive, mapToInventoryListing, resolveWtbAuctionType, RawFlashSale } from "./api";
-import { upsertListings, markMissingInactive, recordSyncAttempt, recordSyncSuccess, recordSyncError } from "./inventoryDb";
+import { upsertListings, markMissingInactive, recordSyncAttempt, recordTypeSyncSuccess, recordTypeSyncError } from "./inventoryDb";
+import { ListingType } from "../types";
 
 export interface SyncResult {
   forSale: number;
   wtb: number;
   total: number;
+  fsError?: string;
+  wtbError?: string;
+  wtbDisabled: boolean;
 }
 
 /** Last write wins on a duplicate id within one fetch — the DB's own dedupe key is source+type+id. */
@@ -16,16 +21,47 @@ function dedupeById(sales: RawFlashSale[]): RawFlashSale[] {
   return [...byId.values()];
 }
 
+/**
+ * Fetches, filters, dedupes, and upserts one side (FS or WTB) of the Trading Floor. Errors
+ * are caught and recorded here rather than propagated, so a WTB failure (e.g. its
+ * auction_type can't be resolved) never prevents FS's own results from being saved, and
+ * vice versa — each side's success/failure is tracked independently in sync_meta.
+ */
+export async function syncOneSide(
+  page: Page,
+  type: ListingType,
+  auctionType: string | (() => Promise<string>),
+  now: Date
+): Promise<{ count: number; error?: string }> {
+  try {
+    const resolvedAuctionType = typeof auctionType === "string" ? auctionType : await auctionType();
+    const raw = await fetchAllFlashSales(page, resolvedAuctionType);
+    const listings = dedupeById(raw.filter((s) => isActive(s, now))).map((s) => mapToInventoryListing(s, type));
+
+    if (listings.length > 0) {
+      const syncedAt = now.toISOString();
+      await upsertListings(listings, syncedAt);
+      await markMissingInactive("WF", type, listings.map((l) => l.id), syncedAt);
+    }
+
+    await recordTypeSyncSuccess(type);
+    return { count: listings.length };
+  } catch (err) {
+    const message = (err as Error).message;
+    await recordTypeSyncError(type, message);
+    return { count: 0, error: message };
+  }
+}
+
 // Shared across the scheduler (index.ts) and the manual /admin/sync-inventory trigger, so
 // two overlapping runs can never open two logged-in browser sessions at once.
 let syncRunning = false;
 
 /**
  * Logs into WatchFacts once and pulls both sides of the Trading Floor via the real
- * available-flash-sales API (see api.ts) — no DOM scraping, no button clicking. Upserts into
- * the SQLite-backed inventory store and marks anything not seen in this sync inactive, but
- * only for a side (FS or WTB) that returned at least one active listing — a 0-row fetch for
- * one side never touches the other side's data, and never wipes out inventory on its own.
+ * available-flash-sales API (see api.ts) — no DOM scraping, no button clicking. FS and WTB
+ * are synced independently (see syncOneSide): one side failing never touches the other
+ * side's data or masks that it succeeded. Only throws if BOTH sides fail outright.
  */
 export async function runInventorySync(): Promise<SyncResult> {
   if (syncRunning) {
@@ -39,33 +75,28 @@ export async function runInventorySync(): Promise<SyncResult> {
     await login(page);
     const now = new Date();
 
-    const rawFs = await fetchAllFlashSales(page, "sale");
-    const fsListings = dedupeById(rawFs.filter((s) => isActive(s, now))).map((s) => mapToInventoryListing(s, "FS"));
+    const fs = await syncOneSide(page, "FS", "sale", now);
 
-    const wtbAuctionType = await resolveWtbAuctionType(page);
-    const rawWtb = await fetchAllFlashSales(page, wtbAuctionType);
-    const wtbListings = dedupeById(rawWtb.filter((s) => isActive(s, now))).map((s) => mapToInventoryListing(s, "WTB"));
+    // WTB's auction_type isn't confirmed against the real API — off by default. When
+    // disabled, WTB is never fetched at all: no request, no error recorded, nothing touched.
+    const wtbEnabled = config.watchfacts.enableWtbSync;
+    const wtb = wtbEnabled ? await syncOneSide(page, "WTB", () => resolveWtbAuctionType(page), now) : { count: 0 };
 
-    const total = fsListings.length + wtbListings.length;
-    if (total === 0) {
-      throw new Error("Fetched 0 active listings total (FS+WTB) — refusing to mark existing inventory inactive.");
+    if (fs.error && wtbEnabled && wtb.error) {
+      throw new Error(`Both FS and WTB failed — FS: ${fs.error} | WTB: ${wtb.error}`);
+    }
+    if (fs.error && !wtbEnabled) {
+      throw new Error(`FS failed and WTB sync is disabled (ENABLE_WTB_SYNC=false) — FS: ${fs.error}`);
     }
 
-    const syncedAt = now.toISOString();
-    if (fsListings.length > 0) {
-      await upsertListings(fsListings, syncedAt);
-      await markMissingInactive("WF", "FS", fsListings.map((l) => l.id), syncedAt);
-    }
-    if (wtbListings.length > 0) {
-      await upsertListings(wtbListings, syncedAt);
-      await markMissingInactive("WF", "WTB", wtbListings.map((l) => l.id), syncedAt);
-    }
-
-    await recordSyncSuccess(fsListings.length, wtbListings.length);
-    return { forSale: fsListings.length, wtb: wtbListings.length, total };
-  } catch (err) {
-    await recordSyncError((err as Error).message);
-    throw err;
+    return {
+      forSale: fs.count,
+      wtb: wtb.count,
+      total: fs.count + wtb.count,
+      fsError: fs.error,
+      wtbError: wtbEnabled ? wtb.error : undefined,
+      wtbDisabled: !wtbEnabled,
+    };
   } finally {
     await browser.close();
     syncRunning = false;
@@ -75,7 +106,12 @@ export async function runInventorySync(): Promise<SyncResult> {
 if (require.main === module) {
   runInventorySync()
     .then((result) => {
-      console.log(`Synced ${result.total} active listings (${result.forSale} FS, ${result.wtb} WTB)`);
+      console.log(
+        `Synced ${result.total} active listings (${result.forSale} FS, ${result.wtb} WTB)` +
+          (result.fsError ? ` — FS error: ${result.fsError}` : "") +
+          (result.wtbDisabled ? ` — WTB disabled (ENABLE_WTB_SYNC=false)` : "") +
+          (result.wtbError ? ` — WTB error: ${result.wtbError}` : "")
+      );
     })
     .catch((err) => {
       console.error("WatchFacts inventory sync failed:", err);
