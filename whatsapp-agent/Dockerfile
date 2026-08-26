@@ -1,6 +1,13 @@
 FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
+# python3/make/g++: fallback only. better-sqlite3 ships prebuilt binaries for Node's active
+# LTS lines (pinned to a 12.x version in package.json specifically because 13.x requires
+# Node >=22, which this image doesn't have — that mismatch is what forced a from-source
+# node-gyp build the one time this actually broke a deploy). `npm ci` here installs the full
+# dependency tree including better-sqlite3, so the builder stage needs this too, not just
+# runtime, even though the builder's own output (compiled JS) doesn't use it directly.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
@@ -11,9 +18,6 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
-# build-essential + python3: better-sqlite3 ships prebuilt binaries for common platforms, but
-# falls back to compiling from source via node-gyp if no prebuild matches this image's
-# platform/ABI — without these, that fallback fails the whole build instead of just being slow.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
 RUN npm ci --omit=dev
 

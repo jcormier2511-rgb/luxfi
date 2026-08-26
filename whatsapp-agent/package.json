@@ -15,7 +15,7 @@
     "test": "node --require ts-node/register --test src/watchfacts/api.test.ts src/watchfacts/inventoryDb.test.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^12.11.1",
     "csv-parse": "^5.5.6",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
