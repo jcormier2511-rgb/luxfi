@@ -9,6 +9,7 @@ import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { loadInventory } from "./data/inventoryStore";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
+import { runInventorySync } from "./watchfacts/syncInventory";
 
 export function createServer() {
   const app = express();
@@ -126,6 +127,34 @@ export function createServer() {
   });
 
   app.use("/assets", express.static(config.assets.dir));
+
+  // Logs into WatchFacts and re-scrapes the Trading Floor feed (both FS and WTB) into
+  // wf_inventory.csv, replacing whatever's there. Requires WATCHFACTS_EMAIL/PASSWORD.
+  // Takes ~10-30s (login + two page loads), so this awaits the result rather than
+  // backgrounding it like /outreach/start — call it from an external cron for a refresh
+  // schedule, e.g. `curl -X POST ".../admin/sync-inventory?token=..."` every hour.
+  let inventorySyncRunning = false;
+  app.post("/admin/sync-inventory", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    if (!config.watchfacts.email || !config.watchfacts.password) {
+      return res.status(400).json({ error: "WATCHFACTS_EMAIL / WATCHFACTS_PASSWORD not set" });
+    }
+    if (inventorySyncRunning) {
+      return res.status(409).json({ error: "a sync is already running" });
+    }
+    inventorySyncRunning = true;
+    try {
+      const result = await runInventorySync();
+      loadInventory(true);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    } finally {
+      inventorySyncRunning = false;
+    }
+  });
 
   return app;
 }

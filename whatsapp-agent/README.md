@@ -128,7 +128,7 @@ blast progress are plain JSON files on disk that must survive restarts and redep
    curl --data-binary @banner.jpg "https://<your-railway-domain>/admin/upload/banner?token=<WEBHOOK_TOKEN>"
    ```
    The response includes the `url` to paste into `BANNER_IMAGE_URL` (it's served back out at
-   `/assets/banner.jpg`). Requires a volume at `/app/data` (step 3) so it survives redeploys.
+   `/assets/banner.jpg`). Requires the volume from step 3 so it survives redeploys.
 8. Kick off the blast: `curl -X POST "https://<your-railway-domain>/outreach/start?token=<WEBHOOK_TOKEN>"`,
    then poll `GET /outreach/status` the same way.
 
@@ -157,6 +157,34 @@ cards from screenshots rather than real markup. Before trusting it on a real run
    `{ id, title, price }` or `null`. If it returns `null` or the wrong listing, the DOM-walking
    heuristic in `extractLatestListing()` needs adjusting to match the real page structure.
 3. Only then set `WATCHFACTS_ENABLED=true` for a live blast.
+
+## WatchFacts Trading Floor sync (live inventory feed)
+
+Replaces the static `wf_inventory.csv` with real listings scraped from WatchFacts' own
+Trading Floor (`watchfacts.com/buy/all`) — both `$ FOR SALE` and `NTQ/WTB` sides — instead of
+the sample data. Uses the same `WATCHFACTS_EMAIL`/`WATCHFACTS_PASSWORD` login as the intro
+personalization feature above. Each listing's seller contact comes from the phone number
+embedded in its "Check Availability" WhatsApp link (`wa.me/<number>`), which is free to view
+(confirmed — doesn't consume the account's WatchFacts credits).
+
+**This was written against real screenshots of the Trading Floor (Aug 2026) but not run
+against the live DOM** — same caveat as the intro personalization scraper, for the same
+reason (this sandbox can't reach watchfacts.com). Validate before trusting it:
+
+1. `npx playwright install chromium` (skip if already done for intro personalization).
+2. `npm run wf:test-inventory -- sale` (or `-- wtb`) — logs in, scrapes one side of the feed,
+   and prints each extracted row as JSON. Check that titles, prices, and phone numbers look
+   right; if not, `extractTradingListings()` in `src/watchfacts/scraper.ts` needs adjusting.
+3. Once that looks right, run a real sync: `npm run wf:sync-inventory` (local/CLI), or on a
+   deployed instance: `curl -X POST "https://<your-railway-domain>/admin/sync-inventory?token=<WEBHOOK_TOKEN>"`
+   — both overwrite `wf_inventory.csv` with fresh FS + WTB listings (refuses to do so if the
+   scrape comes back with 0 rows, so a transient failure can't wipe out good data).
+4. To keep it fresh, point an external cron (or a second Railway service on a schedule) at
+   that `/admin/sync-inventory` endpoint every hour or so — there's no built-in scheduler for
+   this yet, unlike the outreach blast's own pacing.
+
+Known gaps: only reads the first page of results (no "load more"/pagination handling), and
+`category` is hardcoded to `"watches"` since that's all the Trading Floor currently shows.
 
 ## Conversation flow
 

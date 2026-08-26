@@ -1,5 +1,6 @@
 import { chromium, Browser, Page } from "playwright";
 import { config } from "../config";
+import { InventoryListing, ListingType } from "../types";
 
 export interface LatestListing {
   id: string;
@@ -9,6 +10,12 @@ export interface LatestListing {
 
 export interface WatchFactsSession {
   getLatestListing(profileId: string): Promise<LatestListing | null>;
+  /**
+   * Scrapes the WatchFacts Trading Floor (watchfacts.com/buy/all) for either side of the
+   * market and returns rows already shaped for wf_inventory.csv / the matching engine.
+   * Only reads the first page of results currently — no pagination/"load more" handling yet.
+   */
+  fetchTradingListings(type: ListingType): Promise<InventoryListing[]>;
   close(): Promise<void>;
 }
 
@@ -72,6 +79,97 @@ async function extractLatestListing(page: Page): Promise<LatestListing | null> {
   });
 }
 
+interface RawTradingListing {
+  id: string;
+  title: string;
+  price: string;
+  rating: string;
+  sellerName: string;
+  contactPhone: string;
+}
+
+/**
+ * From each "Check Availability" button (the one stable, text-identifiable anchor per card),
+ * walks up to the enclosing card and pulls out title/price/rating/seller by line-matching the
+ * card's text, plus the seller's WhatsApp number from the wa.me link's href and the listing id
+ * from the /flash-sales/<id> detail link's href. Confirmed against a real WatchFacts screenshot
+ * (Aug 2026) but not run against the live DOM — this sandbox can't reach watchfacts.com.
+ * Validate with `npm run wf:test-inventory -- sale` before trusting it for a real sync.
+ */
+async function extractTradingListings(page: Page): Promise<RawTradingListing[]> {
+  return page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll("a,button")).filter((el) =>
+      /check availability/i.test(el.textContent ?? "")
+    );
+
+    const results: RawTradingListing[] = [];
+    for (const trigger of cards) {
+      let card: Element | null = trigger;
+      for (let i = 0; i < 8 && card; i++) {
+        const text = card.textContent ?? "";
+        if (/\$[\d,.]+/.test(text) && /posted/i.test(text)) break;
+        card = card.parentElement;
+      }
+      if (!card) continue;
+
+      const lines = (card.textContent ?? "")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+
+      const priceLine = lines.find((l) => /^\$[\d,.]+$/.test(l)) ?? "";
+      const postedLine = lines.find((l) => /^posted/i.test(l)) ?? "";
+      const ratingLine = lines.find((l) => /rating/i.test(l)) ?? "";
+      const titleLine = lines.find((l) => l.length > 5 && l !== priceLine && l !== postedLine && l !== ratingLine) ?? "";
+
+      const waAnchor = card.querySelector('a[href*="wa.me/"]') as HTMLAnchorElement | null;
+      const phoneMatch = waAnchor?.href.match(/wa\.me\/(\d+)/);
+      const detailAnchor = card.querySelector('a[href*="/flash-sales/"]') as HTMLAnchorElement | null;
+      const idMatch = detailAnchor?.href.match(/flash-sales\/(\d+)/);
+      const sellerAnchor = Array.from(card.querySelectorAll("a")).find(
+        (a) => a !== detailAnchor && a !== waAnchor && (a.textContent ?? "").trim().length > 1
+      );
+
+      if (!titleLine || !phoneMatch) continue; // no phone means no usable "reveal" contact — skip
+      results.push({
+        id: idMatch?.[1] ?? "",
+        title: titleLine,
+        price: priceLine.replace(/^\$/, ""),
+        rating: /no rating/i.test(ratingLine) ? "" : ratingLine,
+        sellerName: sellerAnchor?.textContent?.trim() ?? "",
+        contactPhone: phoneMatch[1],
+      });
+    }
+    return results;
+  });
+}
+
+async function fetchTradingListings(page: Page, type: ListingType): Promise<InventoryListing[]> {
+  await page.goto("https://watchfacts.com/buy/all?listing_type=sale", { waitUntil: "domcontentloaded" });
+  if (type === "WTB") {
+    await page.getByRole("button", { name: /ntq\s*\/\s*wtb/i }).click();
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+  }
+  await page.waitForTimeout(1500); // let client-rendered cards populate
+
+  const raw = await extractTradingListings(page);
+  return raw.map((r) => ({
+    id: r.id || r.contactPhone,
+    type,
+    category: "watches",
+    item: r.title,
+    brand: "",
+    ref: "",
+    condition: "",
+    price: r.price || "ASK",
+    location: "",
+    contactName: r.sellerName,
+    contactPhone: r.contactPhone,
+    source: "WF",
+    rating: r.rating,
+  }));
+}
+
 export async function openWatchFactsSession(): Promise<WatchFactsSession> {
   const browser: Browser = await chromium.launch();
   const page = await browser.newPage();
@@ -87,6 +185,14 @@ export async function openWatchFactsSession(): Promise<WatchFactsSession> {
       } catch (err) {
         console.error(`[watchfacts] failed to extract listing for profile ${profileId}:`, err);
         return null;
+      }
+    },
+    async fetchTradingListings(type: ListingType) {
+      try {
+        return await fetchTradingListings(page, type);
+      } catch (err) {
+        console.error(`[watchfacts] failed to fetch trading listings (${type}):`, err);
+        return [];
       }
     },
     async close() {

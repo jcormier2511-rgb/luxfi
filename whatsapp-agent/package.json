@@ -10,7 +10,9 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "outreach": "ts-node-dev --transpile-only src/outreach/runBlast.ts",
-    "wf:test": "ts-node-dev --transpile-only src/watchfacts/testFetch.ts"
+    "wf:test": "ts-node-dev --transpile-only src/watchfacts/testFetch.ts",
+    "wf:test-inventory": "ts-node-dev --transpile-only src/watchfacts/testTradingFeed.ts",
+    "wf:sync-inventory": "ts-node-dev --transpile-only src/watchfacts/syncInventory.ts"
   },
   "dependencies": {
     "csv-parse": "^5.5.6",
