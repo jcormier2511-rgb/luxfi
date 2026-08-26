@@ -1,39 +1,7 @@
-import fs from "fs";
-import path from "path";
-import { config } from "../config";
-import { InventoryListing } from "../types";
-import { openWatchFactsSession } from "./scraper";
-
-const COLUMNS: (keyof InventoryListing)[] = [
-  "id",
-  "type",
-  "category",
-  "item",
-  "brand",
-  "ref",
-  "condition",
-  "price",
-  "location",
-  "contactName",
-  "contactPhone",
-  "source",
-  "rating",
-  "description",
-];
-const HEADER = ["id", "type", "category", "item", "brand", "ref", "condition", "price", "location", "contact_name", "contact_phone", "source", "rating", "description"];
-
-function csvEscape(value: string): string {
-  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
-}
-
-function toCsv(rows: InventoryListing[]): string {
-  const lines = [HEADER.join(",")];
-  for (const row of rows) {
-    lines.push(COLUMNS.map((c) => csvEscape(String(row[c] ?? ""))).join(","));
-  }
-  return lines.join("\n") + "\n";
-}
+import { chromium, Browser } from "playwright";
+import { login } from "./scraper";
+import { fetchAllFlashSales, isActive, mapToInventoryListing, resolveWtbAuctionType, RawFlashSale } from "./api";
+import { upsertListings, markMissingInactive, recordSyncAttempt, recordSyncSuccess, recordSyncError } from "./inventoryDb";
 
 export interface SyncResult {
   forSale: number;
@@ -41,38 +9,73 @@ export interface SyncResult {
   total: number;
 }
 
+/** Last write wins on a duplicate id within one fetch — the DB's own dedupe key is source+type+id. */
+function dedupeById(sales: RawFlashSale[]): RawFlashSale[] {
+  const byId = new Map<string, RawFlashSale>();
+  for (const sale of sales) byId.set(sale.id, sale);
+  return [...byId.values()];
+}
+
+// Shared across the scheduler (index.ts) and the manual /admin/sync-inventory trigger, so
+// two overlapping runs can never open two logged-in browser sessions at once.
+let syncRunning = false;
+
 /**
- * Logs into WatchFacts, pulls both sides of the Trading Floor feed, and overwrites
- * wf_inventory.csv with the result. Called by the CLI script below and by
- * POST /admin/sync-inventory — run it on a schedule (an external cron hitting that
- * endpoint, or a Railway scheduled job) wherever it can actually reach watchfacts.com.
- * Refuses to overwrite the file if the fetch comes back empty, so a transient scrape
- * failure can't silently wipe out good data.
+ * Logs into WatchFacts once and pulls both sides of the Trading Floor via the real
+ * available-flash-sales API (see api.ts) — no DOM scraping, no button clicking. Upserts into
+ * the SQLite-backed inventory store and marks anything not seen in this sync inactive, but
+ * only for a side (FS or WTB) that returned at least one active listing — a 0-row fetch for
+ * one side never touches the other side's data, and never wipes out inventory on its own.
  */
 export async function runInventorySync(): Promise<SyncResult> {
-  const session = await openWatchFactsSession();
+  if (syncRunning) {
+    throw new Error("a sync is already running");
+  }
+  syncRunning = true;
+  recordSyncAttempt();
+  const browser: Browser = await chromium.launch();
+  const page = await browser.newPage();
   try {
-    // Sequential, not Promise.all: both calls navigate the same underlying browser tab,
-    // so running them concurrently races two page.goto()s against each other and produces
-    // garbage results (this is exactly what caused an earlier 0-vs-20 FS/WTB split).
-    const forSale = await session.fetchTradingListings("FS");
-    const wtb = await session.fetchTradingListings("WTB");
-    const rows = [...forSale, ...wtb];
-    if (rows.length === 0) {
-      throw new Error("Fetched 0 listings total — refusing to overwrite wf_inventory.csv with an empty file.");
+    await login(page);
+    const now = new Date();
+
+    const rawFs = await fetchAllFlashSales(page, "sale");
+    const fsListings = dedupeById(rawFs.filter((s) => isActive(s, now))).map((s) => mapToInventoryListing(s, "FS"));
+
+    const wtbAuctionType = await resolveWtbAuctionType(page);
+    const rawWtb = await fetchAllFlashSales(page, wtbAuctionType);
+    const wtbListings = dedupeById(rawWtb.filter((s) => isActive(s, now))).map((s) => mapToInventoryListing(s, "WTB"));
+
+    const total = fsListings.length + wtbListings.length;
+    if (total === 0) {
+      throw new Error("Fetched 0 active listings total (FS+WTB) — refusing to mark existing inventory inactive.");
     }
-    fs.mkdirSync(path.dirname(config.data.inventoryCsv), { recursive: true });
-    fs.writeFileSync(config.data.inventoryCsv, toCsv(rows));
-    return { forSale: forSale.length, wtb: wtb.length, total: rows.length };
+
+    const syncedAt = now.toISOString();
+    if (fsListings.length > 0) {
+      upsertListings(fsListings, syncedAt);
+      markMissingInactive("WF", "FS", fsListings.map((l) => l.id), syncedAt);
+    }
+    if (wtbListings.length > 0) {
+      upsertListings(wtbListings, syncedAt);
+      markMissingInactive("WF", "WTB", wtbListings.map((l) => l.id), syncedAt);
+    }
+
+    recordSyncSuccess(fsListings.length, wtbListings.length);
+    return { forSale: fsListings.length, wtb: wtbListings.length, total };
+  } catch (err) {
+    recordSyncError((err as Error).message);
+    throw err;
   } finally {
-    await session.close();
+    await browser.close();
+    syncRunning = false;
   }
 }
 
 if (require.main === module) {
   runInventorySync()
     .then((result) => {
-      console.log(`Wrote ${result.total} listings (${result.forSale} FS, ${result.wtb} WTB) to ${config.data.inventoryCsv}`);
+      console.log(`Synced ${result.total} active listings (${result.forSale} FS, ${result.wtb} WTB)`);
     })
     .catch((err) => {
       console.error("WatchFacts inventory sync failed:", err);

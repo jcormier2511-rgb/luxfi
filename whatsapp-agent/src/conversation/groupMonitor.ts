@@ -2,7 +2,6 @@ import fs from "fs";
 import path from "path";
 import { config } from "../config";
 import { InventoryListing, ListingType } from "../types";
-import { loadInventory } from "../data/inventoryStore";
 
 // Dealer-group shorthand, distinct from the 1:1 flow's classify() (which expects
 // first-person phrasing like "buy: X"). Groups post in trading-floor jargon instead.
@@ -52,7 +51,7 @@ function appendGroupListing(row: InventoryListing): void {
   } else {
     fs.appendFileSync(csvPath, line);
   }
-  loadInventory(true); // pick up the new row immediately, no restart needed
+  // No cache to invalidate — getActiveListings() reads this CSV fresh on every call.
 }
 
 /**

@@ -3,5 +3,5 @@ dist
 .env
 storage/*.json
 data/contacts.csv
-data/wf_inventory.csv
+data/inventory.sqlite
 *.md

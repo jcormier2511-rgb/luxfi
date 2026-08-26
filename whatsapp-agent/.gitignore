@@ -5,4 +5,4 @@ storage/*.json
 !storage/.gitkeep
 persist/
 data/contacts.csv
-data/wf_inventory.csv
+data/inventory.sqlite

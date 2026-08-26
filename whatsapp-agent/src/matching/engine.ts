@@ -1,4 +1,4 @@
-import { loadInventory } from "../data/inventoryStore";
+import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
 
 function tokenize(text: string): string[] {
@@ -66,7 +66,7 @@ function softPreferenceScore(listing: InventoryListing, preferences?: SearchPref
 export function findMatches(request: ItemRequest, limit: number, preferences?: SearchPreferences): InventoryListing[] {
   const wantType = request.action === "buy" ? "FS" : "WTB";
   const tokens = tokenize(request.query);
-  const candidates = loadInventory().filter((l) => l.type === wantType);
+  const candidates = getActiveListings(wantType);
 
   const priceFiltered = candidates.filter((l) => inPriceRange(l, preferences));
   const pool = priceFiltered.length > 0 ? priceFiltered : candidates;

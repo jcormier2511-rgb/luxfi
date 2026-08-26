@@ -15,9 +15,9 @@ WF inventory feed as a starting point), searches for counterparty matches, and g
   to being messaged. Unsolicited commercial texts can trigger TCPA (US), PECR/GDPR (UK/EU), or
   similar laws depending on where recipients are. Confirm your legal basis for outreach before
   scaling beyond a pilot.
-- Real contact/inventory CSVs are git-ignored on purpose (`data/contacts.csv`,
-  `data/wf_inventory.csv`) — don't remove that from `.gitignore`; this data shouldn't live in
-  git history.
+- Real contact CSVs are git-ignored on purpose (`data/contacts.csv`) — don't remove that from
+  `.gitignore`; this data shouldn't live in git history. WatchFacts inventory isn't a CSV at
+  all anymore — see [WatchFacts Trading Floor sync](#watchfacts-trading-floor-sync-live-inventory-feed).
 
 ## Setup
 
@@ -39,9 +39,8 @@ Fill in `.env`:
 
 ## Data files
 
-Drop real exports at `data/contacts.csv` and `data/wf_inventory.csv` (both git-ignored). Until
-those exist, the app falls back to the sample files under `data/*.sample.csv` with a console
-warning, so it runs out of the box for local testing.
+Drop a real export at `data/contacts.csv` (git-ignored). Until it exists, the app falls back to
+`data/contacts.sample.csv` with a console warning, so it runs out of the box for local testing.
 
 **`contacts.csv`**
 ```
@@ -52,14 +51,9 @@ phone,name,tier,specialty
 optional and steers which category of WF listing gets suggested first. `wf_profile_id` is
 optional — see [WatchFacts intro personalization](#watchfacts-intro-personalization-optional).
 
-**`wf_inventory.csv`**
-```
-id,type,category,item,brand,ref,condition,price,location,contact_name,contact_phone,source,rating,description
-```
-`description` is the full original listing text (e.g. from the WF detail page) — shown to
-contacts instead of `item` when present, since `item` alone can be a truncated card title.
-`type` is `FS` (for sale) or `WTB` (want to buy). A buy request matches against `FS` rows; a
-sell request matches against `WTB` rows.
+WatchFacts inventory (FS + WTB) isn't a file you drop in at all — it's synced automatically
+from WatchFacts' own API into a SQLite database on the persisted volume. See
+[WatchFacts Trading Floor sync](#watchfacts-trading-floor-sync-live-inventory-feed).
 
 ## Running
 
@@ -116,13 +110,14 @@ blast progress are plain JSON files on disk that must survive restarts and redep
    since the blast loop and file-based state assume a single process.
 6. In the **Whapi.Cloud dashboard**, set the channel's webhook URL to
    `https://<your-railway-domain>/webhook?token=<WEBHOOK_TOKEN>`.
-7. **Seed the real data** onto the (now-empty) volume — the real CSVs are git-ignored, so they
-   aren't in the deployed image:
+7. **Seed the real contacts** onto the (now-empty) volume — `contacts.csv` is git-ignored, so
+   it isn't in the deployed image:
    ```bash
    curl --data-binary @contacts.csv "https://<your-railway-domain>/admin/upload/contacts?token=<WEBHOOK_TOKEN>"
-   curl --data-binary @wf_inventory.csv "https://<your-railway-domain>/admin/upload/inventory?token=<WEBHOOK_TOKEN>"
    ```
-   Each responds with a row count and takes effect immediately (no restart needed).
+   Responds with a row count and takes effect immediately (no restart needed). WatchFacts
+   inventory doesn't need seeding — the boot-time scheduler syncs it automatically as long as
+   `WATCHFACTS_EMAIL`/`WATCHFACTS_PASSWORD` are set (see below).
 7a. **No banner host?** Set `PUBLIC_BASE_URL` to this deployment's own domain (e.g.
    `https://your-app.up.railway.app`), then push the image straight to this server instead of
    needing a third-party image host:
@@ -162,39 +157,71 @@ cards from screenshots rather than real markup. Before trusting it on a real run
 
 ## WatchFacts Trading Floor sync (live inventory feed)
 
-Replaces the static `wf_inventory.csv` with real listings scraped from WatchFacts' own
-Trading Floor (`watchfacts.com/buy/all`) — both `$ FOR SALE` and `NTQ/WTB` sides — instead of
-the sample data. Uses the same `WATCHFACTS_EMAIL`/`WATCHFACTS_PASSWORD` login as the intro
-personalization feature above. Each listing's seller contact comes from the phone number
-embedded in its "Check Availability" WhatsApp link (`wa.me/<number>`), which is free to view
-(confirmed — doesn't consume the account's WatchFacts credits).
+Pulls real listings directly from WatchFacts' own JSON API — **not** DOM/button-text scraping.
+An earlier version of this scraper walked the rendered page looking for a "Check Availability"
+button and inferred title/seller from nearby text; in production that regularly grabbed CTA
+text like "View Details" as the item/seller name and collapsed distinct listings onto one id
+whenever the phone-number fallback collided. That whole approach is gone.
 
-**List-page extraction (title/price/rating/seller/phone) has been validated against the live
-site** (Aug 2026 — a real sync pulled 20 FS + 20 WTB listings successfully). The per-listing
-**detail-page description** (`extractDetailDescription()` — visits each `/flash-sales/<id>`
-page for the full, non-truncated listing text) has not been live-tested yet:
+**The real endpoint** (found by capturing the site's own network traffic while logged in):
+```
+GET https://watchfacts.com/available-flash-sales?pageSize=25&page=1&auction_type=sale&category_id=19&sort_by=date-newest
+```
+- **Auth**: session-cookie only — no API key/bearer token. A request without a valid
+  WatchFacts login cookie gets `{"message":"session_expired"}`, so every call runs inside an
+  authenticated Playwright page via `page.evaluate(() => fetch(url, {credentials:"include"}))`
+  rather than a standalone HTTP client (see `src/watchfacts/api.ts`).
+- **FS vs WTB**: same endpoint, different `auction_type` value. `sale` is confirmed for FS.
+  **The WTB value is not hardcoded** — the site's own toggle button isn't a real, reliably
+  clickable element, so `resolveWtbAuctionType()` tries a short list of likely values
+  (`wtb`, `buy`, `want_to_buy`, `ntq`, …) directly against the API on each sync and uses
+  whichever one actually returns rows. If WatchFacts' real value isn't in that list, the sync
+  fails loudly (`Could not find a working auction_type value for WTB`) rather than silently
+  mislabeling FS listings as WTB — which is what the old DOM scraper did when its toggle click
+  timed out.
+- **Pagination**: `pageSize`/`page` query params, confirmed present. `fetchAllFlashSales()`
+  keeps requesting increasing pages until one comes back shorter than `pageSize` (or empty),
+  so all active listings are fetched, not just the first page — capped at 50 pages as a safety
+  valve against an infinite loop, not an expected ceiling.
+- **Closed/expired listings**: each result carries `status` (`"open"` when live) and its own
+  `deadline` timestamp. `isActive()` requires both — `status === "open"` AND `deadline` still
+  in the future — so a listing WatchFacts marks closed, or one whose flash sale has simply
+  timed out, is filtered out before it ever reaches the matching engine.
+- **What wasn't empirically confirmed**: the exact shape of the response envelope for a full
+  page (a raw array vs `{data:[...]}`) — `fetchFlashSalesPage()` in `api.ts` handles either
+  shape defensively rather than assuming one.
 
-1. `npx playwright install chromium` (skip if already done for intro personalization).
-2. `npm run wf:test-inventory -- sale` (or `-- wtb`) — logs in, scrapes one side of the feed
-   including descriptions, and prints each extracted row as JSON. Check that `description`
-   looks like real listing text (not empty, not "See More" or other UI chrome); if not,
-   `extractDetailDescription()` in `src/watchfacts/scraper.ts` needs adjusting.
-3. Once that looks right, run a real sync: `npm run wf:sync-inventory` (local/CLI), or on a
-   deployed instance: `curl -X POST "https://<your-railway-domain>/admin/sync-inventory?token=<WEBHOOK_TOKEN>"`
-   — both overwrite `wf_inventory.csv` with fresh FS + WTB listings (refuses to do so if the
-   scrape comes back with 0 rows, so a transient failure can't wipe out good data). Visiting
-   each listing's detail page for its description adds roughly 1-2 seconds per listing on
-   top of the list-page scrape.
-4. If something looks off, `POST /admin/sync-inventory`'s response includes
-   `debugScreenshots` (also just `GET`-able directly at `/assets/debug-trading-fs.png` and
-   `/assets/debug-trading-wtb.png`) — full-page screenshots of exactly what the scraper saw,
-   useful without needing a local Playwright setup.
-5. To keep it fresh, point an external cron (or a second Railway service on a schedule) at
-   that `/admin/sync-inventory` endpoint every hour or so — there's no built-in scheduler for
-   this yet, unlike the outreach blast's own pacing.
+**Storage**: a SQLite database at `PERSIST_DIR/data/inventory.sqlite` (`better-sqlite3`) —
+replacing the old wholesale-overwrite CSV. Each row's key is `(source, type, external_id)`,
+so an FS and a WTB listing that happen to share the same WatchFacts id stay two separate rows.
+A sync **upserts** (new listings inserted, existing ones updated, `first_seen_at` preserved)
+and only marks a side's stale rows `is_active = 0` if that side's fetch returned at least one
+result — a 0-row fetch (network hiccup, WatchFacts change) never wipes out good data, matching
+the guard the old CSV-based sync had.
 
-Known gaps: only reads the first page of results (no "load more"/pagination handling), and
-`category` is hardcoded to `"watches"` since that's all the Trading Floor currently shows.
+**Scheduling**: `src/index.ts` runs a sync on boot and every `INVENTORY_SYNC_INTERVAL_MINUTES`
+(default 5) as long as `WATCHFACTS_EMAIL`/`WATCHFACTS_PASSWORD` are set — no external cron
+needed. Each tick is a fresh login (no persistent browser session reused across ticks yet),
+which is why the interval defaults to 5 minutes rather than 1-2: repeated logins are the same
+category of risk as the WhatsApp number bans hit earlier in this project. `POST
+/admin/sync-inventory?token=<WEBHOOK_TOKEN>` triggers one manually; both paths share one
+re-entrancy guard, so they can't run two logged-in sessions at once.
+
+**Status**: `GET /admin/inventory-status?token=<WEBHOOK_TOKEN>` returns
+`{lastSuccessAt, lastAttemptAt, lastError, fsCount, wtbCount, totalActiveCount}`.
+
+**Tests**: `npm test` (Node's built-in test runner, no new framework) covers the pure mapping
+logic (`isActive`, `mapToInventoryListing` — including that a 0 top-level price maps to
+`"ASK"` and contact fields never end up as CTA text) and the DB layer (upsert-not-duplicate,
+FS/WTB-same-id-stay-separate, `markMissingInactive` never touching the other type or wiping
+everything on an empty result). These don't hit the real network — this sandbox can't reach
+watchfacts.com — so they can't catch a change in WatchFacts' actual response shape; only a
+live `/admin/sync-inventory` run can.
+
+Known gaps: no persistent session reuse across scheduler ticks (fresh login every 5 min);
+`category_id=19` and `category: "watches"` are hardcoded since that's all the Trading Floor
+currently shows; the response-envelope shape (raw array vs `{data:[...]}`) is handled
+defensively but not confirmed either way.
 
 ## Group monitoring (passive listening)
 
@@ -207,10 +234,9 @@ replies into the group**; it only reads.
   "for sale"/"selling" → a for-sale post. A price is pulled out with a simple `$1,234` pattern
   (doesn't yet handle shorthand like "18k" — falls back to `ASK`). Anything that doesn't match
   either keyword set is ignored — normal group chatter never becomes a listing.
-- Captured posts go to their own file (`group_listings.csv`, next to `wf_inventory.csv`) rather
-  than into the WatchFacts feed directly — kept separate on purpose so a `/admin/sync-inventory`
-  run (which overwrites `wf_inventory.csv` wholesale) can never wipe out what a group has
-  posted. The matching engine reads both together.
+- Captured posts go to their own file (`group_listings.csv`) rather than into the WatchFacts
+  inventory DB directly — kept separate on purpose so a `/admin/sync-inventory` run can never
+  wipe out what a group has posted. `getActiveListings()` in `inventoryDb.ts` merges both.
 - Check what's been captured any time with `GET /admin/group-listings?token=<WEBHOOK_TOKEN>`
   — returns the count and raw CSV, since group monitoring never sends a reply you could watch
   for confirmation.
@@ -278,9 +304,9 @@ curl -X POST "https://<your-railway-domain>/admin/reset-state?phone=<digits-only
   source for any of it exists.
 - No cross-system WatchFacts/Fi membership check (spec §4's discount logic) — would need a
   shared identity layer between the two systems that doesn't exist yet.
-- Matching is keyword-based against a CSV snapshot, not a live feed — refresh it by re-running
-  `POST /admin/upload/inventory` (takes effect immediately, no restart) or editing the file and
-  restarting the process.
+- Matching is keyword-based against whatever's currently active in the inventory DB — kept
+  fresh automatically by the boot-time scheduler (see WatchFacts Trading Floor sync above),
+  or on demand via `POST /admin/sync-inventory`.
 - No delivery-status or read-receipt handling — only inbound text messages are processed.
 - `/admin/upload/*` and `/outreach/*` share one bearer-style token (`WEBHOOK_TOKEN`) passed as a
   URL query param — fine for a single-operator pilot, not a substitute for real auth if more

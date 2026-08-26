@@ -7,12 +7,10 @@ import { alreadyProcessed, getState, resetState } from "./conversation/stateStor
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
-import { loadInventory } from "./data/inventoryStore";
+import { getActiveListings, getSyncStatus } from "./watchfacts/inventoryDb";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
-import { readApiDiscoveryLog } from "./watchfacts/apiDiscovery";
-import { probeAuctionTypes } from "./watchfacts/scraper";
 
 export function createServer() {
   const app = express();
@@ -84,10 +82,11 @@ export function createServer() {
     res.json(readBlastStatus());
   });
 
-  // Real contacts.csv / wf_inventory.csv are git-ignored on purpose, so a fresh deploy's
-  // persistent volume starts empty. These let you push the real files onto a running
-  // deployment (e.g. `curl --data-binary @contacts.csv "https://<host>/admin/upload/contacts?token=..."`)
-  // without needing shell/SSH access to the container.
+  // Real contacts.csv is git-ignored on purpose, so a fresh deploy's persistent volume starts
+  // empty. This lets you push the real file onto a running deployment (e.g.
+  // `curl --data-binary @contacts.csv "https://<host>/admin/upload/contacts?token=..."`)
+  // without needing shell/SSH access to the container. WatchFacts inventory has no equivalent
+  // upload path — it's populated only by syncing from the real API (see /admin/sync-inventory).
   const csvUpload = express.text({ type: "*/*", limit: "20mb" });
 
   app.post("/admin/upload/contacts", csvUpload, (req, res) => {
@@ -98,16 +97,6 @@ export function createServer() {
     fs.writeFileSync(config.data.contactsCsv, req.body);
     const contacts = loadContacts(true);
     res.json({ ok: true, bytes: req.body.length, contacts: contacts.length });
-  });
-
-  app.post("/admin/upload/inventory", csvUpload, (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
-      return res.status(401).json({ error: "invalid token" });
-    }
-    fs.mkdirSync(path.dirname(config.data.inventoryCsv), { recursive: true });
-    fs.writeFileSync(config.data.inventoryCsv, req.body);
-    const listings = loadInventory(true);
-    res.json({ ok: true, bytes: req.body.length, listings: listings.length });
   });
 
   // Read-only view of what group monitoring has captured so far — since it accumulates
@@ -190,59 +179,39 @@ export function createServer() {
       };
     };
     const persistDir = path.resolve(process.env.PERSIST_DIR ?? "./persist");
-    const listings = loadInventory(true);
+    const listings = getActiveListings();
     res.json({
       cwd: process.cwd(),
-      env: { PERSIST_DIR: process.env.PERSIST_DIR ?? null, CONTACTS_CSV: process.env.CONTACTS_CSV ?? null, INVENTORY_CSV: process.env.INVENTORY_CSV ?? null },
+      env: { PERSIST_DIR: process.env.PERSIST_DIR ?? null, CONTACTS_CSV: process.env.CONTACTS_CSV ?? null, INVENTORY_DB: process.env.INVENTORY_DB ?? null },
       persistDir: describe(persistDir),
       contactsCsv: describe(config.data.contactsCsv),
-      inventoryCsv: describe(config.data.inventoryCsv),
+      inventoryDb: describe(config.data.inventoryDb),
       groupListingsCsv: describe(config.data.groupListingsCsv),
       persistDirListing: fs.existsSync(persistDir) ? fs.readdirSync(persistDir) : null,
       persistDataListing: fs.existsSync(path.join(persistDir, "data")) ? fs.readdirSync(path.join(persistDir, "data")) : null,
-      loadedInventoryCount: listings.length,
-      loadedInventorySample: listings.slice(0, 3).map((l) => ({ id: l.id, contactName: l.contactName, item: l.item, source: l.source })),
+      activeListingCount: listings.length,
+      activeListingSample: listings.slice(0, 3).map((l) => ({ id: l.id, type: l.type, contactName: l.contactName, item: l.item, source: l.source })),
     });
   });
 
-  // Temporary investigation endpoint (see src/watchfacts/apiDiscovery.ts) — returns whatever
-  // XHR/fetch/JSON traffic the last /admin/sync-inventory run observed, so we can find
-  // WatchFacts' real data API instead of scraping rendered DOM text. Header VALUES are never
-  // captured (only names), so this is safe to gate behind the same admin token as everything
-  // else rather than needing extra protection.
-  app.get("/admin/api-discovery", (req, res) => {
+  // Sync health at a glance — when it last succeeded, current FS/WTB/total active counts,
+  // and the last error if the most recent attempt failed (data from the previous success
+  // is kept either way; see runInventorySync's "0 results" guard).
+  app.get("/admin/inventory-status", (req, res) => {
     if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
-    const log = readApiDiscoveryLog();
-    if (!log) return res.status(404).json({ error: "no capture yet — run POST /admin/sync-inventory first" });
-    res.json({ ok: true, count: log.length, responses: log });
-  });
-
-  // Temporary investigation endpoint (see probeAuctionTypes in scraper.ts) — logs in once
-  // and tries several likely `auction_type` values directly against WatchFacts' real API,
-  // sidestepping the unreliable NTQ/WTB toggle button. Takes ~10-20s (one login + up to 10
-  // fetches), so it awaits synchronously like /admin/sync-inventory does.
-  app.post("/admin/probe-auction-types", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
-      return res.status(401).json({ error: "invalid token" });
-    }
-    try {
-      const results = await probeAuctionTypes();
-      res.json({ ok: true, results });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
+    res.json(getSyncStatus());
   });
 
   app.use("/assets", express.static(config.assets.dir));
 
-  // Logs into WatchFacts and re-scrapes the Trading Floor feed (both FS and WTB) into
-  // wf_inventory.csv, replacing whatever's there. Requires WATCHFACTS_EMAIL/PASSWORD.
-  // Takes ~10-30s (login + two page loads), so this awaits the result rather than
-  // backgrounding it like /outreach/start — call it from an external cron for a refresh
-  // schedule, e.g. `curl -X POST ".../admin/sync-inventory?token=..."` every hour.
-  let inventorySyncRunning = false;
+  // Logs into WatchFacts and re-syncs the Trading Floor feed (both FS and WTB) via the real
+  // available-flash-sales API into the SQLite-backed inventory store — see
+  // src/watchfacts/{api,syncInventory,inventoryDb}.ts. Requires WATCHFACTS_EMAIL/PASSWORD.
+  // Takes ~10-30s (login + paginated fetches), so this awaits the result rather than
+  // backgrounding it like /outreach/start. The scheduler in index.ts calls this on its own
+  // interval; this endpoint is for a manual/on-demand re-sync.
   app.post("/admin/sync-inventory", async (req, res) => {
     if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
@@ -250,23 +219,12 @@ export function createServer() {
     if (!config.watchfacts.email || !config.watchfacts.password) {
       return res.status(400).json({ error: "WATCHFACTS_EMAIL / WATCHFACTS_PASSWORD not set" });
     }
-    if (inventorySyncRunning) {
-      return res.status(409).json({ error: "a sync is already running" });
-    }
-    inventorySyncRunning = true;
-    const debugBase = config.publicBaseUrl || "";
-    const debugScreenshots = {
-      sale: `${debugBase}/assets/debug-trading-fs.png`,
-      wtb: `${debugBase}/assets/debug-trading-wtb.png`,
-    };
     try {
       const result = await runInventorySync();
-      loadInventory(true);
-      res.json({ ok: true, ...result, debugScreenshots });
+      res.json({ ok: true, ...result });
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message, debugScreenshots });
-    } finally {
-      inventorySyncRunning = false;
+      const message = (err as Error).message;
+      res.status(message === "a sync is already running" ? 409 : 500).json({ error: message });
     }
   });
 

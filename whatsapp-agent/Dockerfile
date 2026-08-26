@@ -11,6 +11,10 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
+# build-essential + python3: better-sqlite3 ships prebuilt binaries for common platforms, but
+# falls back to compiling from source via node-gyp if no prebuild matches this image's
+# platform/ABI — without these, that fallback fails the whole build instead of just being slow.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
 RUN npm ci --omit=dev
 
 # Chromium + OS deps for the optional WatchFacts scraper (src/watchfacts/scraper.ts).
