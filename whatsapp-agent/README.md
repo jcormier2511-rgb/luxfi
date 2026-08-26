@@ -196,6 +196,33 @@ page for the full, non-truncated listing text) has not been live-tested yet:
 Known gaps: only reads the first page of results (no "load more"/pagination handling), and
 `category` is hardcoded to `"watches"` since that's all the Trading Floor currently shows.
 
+## Group monitoring (passive listening)
+
+Add this channel's WhatsApp number to a real dealer group the same way you'd add any contact,
+and the bot silently watches for WTB/FS-style posts and feeds them into the matching engine —
+this is the original "Fi monitors dealer groups" idea from the landing page. It **never
+replies into the group**; it only reads.
+
+- Recognizes dealer shorthand: `WTB`/`ISO`/`LF`/"looking for" → a want-to-buy post, `FS`/`WTS`/
+  "for sale"/"selling" → a for-sale post. A price is pulled out with a simple `$1,234` pattern
+  (doesn't yet handle shorthand like "18k" — falls back to `ASK`). Anything that doesn't match
+  either keyword set is ignored — normal group chatter never becomes a listing.
+- Captured posts go to their own file (`group_listings.csv`, next to `wf_inventory.csv`) rather
+  than into the WatchFacts feed directly — kept separate on purpose so a `/admin/sync-inventory`
+  run (which overwrites `wf_inventory.csv` wholesale) can never wipe out what a group has
+  posted. The matching engine reads both together.
+- Check what's been captured any time with `GET /admin/group-listings?token=<WEBHOOK_TOKEN>`
+  — returns the count and raw CSV, since group monitoring never sends a reply you could watch
+  for confirmation.
+
+**Not yet validated against a real group** — the group-vs-1:1 detection assumes the standard
+WhatsApp/Whapi convention (a group's `chat_id` ends in `@g.us`, and `from_name` carries the
+sender's display name), inferred from documentation rather than a live group webhook payload.
+Add the number to a real group, post a test "WTB ..." message, and check
+`GET /admin/group-listings` — if it's empty, check the Railway deploy logs for the raw webhook
+body around that time to see the actual field names Whapi sent, and adjust
+`extractIncomingMessages()` in `src/whapi/client.ts` accordingly.
+
 ## Conversation flow
 
 1. **Outreach**: intro message (+ banner, if configured) sent to each Tier A/B contact.

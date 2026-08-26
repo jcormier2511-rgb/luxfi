@@ -52,6 +52,10 @@ export const config = {
   data: {
     contactsCsv: path.resolve(process.env.CONTACTS_CSV ?? path.join(persistDir, "data/contacts.csv")),
     inventoryCsv: path.resolve(process.env.INVENTORY_CSV ?? path.join(persistDir, "data/wf_inventory.csv")),
+    // Separate from inventoryCsv on purpose: the WatchFacts sync overwrites inventoryCsv
+    // wholesale, which would wipe out anything captured here if they shared a file. Group
+    // posts accumulate by appending; loadInventory() merges both at read time.
+    groupListingsCsv: path.resolve(process.env.GROUP_LISTINGS_CSV ?? path.join(persistDir, "data/group_listings.csv")),
   },
   // Self-hosted alternative to a third-party image host: POST /admin/upload/banner writes
   // here, and it's served back out at PUBLIC_BASE_URL + /assets/<file>.

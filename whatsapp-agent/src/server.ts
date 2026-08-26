@@ -5,6 +5,7 @@ import { config } from "./config";
 import { extractIncomingMessages, IncomingWebhook, sendText } from "./whapi/client";
 import { alreadyProcessed } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
+import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { loadInventory } from "./data/inventoryStore";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
@@ -32,8 +33,13 @@ export function createServer() {
     const incoming = extractIncomingMessages(body).filter((m) => !alreadyProcessed(m.id));
 
     for (const message of incoming) {
-      const contact = getTierABContacts().find((c) => c.phone === message.phone);
       try {
+        if (message.isGroup) {
+          // Silent by design — never reply into a group, only ingest WTB/FS-looking posts.
+          handleGroupMessage(message.groupId!, message.phone, message.senderName, message.text);
+          continue;
+        }
+        const contact = getTierABContacts().find((c) => c.phone === message.phone);
         const { messages } = handleIncomingMessage(message.phone, message.text, contact);
         for (const reply of messages) {
           await sendText(message.phone, reply);
@@ -100,6 +106,21 @@ export function createServer() {
     fs.writeFileSync(config.data.inventoryCsv, req.body);
     const listings = loadInventory(true);
     res.json({ ok: true, bytes: req.body.length, listings: listings.length });
+  });
+
+  // Read-only view of what group monitoring has captured so far — since it accumulates
+  // silently (no reply into the group), this is the only way to confirm it's working
+  // without SSH/shell access to the container.
+  app.get("/admin/group-listings", (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    if (!fs.existsSync(config.data.groupListingsCsv)) {
+      return res.json({ ok: true, count: 0, csv: "" });
+    }
+    const csv = fs.readFileSync(config.data.groupListingsCsv, "utf-8");
+    const count = csv.trim().split("\n").length - 1; // minus header
+    res.json({ ok: true, count, csv });
   });
 
   // Self-hosts the banner image when there's no third-party URL to point BANNER_IMAGE_URL at:

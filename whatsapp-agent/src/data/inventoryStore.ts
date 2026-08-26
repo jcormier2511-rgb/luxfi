@@ -14,14 +14,10 @@ function resolveCsvPath(): string {
   return sample;
 }
 
-let cache: InventoryListing[] | null = null;
-
-export function loadInventory(forceReload = false): InventoryListing[] {
-  if (cache && !forceReload) return cache;
-  const csvPath = resolveCsvPath();
+function parseInventoryCsv(csvPath: string): InventoryListing[] {
   const raw = fs.readFileSync(csvPath, "utf-8");
   const rows = parse(raw, { columns: true, skip_empty_lines: true, trim: true }) as Record<string, string>[];
-  cache = rows.map((row) => ({
+  return rows.map((row) => ({
     id: row.id,
     type: (row.type?.toUpperCase() as ListingType) ?? "FS",
     category: row.category,
@@ -37,6 +33,17 @@ export function loadInventory(forceReload = false): InventoryListing[] {
     rating: row.rating || "",
     description: row.description || "",
   }));
+}
+
+let cache: InventoryListing[] | null = null;
+
+export function loadInventory(forceReload = false): InventoryListing[] {
+  if (cache && !forceReload) return cache;
+  const main = parseInventoryCsv(resolveCsvPath());
+  // Kept in a separate file on purpose (see config.data.groupListingsCsv) so a WatchFacts
+  // sync's wholesale overwrite of the main CSV never wipes out group-captured listings.
+  const groupPosts = fs.existsSync(config.data.groupListingsCsv) ? parseInventoryCsv(config.data.groupListingsCsv) : [];
+  cache = [...main, ...groupPosts];
   return cache;
 }
 
