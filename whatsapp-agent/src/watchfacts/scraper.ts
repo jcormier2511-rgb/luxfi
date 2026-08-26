@@ -44,6 +44,62 @@ async function login(page: Page): Promise<void> {
   await Promise.all([page.waitForLoadState("networkidle").catch(() => {}), submit.click()]);
 }
 
+export interface AuctionTypeProbeResult {
+  auctionType: string;
+  status: number;
+  ok: boolean;
+  bodySample: string;
+}
+
+const AUCTION_TYPE_CANDIDATES = [
+  "wtb",
+  "buy",
+  "want_to_buy",
+  "want-to-buy",
+  "ntq",
+  "purchase",
+  "request",
+  "looking_to_buy",
+  "ltb",
+  "buying",
+];
+
+/**
+ * Temporary investigation tool — NOT part of the production sync path. The UI's NTQ/WTB
+ * toggle button isn't reliably clickable via Playwright (times out — likely not a real
+ * <button>/<a> element), so instead of fighting that selector, this logs in once and tries
+ * the real `available-flash-sales` API directly (discovered via apiDiscovery.ts) with a set
+ * of likely `auction_type` values, from inside the authenticated page context so the
+ * session cookie is included automatically. Whichever value returns real listings (not an
+ * error or empty array) is the one syncInventory.ts should use for WTB.
+ */
+export async function probeAuctionTypes(): Promise<AuctionTypeProbeResult[]> {
+  const browser: Browser = await chromium.launch();
+  const page = await browser.newPage();
+  try {
+    await login(page);
+    await page.goto("https://watchfacts.com/buy/all?listing_type=sale", { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(1500);
+
+    return await page.evaluate(async (candidates: string[]) => {
+      const out: { auctionType: string; status: number; ok: boolean; bodySample: string }[] = [];
+      for (const c of candidates) {
+        try {
+          const url = `https://watchfacts.com/available-flash-sales?pageSize=5&page=1&auction_type=${encodeURIComponent(c)}&category_id=19&sort_by=date-newest`;
+          const res = await fetch(url, { credentials: "include" });
+          const text = await res.text();
+          out.push({ auctionType: c, status: res.status, ok: res.ok, bodySample: text.slice(0, 800) });
+        } catch (err) {
+          out.push({ auctionType: c, status: 0, ok: false, bodySample: String(err) });
+        }
+      }
+      return out;
+    }, AUCTION_TYPE_CANDIDATES);
+  } finally {
+    await browser.close();
+  }
+}
+
 /**
  * Walks up from the "#<id>" badge text (first one in DOM order, assumed most-recent-first
  * sort — unverified) to the nearest ancestor that also contains a "$..." price line, then

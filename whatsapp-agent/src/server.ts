@@ -12,6 +12,7 @@ import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
 import { readApiDiscoveryLog } from "./watchfacts/apiDiscovery";
+import { probeAuctionTypes } from "./watchfacts/scraper";
 
 export function createServer() {
   const app = express();
@@ -216,6 +217,22 @@ export function createServer() {
     const log = readApiDiscoveryLog();
     if (!log) return res.status(404).json({ error: "no capture yet — run POST /admin/sync-inventory first" });
     res.json({ ok: true, count: log.length, responses: log });
+  });
+
+  // Temporary investigation endpoint (see probeAuctionTypes in scraper.ts) — logs in once
+  // and tries several likely `auction_type` values directly against WatchFacts' real API,
+  // sidestepping the unreliable NTQ/WTB toggle button. Takes ~10-20s (one login + up to 10
+  // fetches), so it awaits synchronously like /admin/sync-inventory does.
+  app.post("/admin/probe-auction-types", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    try {
+      const results = await probeAuctionTypes();
+      res.json({ ok: true, results });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
   });
 
   app.use("/assets", express.static(config.assets.dir));
