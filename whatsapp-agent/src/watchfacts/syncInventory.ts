@@ -51,10 +51,11 @@ export interface SyncResult {
 export async function runInventorySync(): Promise<SyncResult> {
   const session = await openWatchFactsSession();
   try {
-    const [forSale, wtb] = await Promise.all([
-      session.fetchTradingListings("FS"),
-      session.fetchTradingListings("WTB"),
-    ]);
+    // Sequential, not Promise.all: both calls navigate the same underlying browser tab,
+    // so running them concurrently races two page.goto()s against each other and produces
+    // garbage results (this is exactly what caused an earlier 0-vs-20 FS/WTB split).
+    const forSale = await session.fetchTradingListings("FS");
+    const wtb = await session.fetchTradingListings("WTB");
     const rows = [...forSale, ...wtb];
     if (rows.length === 0) {
       throw new Error("Fetched 0 listings total — refusing to overwrite wf_inventory.csv with an empty file.");
