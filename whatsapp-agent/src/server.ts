@@ -11,6 +11,7 @@ import { loadInventory } from "./data/inventoryStore";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
+import { readApiDiscoveryLog } from "./watchfacts/apiDiscovery";
 
 export function createServer() {
   const app = express();
@@ -201,6 +202,20 @@ export function createServer() {
       loadedInventoryCount: listings.length,
       loadedInventorySample: listings.slice(0, 3).map((l) => ({ id: l.id, contactName: l.contactName, item: l.item, source: l.source })),
     });
+  });
+
+  // Temporary investigation endpoint (see src/watchfacts/apiDiscovery.ts) — returns whatever
+  // XHR/fetch/JSON traffic the last /admin/sync-inventory run observed, so we can find
+  // WatchFacts' real data API instead of scraping rendered DOM text. Header VALUES are never
+  // captured (only names), so this is safe to gate behind the same admin token as everything
+  // else rather than needing extra protection.
+  app.get("/admin/api-discovery", (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const log = readApiDiscoveryLog();
+    if (!log) return res.status(404).json({ error: "no capture yet — run POST /admin/sync-inventory first" });
+    res.json({ ok: true, count: log.length, responses: log });
   });
 
   app.use("/assets", express.static(config.assets.dir));

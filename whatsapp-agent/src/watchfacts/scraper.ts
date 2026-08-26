@@ -3,6 +3,7 @@ import path from "path";
 import { chromium, Browser, Page } from "playwright";
 import { config } from "../config";
 import { InventoryListing, ListingType } from "../types";
+import { attachApiDiscovery, saveApiDiscoveryLog } from "./apiDiscovery";
 
 export interface LatestListing {
   id: string;
@@ -250,6 +251,10 @@ async function fetchTradingListings(page: Page, type: ListingType): Promise<Inve
 export async function openWatchFactsSession(): Promise<WatchFactsSession> {
   const browser: Browser = await chromium.launch();
   const page = await browser.newPage();
+  // Temporary investigation aid (see src/watchfacts/apiDiscovery.ts) — captures every
+  // XHR/fetch/JSON response across login + Trading Floor navigation so the real API
+  // endpoint (if one exists) can be found instead of scraping rendered DOM text.
+  const discoveryLog = attachApiDiscovery(page);
   await login(page);
 
   return {
@@ -273,6 +278,7 @@ export async function openWatchFactsSession(): Promise<WatchFactsSession> {
       }
     },
     async close() {
+      saveApiDiscoveryLog(discoveryLog);
       await browser.close();
     },
   };
