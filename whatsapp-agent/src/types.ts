@@ -34,25 +34,25 @@ export interface ItemRequest {
   query: string;
 }
 
-export type ConversationStage =
-  | "new"
-  | "awaiting_items"
-  | "awaiting_reveal_consent"
-  | "trial_ended"
-  | "opted_out";
+export type MatchDecision = "pending" | "approved" | "passed";
 
-export interface PendingReveal {
+/**
+ * The most recent search's results, awaiting "approve <n>" / "pass <n>" replies. Only one
+ * set is live at a time — starting a new search replaces it, undecided entries just lapse.
+ */
+export interface PendingMatchSet {
   request: ItemRequest;
   matches: InventoryListing[];
+  decisions: MatchDecision[]; // parallel to `matches`
 }
+
+export type ConversationStage = "new" | "active" | "opted_out";
 
 export interface ConversationState {
   phone: string;
   stage: ConversationStage;
-  itemsRequested: ItemRequest[];
-  itemsCompleted: number; // how many items have received their match results
-  lastSuggestions?: ItemRequest[]; // the 3 suggested items shown, so numeric replies can resolve
-  queuedItems?: ItemRequest[]; // items parsed but not yet searched (e.g. picked "1,3" at once)
-  pendingReveal?: PendingReveal; // matches found but contact info not yet consented to
+  approvedCount: number; // trial = TRIAL_MAX_APPROVED_MATCHES approved matches, not searches
+  hired: boolean; // said "join" after the trial — unlocks unlimited approvals (tracked only, no real billing yet)
+  pendingMatches?: PendingMatchSet;
   updatedAt: string;
 }

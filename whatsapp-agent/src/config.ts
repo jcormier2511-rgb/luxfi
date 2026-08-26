@@ -28,16 +28,11 @@ export const config = {
       process.env.INTRO_MESSAGE ??
       "Hi {{name}} — this is Fi from LuxFi. Tell me up to 3 items you're looking to buy or sell and I'll find you matches — free for your first 3 items.",
     bannerImageUrl: process.env.BANNER_IMAGE_URL ?? "",
+    // MEMBERSHIP_URL is currently unused by the conversation flow — the Fi Conversation Flow
+    // Spec (v3) keeps "hiring Fi" ($50/mo) and "WatchFacts membership" ($150/mo) deliberately
+    // separate, so this WatchFacts signup link isn't mixed into the Fi hiring pitch. Kept
+    // configured for whenever the cross-system membership check (spec §4/Open Items) exists.
     membershipUrl: process.env.MEMBERSHIP_URL ?? "https://watchfacts.com/login",
-    demoUrl: process.env.DEMO_URL ?? "",
-    // Sent as the header when a search kicks off for one item, per the provided copy —
-    // phrased from the recipient's side of the trade (buying needs sellers, selling needs buyers).
-    searchingMessageBuyer:
-      process.env.SEARCHING_MESSAGE_BUYER ??
-      "September Special: I'll match you with 3 verified sellers, free — checking what's out there now and flagging anything that hits the moment it's posted.",
-    searchingMessageSeller:
-      process.env.SEARCHING_MESSAGE_SELLER ??
-      "September Special: I'll match you with 3 verified buyers, free — checking what's out there now and flagging anything that hits the moment it's posted.",
     // Cap how many never-contacted Tier A/B contacts a single blast run will message —
     // keeps a pilot run bounded regardless of how large the underlying CSV is.
     batchLimit: Number(process.env.OUTREACH_BATCH_LIMIT ?? 50),
@@ -66,8 +61,25 @@ export const config = {
   // set this to the platform-assigned public domain (e.g. https://your-app.up.railway.app).
   publicBaseUrl: (process.env.PUBLIC_BASE_URL ?? "").replace(/\/$/, ""),
   trial: {
-    maxItems: Number(process.env.TRIAL_MAX_ITEMS ?? 3),
+    // Per the Fi Conversation Flow Spec (v3): trial = 3 *approved* matches, not 3 searches.
+    // Searching and passing are unlimited; only "approve" is metered.
+    maxApprovedMatches: Number(process.env.TRIAL_MAX_APPROVED_MATCHES ?? process.env.TRIAL_MAX_ITEMS ?? 3),
     maxOptionsPerItem: Number(process.env.TRIAL_MAX_OPTIONS_PER_ITEM ?? 5),
+  },
+  // Fi Conversation Flow Spec (v3) copy. Billing is tracked only (approvedCount / hired on
+  // ConversationState) — no payment processor is wired in, so "join" just unlocks unlimited
+  // approvals going forward rather than charging anything.
+  fiFlow: {
+    introMessage:
+      process.env.FI_INTRO_MESSAGE ??
+      "Hi, I'm Fi — your personal luxury concierge.\nI'm here to help you:\n1. Find a buyer\n2. Find a seller\n3. Check pricing and market trends\n4. Check dealer reputation / references\n\nI'll automatically work on your first 3 matches so you can see what I can do.",
+    conversionPitch: (firstName: string) =>
+      `Hi ${firstName}, I hope you've enjoyed having me work for you.\nI can keep monitoring the market and working on your behalf automatically.\n\n` +
+      `Fi Membership — $50/month (free with WatchFacts membership)\n- $2 per approved match/task\n\n` +
+      `I'll continuously help you find buyers, find sellers, check pricing, and verify dealer reputation.\n\n` +
+      `Reply "join" to keep Fi working for you.`,
+    declineMessage:
+      'No problem — I\'ll still flag matches for you, but approving one going forward means becoming a Fi member first.\nMessage me "join" anytime you\'re ready.',
   },
   // Optional: personalizes each contact's intro with their own most recent WatchFacts
   // listing. Requires Playwright + a Chromium install in whatever environment actually

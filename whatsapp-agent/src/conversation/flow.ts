@@ -1,11 +1,9 @@
 import { config } from "../config";
 import { Contact, ConversationState, ItemRequest } from "../types";
-import { findMatches, formatMatchAnonymous, formatMatchRevealed } from "../matching/engine";
-import { suggestListings } from "../data/inventoryStore";
+import { findMatches, formatMatchCard, formatMatchApproved } from "../matching/engine";
 import { getState, saveState } from "./stateStore";
 
 const OPT_OUT_WORDS = ["stop", "unsubscribe", "cancel", "opt out", "optout"];
-const AFFIRMATIVE = /^(y|yes|yeah|yep|yup|sure|please|ok|okay|send it|send them|send)\b/i;
 
 function normalize(text: string): string {
   return text.trim().toLowerCase();
@@ -16,37 +14,6 @@ function isOptOut(text: string): boolean {
   return OPT_OUT_WORDS.some((w) => n === w || n.startsWith(`${w} `));
 }
 
-function isAffirmative(text: string): boolean {
-  return AFFIRMATIVE.test(text.trim());
-}
-
-function trialEndedMessage(): string {
-  const demo = config.outreach.demoUrl ? ` or schedule a demo here: ${config.outreach.demoUrl}` : "";
-  return `Reached my free quota — you're welcome to start a trial membership here: ${config.outreach.membershipUrl}${demo}.`;
-}
-
-/** Suggested items pulled from the WF feed, tailored to the contact's specialty when known. */
-export function buildSuggestions(contact?: Contact): ItemRequest[] {
-  const listings = suggestListings(3, contact?.specialty);
-  return listings.map((listing) => ({
-    action: listing.type === "FS" ? "buy" : "sell",
-    query: listing.item.toLowerCase().startsWith(listing.brand.toLowerCase())
-      ? listing.item
-      : `${listing.brand} ${listing.item}`,
-  }));
-}
-
-export function renderSuggestionMenu(suggestions: ItemRequest[]): string {
-  const lines = suggestions.map(
-    (s, i) => `${i + 1}. ${s.action === "buy" ? "Buy" : "Sell"}: ${s.query}`
-  );
-  return (
-    `Here's what's moving on WF right now:\n${lines.join("\n")}\n\n` +
-    `Reply with the numbers you want (e.g. "1,3"), or just tell me up to 3 items you're looking to ` +
-    `buy or sell — e.g. "buy: Omega Speedmaster" or "selling: Cartier Love bracelet".`
-  );
-}
-
 const BUY_KEYWORDS = /\b(buy|buying|wtb|looking for|want|need)\b/i;
 const SELL_KEYWORDS = /\b(sell|selling|fs|for sale)\b/i;
 
@@ -54,7 +21,7 @@ function classify(segment: string): ItemRequest | null {
   const text = segment.trim();
   if (!text) return null;
   // Require an explicit buy/sell signal — otherwise plain chatter ("hi", "ok", "thanks")
-  // would get misread as an item request and silently burn a trial slot.
+  // would get misread as an item request.
   let action: ItemRequest["action"];
   if (SELL_KEYWORDS.test(text)) action = "sell";
   else if (BUY_KEYWORDS.test(text)) action = "buy";
@@ -66,12 +33,7 @@ function classify(segment: string): ItemRequest | null {
   return { action, query };
 }
 
-function parseNumberSelections(text: string): number[] {
-  const matches = text.match(/\b[1-3]\b/g) ?? [];
-  return [...new Set(matches.map(Number))];
-}
-
-function parseFreeTextItems(text: string): ItemRequest[] {
+export function parseItemRequests(text: string): ItemRequest[] {
   const segments = text
     .split(/\n|,|;|\band\b/i)
     .map((s) => s.trim())
@@ -89,24 +51,15 @@ function parseFreeTextItems(text: string): ItemRequest[] {
   return items;
 }
 
-export function parseItemRequests(text: string, lastSuggestions?: ItemRequest[]): ItemRequest[] {
-  const items: ItemRequest[] = [];
-  const seen = new Set<string>();
-  const add = (r: ItemRequest) => {
-    const key = `${r.action}:${r.query.toLowerCase()}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    items.push(r);
-  };
+interface DecisionCommand {
+  action: "approve" | "pass";
+  index: number; // 1-based
+}
 
-  if (lastSuggestions?.length) {
-    for (const n of parseNumberSelections(text)) {
-      const pick = lastSuggestions[n - 1];
-      if (pick) add(pick);
-    }
-  }
-  for (const r of parseFreeTextItems(text)) add(r);
-  return items;
+function parseDecisionCommand(text: string): DecisionCommand | null {
+  const m = text.trim().match(/^(approve|pass)\b\s*#?(\d+)?/i);
+  if (!m) return null;
+  return { action: m[1].toLowerCase() as "approve" | "pass", index: m[2] ? parseInt(m[2], 10) : 1 };
 }
 
 export interface FlowResult {
@@ -114,50 +67,60 @@ export interface FlowResult {
   messages: string[];
 }
 
-/**
- * Pulls queued items through search + consent one at a time (only one pendingReveal can be
- * open at once), then either continues the queue, prompts for the next item, or ends the trial.
- * Mutates `state` and appends to `messages` in place; caller persists + returns the result.
- */
-function advance(state: ConversationState, messages: string[]): void {
-  while (
-    state.itemsRequested.length < config.trial.maxItems &&
-    (state.queuedItems?.length ?? 0) > 0 &&
-    !state.pendingReveal
-  ) {
-    const request = state.queuedItems!.shift()!;
-    state.itemsRequested.push(request);
-    state.itemsCompleted += 1;
-
-    const matches = findMatches(request, config.trial.maxOptionsPerItem);
-    const searchingLine =
-      request.action === "buy" ? config.outreach.searchingMessageBuyer : config.outreach.searchingMessageSeller;
-
-    if (matches.length === 0) {
-      messages.push(`${searchingLine}\n\nNo live matches yet for that one — I'll keep watching the network.`);
-      continue;
-    }
-
-    const body = matches.map((m, i) => formatMatchAnonymous(m, i)).join("\n");
-    messages.push(`${searchingLine}\n\n${body}\n\nHere are the people requesting "${request.query}"… do you want their info?`);
-    state.pendingReveal = { request, matches };
-    state.stage = "awaiting_reveal_consent";
+/** Runs a fresh search for `request`, showing Match Cards and arming them for approve/pass. */
+function startSearch(state: ConversationState, request: ItemRequest, messages: string[]): void {
+  const matches = findMatches(request, config.trial.maxOptionsPerItem);
+  if (matches.length === 0) {
+    messages.push(`No live matches yet for "${request.query}" — I'll keep watching the network.`);
+    state.pendingMatches = undefined;
+    return;
   }
 
-  if (!state.pendingReveal) {
-    if (state.itemsRequested.length >= config.trial.maxItems) {
-      state.stage = "trial_ended";
-      messages.push(trialEndedMessage());
-    } else {
-      state.stage = "awaiting_items";
-      const left = config.trial.maxItems - state.itemsRequested.length;
-      messages.push(`Send me your next item (buy or sell) whenever you're ready — you have ${left} left.`);
-    }
+  matches.forEach((m, i) => messages.push(formatMatchCard(m, i, request.action)));
+  messages.push('Reply "approve <number>" to connect, or "pass <number>" to skip one.');
+  state.pendingMatches = { request, matches, decisions: matches.map(() => "pending") };
+}
+
+/** Handles an "approve <n>" / "pass <n>" reply against the currently pending match set. */
+function handleDecision(state: ConversationState, decision: DecisionCommand, messages: string[], firstName: string): void {
+  const pending = state.pendingMatches!;
+  const idx = decision.index - 1;
+  const current = pending.decisions[idx];
+
+  if (idx < 0 || idx >= pending.matches.length) {
+    messages.push(`I don't have a match #${decision.index} — pick a number from the list above.`);
+    return;
+  }
+  if (current !== "pending") {
+    messages.push(`You already ${current} match #${decision.index}.`);
+    return;
+  }
+
+  if (decision.action === "pass") {
+    pending.decisions[idx] = "passed";
+    messages.push(`Passing on #${decision.index}.`);
+    return;
+  }
+
+  // Approving is the only thing metered against the trial.
+  if (state.approvedCount >= config.trial.maxApprovedMatches && !state.hired) {
+    messages.push(config.fiFlow.declineMessage);
+    return;
+  }
+
+  pending.decisions[idx] = "approved";
+  state.approvedCount += 1;
+  messages.push(formatMatchApproved(pending.matches[idx], idx));
+
+  if (state.approvedCount === config.trial.maxApprovedMatches && !state.hired) {
+    messages.push(config.fiFlow.conversionPitch(firstName));
   }
 }
 
 export function handleIncomingMessage(phone: string, text: string, contact?: Contact): FlowResult {
   const state = getState(phone);
+  const messages: string[] = [];
+  const firstName = contact?.name?.trim().split(/\s+/)[0] || "there";
 
   if (isOptOut(text)) {
     state.stage = "opted_out";
@@ -173,55 +136,52 @@ export function handleIncomingMessage(phone: string, text: string, contact?: Con
     }
   }
 
-  if (state.stage === "trial_ended") {
-    return { state, messages: [trialEndedMessage()] };
+  if (/^join$/i.test(text.trim())) {
+    state.hired = true;
+    saveState(state);
+    return {
+      state,
+      messages: ["You're all set — Fi will keep working for you. I'll flag every match and you can approve whenever you're ready."],
+    };
   }
 
-  const messages: string[] = [];
-
-  if (state.stage === "awaiting_reveal_consent" && state.pendingReveal) {
-    const wantsInfo = isAffirmative(text);
-    if (wantsInfo) {
-      const revealed = state.pendingReveal.matches.map((m, i) => formatMatchRevealed(m, i)).join("\n");
-      messages.push(revealed);
-    }
-    state.pendingReveal = undefined;
-
-    // If they didn't just say yes, treat the message as a possible new item instead of silently dropping it.
-    const extra = wantsInfo ? [] : parseItemRequests(text, state.lastSuggestions);
-    if (extra.length > 0) {
-      const remainingSlots = config.trial.maxItems - state.itemsRequested.length - (state.queuedItems?.length ?? 0);
-      state.queuedItems = [...(state.queuedItems ?? []), ...extra.slice(0, Math.max(0, remainingSlots))];
-    }
-
-    advance(state, messages);
+  const decision = parseDecisionCommand(text);
+  if (decision && state.pendingMatches) {
+    handleDecision(state, decision, messages, firstName);
     saveState(state);
     return { state, messages };
   }
 
-  const parsed = parseItemRequests(text, state.stage === "awaiting_items" ? state.lastSuggestions : undefined);
+  const parsed = parseItemRequests(text);
 
-  if (state.stage === "new" && parsed.length === 0) {
-    const suggestions = buildSuggestions(contact);
-    state.stage = "awaiting_items";
-    state.lastSuggestions = suggestions;
-    saveState(state);
-    return { state, messages: [renderSuggestionMenu(suggestions)] };
+  if (state.stage === "new") {
+    messages.push(config.fiFlow.introMessage);
+    state.stage = "active";
+    if (parsed.length === 0) {
+      saveState(state);
+      return { state, messages };
+    }
   }
 
   if (parsed.length === 0) {
-    return {
-      state,
-      messages: [
-        'Sorry, I didn\'t catch an item there. Try e.g. "buy: Rolex Daytona" or "selling: Hermes Birkin", or reply with a number from the list above.',
-      ],
-    };
+    if (decision) {
+      messages.push("I don't have any open matches to decide on right now — search for an item first.");
+    } else if (state.pendingMatches) {
+      messages.push('Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.');
+    } else {
+      messages.push('Try "buy: Rolex Daytona" or "selling: Hermes Birkin".');
+    }
+    saveState(state);
+    return { state, messages };
   }
 
-  const remainingSlots = config.trial.maxItems - state.itemsRequested.length;
-  state.queuedItems = [...(state.queuedItems ?? []), ...parsed.slice(0, Math.max(0, remainingSlots))];
+  // Only one item searched at a time — a new search replaces whatever was still pending.
+  // Unlike approvals, searching itself is unlimited, so there's no queue to manage.
+  if (parsed.length > 1) {
+    messages.push(`I'll start with the first one — send me the others one at a time whenever you're ready.`);
+  }
+  startSearch(state, parsed[0], messages);
 
-  advance(state, messages);
   saveState(state);
   return { state, messages };
 }

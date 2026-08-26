@@ -43,21 +43,34 @@ export function findMatches(request: ItemRequest, limit: number): InventoryListi
     .slice(0, limit);
 }
 
-function displayName(listing: InventoryListing): string {
+function watchName(listing: InventoryListing): string {
   if (listing.description) return listing.description;
   return listing.item.toLowerCase().startsWith(listing.brand.toLowerCase())
     ? listing.item
     : `${listing.brand} ${listing.item}`;
 }
 
-/** Shown before consent to reveal contact info — item details only, no way to identify or reach the counterparty. */
-export function formatMatchAnonymous(listing: InventoryListing, index: number): string {
+/**
+ * Fi Conversation Flow Spec (v3) §2 Match Card — counterparty name and watch details are
+ * shown up front (no separate anonymized/reveal step); "approve"/"pass" is what's metered
+ * against the trial, and approving is what additionally surfaces the phone number.
+ * "Fi Intelligence" (dealer reputation, price trend, market range, authenticity) is omitted
+ * — no data source for any of that exists in the pipeline yet.
+ */
+export function formatMatchCard(listing: InventoryListing, index: number, action: ItemRequest["action"]): string {
+  const roleLabel = action === "buy" ? "Seller" : "Buyer";
+  const priceLabel = action === "buy" ? "Asking" : "Bid";
   const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
-  return `${index + 1}. ${displayName(listing)}${listing.ref ? ` (${listing.ref})` : ""} — ${listing.condition}, ${priceText}, ${listing.location} · ${listing.rating ? `${listing.rating}★` : "unrated"}`;
+  return (
+    `Potential Match #${index + 1}\n` +
+    `${roleLabel}: ${listing.contactName || "Unnamed"}\n` +
+    `Watch: ${watchName(listing)}\n` +
+    `${priceLabel}: ${priceText}\n` +
+    `Location: ${listing.location || "Not specified"}`
+  );
 }
 
-/** Shown once the contact says yes to "do you want their info?" — adds name + phone. */
-export function formatMatchRevealed(listing: InventoryListing, index: number): string {
-  const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
-  return `${index + 1}. ${displayName(listing)}${listing.ref ? ` (${listing.ref})` : ""} — ${listing.condition}, ${priceText}, ${listing.location}\n   Contact: ${listing.contactName} · ${listing.contactPhone} · ${listing.rating ? `${listing.rating}★` : "unrated"} · ${listing.source}`;
+/** Sent after "approve <n>" — adds the phone number so the two sides can actually connect. */
+export function formatMatchApproved(listing: InventoryListing, index: number): string {
+  return `Approved #${index + 1} — connecting you with ${listing.contactName || "them"}: ${listing.contactPhone}`;
 }

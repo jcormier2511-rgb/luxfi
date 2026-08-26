@@ -46,17 +46,3 @@ export function loadInventory(forceReload = false): InventoryListing[] {
   cache = [...main, ...groupPosts];
   return cache;
 }
-
-/** Pick up to `count` trending/representative listings to suggest as starter items. */
-export function suggestListings(count = 3, category?: string): InventoryListing[] {
-  const all = loadInventory();
-  const pool = category ? all.filter((l) => l.category === category) : all;
-  const source = pool.length >= count ? pool : all;
-  // Simple spread: take evenly-spaced items so suggestions vary by category.
-  const step = Math.max(1, Math.floor(source.length / count));
-  const picks: InventoryListing[] = [];
-  for (let i = 0; i < source.length && picks.length < count; i += step) {
-    picks.push(source[i]);
-  }
-  return picks.slice(0, count);
-}

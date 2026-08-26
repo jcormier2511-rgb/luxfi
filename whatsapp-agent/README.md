@@ -225,22 +225,28 @@ body around that time to see the actual field names Whapi sent, and adjust
 
 ## Conversation flow
 
-1. **Outreach**: intro message (+ banner, if configured) sent to each Tier A/B contact.
-2. **First reply**: bot shows 3 suggested items pulled from the WF feed and asks the contact to
-   pick numbers (`1,3`) or name their own items (`buy: Omega Speedmaster`, `selling: Cartier
-   Love bracelet`).
-3. **Searching**: each item is searched against the WF inventory (buy → `FS` listings, sell →
-   `WTB` listings). The bot opens with `SEARCHING_MESSAGE_BUYER`/`_SELLER` ("September Special:
-   I'll match you with 3 verified sellers/buyers, free…"), then lists up to
-   `TRIAL_MAX_OPTIONS_PER_ITEM` (default 5) options **without contact details** and asks
-   *"Here are the people requesting '\<item\>'… do you want their info?"*
-4. **Consent-gated reveal**: only on an affirmative reply does the bot send the same options
-   back with the counterparty's name and phone number attached. Any other reply (or a new item
-   request instead) skips the reveal and moves on — the item still counts toward the trial
-   either way, since the search itself was the delivered value.
-5. **Trial gate**: after `TRIAL_MAX_ITEMS` (default 3) items have been searched, the bot sends
-   *"Reached my free quota — you're welcome to start a trial membership here: `MEMBERSHIP_URL`"*
-   (plus `or schedule a demo here: DEMO_URL` if that's set), and stops taking new item requests.
+Implements the **Fi Conversation Flow Spec (v3)** — a hired-concierge framing, not a
+WatchFacts subscription. Billing is **tracked only right now**: `approvedCount` and `hired`
+live on each contact's state, but no payment processor is wired in, so nothing is actually
+charged — "join" just unlocks unlimited approvals going forward.
+
+1. **Outreach**: intro message (+ banner, if configured) sent to each Tier A/B contact — this
+   is `INTRO_MESSAGE`, the outbound blast opener (short, gets them to reply).
+2. **First reply**: the first time a contact replies at all, the bot sends `FI_INTRO_MESSAGE`
+   (Fi's own concierge introduction, spec §1) once, then waits for an item.
+3. **Searching is unlimited**: `buy: Rolex Daytona` / `selling: Hermes Birkin` (or `sell`, `fs`,
+   `wtb`, `looking for`, etc.) searches the inventory (buy → `FS` listings, sell → `WTB`
+   listings) and shows up to `TRIAL_MAX_OPTIONS_PER_ITEM` (default 5) **Match Cards** — spec §2,
+   minus the "Fi Intelligence" block (dealer reputation/price trend/market range/authenticity),
+   since no data source for any of that exists yet. Only one search's cards are "live" for
+   decisions at a time — starting a new search replaces the previous one.
+4. **Approve / Pass**: reply `approve <number>` or `pass <number>` against the cards just
+   shown. Passing is free and unlimited. Approving reveals the counterparty's phone number —
+   and is the only thing metered against the trial.
+5. **Trial gate**: after `TRIAL_MAX_APPROVED_MATCHES` (default 3) *approvals* — not searches —
+   the bot sends the conversion pitch (spec §5) once. Every approve attempt after that, until
+   they reply `join`, gets the decline-path message (spec §7) instead; searching and passing
+   keep working the whole time.
 6. Replying `STOP`/`UNSUBSCRIBE` at any point opts a contact out permanently (`START` re-enables).
 
 State per phone number is persisted to `storage/conversations.json` (git-ignored) so the bot
@@ -248,7 +254,13 @@ survives restarts.
 
 ## Not yet wired up
 
-- No real payment/membership gate — the trial-ended message just links out to `MEMBERSHIP_URL`.
+- No real billing — `approvedCount`/`hired` are tracked per contact but nothing is actually
+  charged (no payment processor wired in). "Join" is a trust-based unlock, not a checkout.
+- No "Fi Intelligence" data (dealer reputation/vouch, price trend, market range, price signal,
+  authenticity check) — Match Cards ship without that block per spec §2 until a real data
+  source for any of it exists.
+- No cross-system WatchFacts/Fi membership check (spec §4's discount logic) — would need a
+  shared identity layer between the two systems that doesn't exist yet.
 - Matching is keyword-based against a CSV snapshot, not a live feed — refresh it by re-running
   `POST /admin/upload/inventory` (takes effect immediately, no restart) or editing the file and
   restarting the process.
