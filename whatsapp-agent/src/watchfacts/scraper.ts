@@ -88,6 +88,7 @@ interface RawTradingListing {
   rating: string;
   sellerName: string;
   contactPhone: string;
+  detailUrl: string;
 }
 
 /**
@@ -140,9 +141,46 @@ async function extractTradingListings(page: Page): Promise<RawTradingListing[]> 
         rating: /no rating/i.test(ratingLine) ? "" : ratingLine,
         sellerName: sellerAnchor?.textContent?.trim() ?? "",
         contactPhone: phoneMatch[1],
+        detailUrl: detailAnchor?.href ?? "",
       });
     }
     return results;
+  });
+}
+
+/**
+ * On a /flash-sales/<id> detail page, reads the full listing text out of the
+ * "Post Information" block — richer than the (sometimes truncated, "...See More") card
+ * title on the list page. Same unverified-against-live-DOM caveat as the rest of this file.
+ */
+async function extractDetailDescription(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const marker = Array.from(document.querySelectorAll("*")).find(
+      (el) => el.children.length === 0 && /post information/i.test(el.textContent ?? "")
+    );
+    let container: Element | null = marker ?? null;
+    for (let i = 0; i < 4 && container; i++) {
+      const text = container.textContent ?? "";
+      if (/#\d+/.test(text) && /rating/i.test(text)) break;
+      container = container.parentElement;
+    }
+    if (!container) return "";
+
+    const lines = (container.textContent ?? "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const descLine = lines.find(
+      (l) =>
+        l.length > 10 &&
+        !/post information/i.test(l) &&
+        !/rating/i.test(l) &&
+        !/^#\d+/.test(l) &&
+        !/^posted/i.test(l) &&
+        !/^box:/i.test(l) &&
+        !/^papers:/i.test(l)
+    );
+    return descLine ?? "";
   });
 }
 
@@ -173,7 +211,25 @@ async function fetchTradingListings(page: Page, type: ListingType): Promise<Inve
     console.error("[watchfacts] failed to save debug screenshot:", err);
   }
 
-  return raw.map((r) => ({
+  // Visit each listing's own detail page for the full (non-truncated) description —
+  // the list-page title is sometimes cut short with "...See More". Adds ~1-2s per listing.
+  const descriptions: string[] = [];
+  for (const r of raw) {
+    if (!r.detailUrl) {
+      descriptions.push("");
+      continue;
+    }
+    try {
+      await page.goto(r.detailUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(800);
+      descriptions.push(await extractDetailDescription(page));
+    } catch (err) {
+      console.error(`[watchfacts] failed to fetch description for ${r.detailUrl}:`, err);
+      descriptions.push("");
+    }
+  }
+
+  return raw.map((r, i) => ({
     id: r.id || r.contactPhone,
     type,
     category: "watches",
@@ -187,6 +243,7 @@ async function fetchTradingListings(page: Page, type: ListingType): Promise<Inve
     contactPhone: r.contactPhone,
     source: "WF",
     rating: r.rating,
+    description: descriptions[i] || r.title,
   }));
 }
 

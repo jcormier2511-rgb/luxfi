@@ -24,6 +24,7 @@ export interface InventoryListing {
   contactPhone: string;
   source: string;
   rating: string;
+  description: string; // full original listing text, e.g. from the WF detail page — richer than `item`
 }
 
 export type RequestAction = "buy" | "sell";

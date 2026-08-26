@@ -54,8 +54,10 @@ optional — see [WatchFacts intro personalization](#watchfacts-intro-personaliz
 
 **`wf_inventory.csv`**
 ```
-id,type,category,item,brand,ref,condition,price,location,contact_name,contact_phone,source,rating
+id,type,category,item,brand,ref,condition,price,location,contact_name,contact_phone,source,rating,description
 ```
+`description` is the full original listing text (e.g. from the WF detail page) — shown to
+contacts instead of `item` when present, since `item` alone can be a truncated card title.
 `type` is `FS` (for sale) or `WTB` (want to buy). A buy request matches against `FS` rows; a
 sell request matches against `WTB` rows.
 
@@ -167,19 +169,27 @@ personalization feature above. Each listing's seller contact comes from the phon
 embedded in its "Check Availability" WhatsApp link (`wa.me/<number>`), which is free to view
 (confirmed — doesn't consume the account's WatchFacts credits).
 
-**This was written against real screenshots of the Trading Floor (Aug 2026) but not run
-against the live DOM** — same caveat as the intro personalization scraper, for the same
-reason (this sandbox can't reach watchfacts.com). Validate before trusting it:
+**List-page extraction (title/price/rating/seller/phone) has been validated against the live
+site** (Aug 2026 — a real sync pulled 20 FS + 20 WTB listings successfully). The per-listing
+**detail-page description** (`extractDetailDescription()` — visits each `/flash-sales/<id>`
+page for the full, non-truncated listing text) has not been live-tested yet:
 
 1. `npx playwright install chromium` (skip if already done for intro personalization).
-2. `npm run wf:test-inventory -- sale` (or `-- wtb`) — logs in, scrapes one side of the feed,
-   and prints each extracted row as JSON. Check that titles, prices, and phone numbers look
-   right; if not, `extractTradingListings()` in `src/watchfacts/scraper.ts` needs adjusting.
+2. `npm run wf:test-inventory -- sale` (or `-- wtb`) — logs in, scrapes one side of the feed
+   including descriptions, and prints each extracted row as JSON. Check that `description`
+   looks like real listing text (not empty, not "See More" or other UI chrome); if not,
+   `extractDetailDescription()` in `src/watchfacts/scraper.ts` needs adjusting.
 3. Once that looks right, run a real sync: `npm run wf:sync-inventory` (local/CLI), or on a
    deployed instance: `curl -X POST "https://<your-railway-domain>/admin/sync-inventory?token=<WEBHOOK_TOKEN>"`
    — both overwrite `wf_inventory.csv` with fresh FS + WTB listings (refuses to do so if the
-   scrape comes back with 0 rows, so a transient failure can't wipe out good data).
-4. To keep it fresh, point an external cron (or a second Railway service on a schedule) at
+   scrape comes back with 0 rows, so a transient failure can't wipe out good data). Visiting
+   each listing's detail page for its description adds roughly 1-2 seconds per listing on
+   top of the list-page scrape.
+4. If something looks off, `POST /admin/sync-inventory`'s response includes
+   `debugScreenshots` (also just `GET`-able directly at `/assets/debug-trading-fs.png` and
+   `/assets/debug-trading-wtb.png`) — full-page screenshots of exactly what the scraper saw,
+   useful without needing a local Playwright setup.
+5. To keep it fresh, point an external cron (or a second Railway service on a schedule) at
    that `/admin/sync-inventory` endpoint every hour or so — there's no built-in scheduler for
    this yet, unlike the outreach blast's own pacing.
 

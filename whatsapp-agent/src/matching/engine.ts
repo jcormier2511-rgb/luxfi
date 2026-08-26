@@ -10,7 +10,7 @@ function tokenize(text: string): string[] {
 }
 
 function score(listing: InventoryListing, tokens: string[]): number {
-  const haystack = tokenize(`${listing.brand} ${listing.item} ${listing.ref} ${listing.category}`);
+  const haystack = tokenize(`${listing.brand} ${listing.item} ${listing.ref} ${listing.category} ${listing.description}`);
   let matches = 0;
   for (const t of tokens) {
     if (haystack.includes(t)) matches += 1;
@@ -44,6 +44,7 @@ export function findMatches(request: ItemRequest, limit: number): InventoryListi
 }
 
 function displayName(listing: InventoryListing): string {
+  if (listing.description) return listing.description;
   return listing.item.toLowerCase().startsWith(listing.brand.toLowerCase())
     ? listing.item
     : `${listing.brand} ${listing.item}`;

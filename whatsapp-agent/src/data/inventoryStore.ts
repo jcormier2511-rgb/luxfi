@@ -35,6 +35,7 @@ export function loadInventory(forceReload = false): InventoryListing[] {
     contactPhone: row.contact_phone,
     source: row.source || "WF",
     rating: row.rating || "",
+    description: row.description || "",
   }));
   return cache;
 }

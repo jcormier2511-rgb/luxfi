@@ -18,8 +18,9 @@ const COLUMNS: (keyof InventoryListing)[] = [
   "contactPhone",
   "source",
   "rating",
+  "description",
 ];
-const HEADER = ["id", "type", "category", "item", "brand", "ref", "condition", "price", "location", "contact_name", "contact_phone", "source", "rating"];
+const HEADER = ["id", "type", "category", "item", "brand", "ref", "condition", "price", "location", "contact_name", "contact_phone", "source", "rating", "description"];
 
 function csvEscape(value: string): string {
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;

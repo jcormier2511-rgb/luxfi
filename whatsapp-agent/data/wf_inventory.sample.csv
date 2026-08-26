@@ -1,11 +1,11 @@
-id,type,category,item,brand,ref,condition,price,location,contact_name,contact_phone,source,rating
-1,FS,watches,Rolex Daytona 116500LN,Rolex,116500LN,Unworn,18500,Geneva CH,Marco D.,15551230001,WF,4.9
-2,FS,watches,Rolex Submariner 124060,Rolex,124060,Excellent,11200,Dubai AE,Sana Q.,15551230101,WF,4.7
-3,WTB,watches,Patek Philippe Nautilus 5711,Patek Philippe,5711,Any,ASK,New York US,James K.,15551230002,WF,4.8
-4,FS,handbags,Hermes Birkin 30 Togo,Hermes,Birkin 30,Excellent,22000,Paris FR,Elena V.,15551230004,WF,4.9
-5,WTB,handbags,Chanel Classic Flap Medium,Chanel,Classic Flap,Any,ASK,London UK,Priya S.,15551230003,WF,4.6
-6,FS,jewelry,Cartier Love Bracelet YG,Cartier,Love Bracelet,Excellent,6200,Milan IT,Giulia R.,15551230201,WF,4.8
-7,FS,watches,Audemars Piguet Royal Oak 15500,Audemars Piguet,15500,Excellent,32000,Hong Kong HK,Wei L.,15551230301,WF,4.9
-8,WTB,watches,Rolex GMT-Master II 126710,Rolex,126710,Any,ASK,Zurich CH,Hans B.,15551230401,WF,4.5
-9,FS,handbags,Louis Vuitton Capucines MM,Louis Vuitton,Capucines MM,Excellent,4800,Los Angeles US,Nadia F.,15551230501,WF,4.7
-10,FS,jewelry,Van Cleef Alhambra Necklace,Van Cleef & Arpels,Alhambra,Unworn,7400,Singapore SG,Ling T.,15551230601,WF,4.9
+id,type,category,item,brand,ref,condition,price,location,contact_name,contact_phone,source,rating,description
+1,FS,watches,Rolex Daytona 116500LN,Rolex,116500LN,Unworn,18500,Geneva CH,Marco D.,15551230001,WF,4.9,Rolex Daytona 116500LN full set unworn with box and papers
+2,FS,watches,Rolex Submariner 124060,Rolex,124060,Excellent,11200,Dubai AE,Sana Q.,15551230101,WF,4.7,Rolex Submariner 124060 excellent condition full set
+3,WTB,watches,Patek Philippe Nautilus 5711,Patek Philippe,5711,Any,ASK,New York US,James K.,15551230002,WF,4.8,Looking for Patek Philippe Nautilus 5711 any condition
+4,FS,handbags,Hermes Birkin 30 Togo,Hermes,Birkin 30,Excellent,22000,Paris FR,Elena V.,15551230004,WF,4.9,Hermes Birkin 30 Togo leather excellent condition with box
+5,WTB,handbags,Chanel Classic Flap Medium,Chanel,Classic Flap,Any,ASK,London UK,Priya S.,15551230003,WF,4.6,Looking for Chanel Classic Flap Medium any condition
+6,FS,jewelry,Cartier Love Bracelet YG,Cartier,Love Bracelet,Excellent,6200,Milan IT,Giulia R.,15551230201,WF,4.8,Cartier Love Bracelet yellow gold excellent condition
+7,FS,watches,Audemars Piguet Royal Oak 15500,Audemars Piguet,15500,Excellent,32000,Hong Kong HK,Wei L.,15551230301,WF,4.9,Audemars Piguet Royal Oak 15500 excellent condition full set
+8,WTB,watches,Rolex GMT-Master II 126710,Rolex,126710,Any,ASK,Zurich CH,Hans B.,15551230401,WF,4.5,Looking for Rolex GMT-Master II 126710 any condition
+9,FS,handbags,Louis Vuitton Capucines MM,Louis Vuitton,Capucines MM,Excellent,4800,Los Angeles US,Nadia F.,15551230501,WF,4.7,Louis Vuitton Capucines MM excellent condition
+10,FS,jewelry,Van Cleef Alhambra Necklace,Van Cleef & Arpels,Alhambra,Unworn,7400,Singapore SG,Ling T.,15551230601,WF,4.9,Van Cleef Alhambra Necklace unworn with box and papers
