@@ -54,12 +54,26 @@ test("scoreMatch: exact reference match scores highest and is case-insensitive",
   assert.ok(result!.reasons.some((r) => /Exact reference/.test(r)));
 });
 
-test("scoreMatch: same brand is a lower-confidence fallback when references differ", () => {
+test("scoreMatch: never falls back to a same-brand match when both sides specified different references", () => {
   const fs = posting({ brand: "Rolex", reference: "116500LN" });
   const wtb = posting({ brand: "Rolex", reference: "126710BLRO" });
+  assert.equal(scoreMatch(fs, wtb), null, "a stated reference mismatch must never be papered over by same-brand");
+});
+
+test("scoreMatch: same brand is still a fallback when only one side specified a reference", () => {
+  const fs = posting({ brand: "Rolex", reference: "116500LN" });
+  const wtb = posting({ brand: "Rolex", reference: "" }); // no reference stated on the WTB side
   const result = scoreMatch(fs, wtb);
   assert.ok(result);
   assert.equal(result!.score, 20);
+});
+
+test("scoreMatch: reference equality is normalized (formatting differences don't block a real match)", () => {
+  const fs = posting({ reference: "116508-0013" });
+  const wtb = posting({ reference: "1165080013" }); // same reference, no dash
+  const result = scoreMatch(fs, wtb);
+  assert.ok(result);
+  assert.equal(result!.score, 100);
 });
 
 test("scoreMatch: a broad match is allowed only when WTB gave no reference or brand at all", () => {

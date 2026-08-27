@@ -1,7 +1,7 @@
 import { chromium, Browser, Page } from "playwright";
 import { config } from "../config";
 import { login } from "./scraper";
-import { fetchAllFlashSales, isActive, mapToInventoryListing, resolveWtbAuctionType, RawFlashSale } from "./api";
+import { fetchAllFlashSales, isActive, mapToInventoryListings, resolveListingDetails, resolveWtbAuctionType, RawFlashSale } from "./api";
 import { upsertListings, markMissingInactive, recordSyncAttempt, recordTypeSyncSuccess, recordTypeSyncError } from "./inventoryDb";
 import { ingestApiFsSync } from "../postings/ingest";
 import { ApiFsListing } from "../postings/postingsStore";
@@ -39,7 +39,10 @@ export async function syncOneSide(
     const resolvedAuctionType = typeof auctionType === "string" ? auctionType : await auctionType();
     const raw = await fetchAllFlashSales(page, resolvedAuctionType);
     const dedupedRaw = dedupeById(raw.filter((s) => isActive(s, now)));
-    const listings = dedupedRaw.map((s) => mapToInventoryListing(s, type));
+    // Each sale's structured sub-listings are mapped individually (a bundle lot of several
+    // watches becomes several InventoryListings, not just its first one) — see
+    // mapToInventoryListings.
+    const listings = dedupedRaw.flatMap((s) => mapToInventoryListings(s, type));
 
     if (listings.length > 0) {
       const syncedAt = now.toISOString();
@@ -55,19 +58,26 @@ export async function syncOneSide(
     // existing, already-tested inventory_listings write above if this additive step errors.
     if (type === "FS" && config.postingsV4.enabled) {
       try {
-        const apiFsListings: ApiFsListing[] = listings.map((l, i) => ({
-          id: l.id,
-          item: l.item,
-          brand: l.brand,
-          ref: l.ref,
-          condition: l.condition,
-          price: l.price,
-          contactName: l.contactName,
-          contactPhone: l.contactPhone,
-          detailUrl: l.detailUrl,
-          description: l.description,
-          imageUrl: dedupedRaw[i]?.listings?.[0]?.frontImage ?? null,
-        }));
+        // Recomputed per-sale (rather than reusing the flattened `listings` above) so each
+        // sub-listing can be zipped back to its own frontImage via resolveListingDetails'
+        // guaranteed matching order/length.
+        const apiFsListings: ApiFsListing[] = dedupedRaw.flatMap((s) => {
+          const subListings = mapToInventoryListings(s, "FS");
+          const images = resolveListingDetails(s).map((d) => d?.frontImage ?? null);
+          return subListings.map((l, i) => ({
+            id: l.id,
+            item: l.item,
+            brand: l.brand,
+            ref: l.ref,
+            condition: l.condition,
+            price: l.price,
+            contactName: l.contactName,
+            contactPhone: l.contactPhone,
+            detailUrl: l.detailUrl,
+            description: l.description,
+            imageUrl: images[i] ?? null,
+          }));
+        });
         await ingestApiFsSync(apiFsListings);
       } catch (err) {
         console.error("[watchfacts] postings mirror/reverse-match failed (inventory_listings sync itself succeeded):", err);

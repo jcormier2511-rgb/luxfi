@@ -67,18 +67,42 @@ export function isActive(sale: Pick<RawFlashSale, "status" | "deadline">, now: D
   return deadline > now;
 }
 
-/** Pure mapping, independent of network/DOM — the part requirement #10's tests exercise directly. */
-export function mapToInventoryListing(sale: RawFlashSale, type: ListingType): InventoryListing {
-  const detail = sale.listings?.[0];
-  return {
-    id: sale.id,
+/**
+ * A flash sale's `listings` array holds every structured sub-listing (a "bundle" lot can have
+ * several distinct watches under one sale). Falls back to a single `undefined` placeholder
+ * when there are none, so callers always get at least one entry with empty detail fields —
+ * the same behavior a sale with no listings had before. Exported so syncInventory.ts can zip
+ * its own per-listing data (e.g. images) against the exact same ordering without duplicating
+ * this fallback logic.
+ */
+export function resolveListingDetails(sale: RawFlashSale): (RawListingDetail | undefined)[] {
+  return sale.listings && sale.listings.length > 0 ? sale.listings : [undefined];
+}
+
+/**
+ * Pure mapping, independent of network/DOM — the part requirement #10's tests exercise
+ * directly. Maps EVERY structured sub-listing in a sale individually rather than only the
+ * bundle's first watch, so a lot of several different watches becomes several distinct
+ * InventoryListings (each gets its own id, `${sale.id}-${index}`, when there's more than one).
+ *
+ * A bundle's `sale.price` is a single total for the whole lot — attributing that figure to
+ * each individual sub-listing would misrepresent its actual price, so a multi-listing sale
+ * uses "ASK" per item instead; a single-listing sale keeps the confirmed top-level price.
+ */
+export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): InventoryListing[] {
+  const details = resolveListingDetails(sale);
+  const isBundleOfMultiple = details.length > 1;
+  const price = !isBundleOfMultiple && sale.price > 0 ? String(sale.price) : "ASK";
+
+  return details.map((detail, i) => ({
+    id: isBundleOfMultiple ? `${sale.id}-${i}` : sale.id,
     type,
     category: "watches",
     item: sale.title ?? "",
     brand: detail?.brand ?? "",
     ref: detail?.reference ?? detail?.normalizedReference ?? "",
     condition: detail?.condition ?? "",
-    price: sale.price > 0 ? String(sale.price) : "ASK",
+    price,
     location: sale.region ?? "",
     contactName: sale.companyName || sale.fromName || "",
     contactPhone: sale.whatsappNumber || sale.companyWhatsapp || "",
@@ -86,7 +110,7 @@ export function mapToInventoryListing(sale: RawFlashSale, type: ListingType): In
     rating: sale.companyStars != null ? String(sale.companyStars) : "",
     description: sale.title ?? "",
     detailUrl: `https://watchfacts.com/flash-sales/${sale.id}`,
-  };
+  }));
 }
 
 async function fetchFlashSalesPage(page: Page, auctionType: string, pageNum: number): Promise<RawFlashSale[]> {

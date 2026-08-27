@@ -3,12 +3,12 @@ import path from "path";
 import { config, isV4ChatEnabled } from "../config";
 import { InventoryListing, ListingType } from "../types";
 import { ingestAndMatch } from "../postings/ingest";
+import { normalizeText } from "../postings/normalize";
 
 // Dealer-group shorthand, distinct from the 1:1 flow's classify() (which expects
 // first-person phrasing like "buy: X"). Groups post in trading-floor jargon instead.
 const WTB_KEYWORDS = /\b(wtb|iso|lf|looking\s+for|in\s+search\s+of)\b/i;
 const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling)\b/i;
-const PRICE_PATTERN = /\$\s?[\d,]+(?:\.\d+)?/;
 
 function classifyGroupPost(text: string): ListingType | null {
   if (FS_KEYWORDS.test(text)) return "FS";
@@ -79,16 +79,21 @@ export async function handleGroupMessage(
   const type = classifyGroupPost(text);
   if (!type) return;
 
-  const priceMatch = text.match(PRICE_PATTERN);
+  // Shared with the v4 chat-ingestion path (postingsStore.ts) — brand/reference extraction,
+  // and price validation that returns null (never a guess) when the message names more than
+  // one distinct $ amount, e.g. a multi-item dealer price-list dump. Without this, a huge
+  // group post could get an arbitrary price attributed to it and, since it previously never
+  // extracted brand/ref at all, could never be reference-filtered out of an unrelated search.
+  const normalized = normalizeText(text);
   const row: InventoryListing = {
     id: `group-${groupId}-${Date.now()}`,
     type,
     category: "watches",
     item: text.slice(0, 120),
-    brand: "",
-    ref: "",
+    brand: normalized.brand,
+    ref: normalized.reference,
     condition: "",
-    price: priceMatch ? priceMatch[0].replace(/[$\s]/g, "") : "ASK",
+    price: normalized.price !== null ? String(normalized.price) : "ASK",
     location: "",
     contactName: senderName || senderPhone,
     contactPhone: senderPhone,

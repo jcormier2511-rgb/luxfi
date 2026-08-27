@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyText, normalizeText } from "./normalize";
+import { classifyText, normalizeText, normalizeReference } from "./normalize";
 
 test("classifyText recognizes FS keywords", () => {
   assert.equal(classifyText("FS Rolex Daytona 116500LN $28,000"), "FS");
@@ -43,4 +43,27 @@ test("normalizeText handles a post with no structured fields at all", () => {
 test("normalizeText matches brand names case-insensitively and with accents", () => {
   assert.equal(normalizeText("WTB Hermès Birkin").brand, "hermès");
   assert.equal(normalizeText("FS PATEK PHILIPPE 5711").brand, "patek philippe");
+});
+
+test("normalizeText returns null price when the message names more than one distinct $ amount", () => {
+  // A multi-item price-list dump — no way to know which price belongs to which item, so this
+  // must never guess by picking the first one.
+  const result = normalizeText("READY STOCK: 124200 New Blue $62,000, 126000 multicoloured $111,000");
+  assert.equal(result.price, null);
+});
+
+test("normalizeText still extracts a price when the same amount is mentioned more than once", () => {
+  const result = normalizeText("FS Rolex Daytona 116500LN $28,500 — firm at $28,500, no lowballs");
+  assert.equal(result.price, 28500);
+});
+
+test("normalizeReference strips formatting and uppercases for comparison", () => {
+  assert.equal(normalizeReference("116508-0013"), "1165080013");
+  assert.equal(normalizeReference("116500ln"), "116500LN");
+  assert.equal(normalizeReference(" 126710 BLRO "), "126710BLRO");
+});
+
+test("normalizeReference makes differently-formatted references compare equal, and different ones stay different", () => {
+  assert.equal(normalizeReference("116500-LN"), normalizeReference("116500ln"));
+  assert.notEqual(normalizeReference("116500LN"), normalizeReference("116508-0013"));
 });

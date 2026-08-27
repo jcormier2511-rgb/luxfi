@@ -1,6 +1,7 @@
 import { withSchema } from "./db";
 import { PostingRow, findOppositeSideCandidates, isEligible } from "./postingsStore";
 import { notifyMatch } from "./notify";
+import { normalizeReference } from "./normalize";
 
 export interface ScoreResult {
   score: number;
@@ -13,17 +14,23 @@ export interface ScoreResult {
  * "WTB Rolex" doesn't flood every Rolex FS listing with a low-confidence match, but a truly
  * unconstrained "looking for a nice watch" can still surface something). A stated hard max
  * bid is always respected when both sides have a price.
+ *
+ * Critical rule: when BOTH sides specified a reference, equality is required outright — this
+ * never falls through to the same-brand fallback. Two different references on the same brand
+ * (e.g. a WTB for 116500LN against an FS for 116508-0013) are not a match; showing one anyway
+ * because "at least it's the same brand" is worse than showing nothing.
  */
 export function scoreMatch(fs: PostingRow, wtb: PostingRow): ScoreResult | null {
   const reasons: string[] = [];
   let score = 0;
 
-  const fsRef = fs.reference?.toUpperCase();
-  const wtbRef = wtb.reference?.toUpperCase();
+  const fsRef = fs.reference ? normalizeReference(fs.reference) : "";
+  const wtbRef = wtb.reference ? normalizeReference(wtb.reference) : "";
   const fsBrand = fs.brand?.toLowerCase();
   const wtbBrand = wtb.brand?.toLowerCase();
 
-  if (fsRef && wtbRef && fsRef === wtbRef) {
+  if (fsRef && wtbRef) {
+    if (fsRef !== wtbRef) return null; // both specified a reference — exact equality only, no fallback
     score += 100;
     reasons.push(`Exact reference match: ${fs.reference}`);
   } else if (fsBrand && wtbBrand && fsBrand === wtbBrand) {

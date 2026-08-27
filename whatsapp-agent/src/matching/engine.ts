@@ -1,5 +1,15 @@
 import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
+import { normalizeReference } from "../postings/normalize";
+
+// Mirrors postings/normalize.ts's pattern — a reference number in the free-text query (e.g.
+// "buy: Rolex Daytona 116500LN") is a hard filter, not a keyword to blend into token scoring.
+const REFERENCE_PATTERN = /\b(\d{4,6}[A-Z]{0,3}(?:[-/][A-Z0-9]+)?)\b/i;
+
+function extractRequestedReference(query: string): string | null {
+  const m = query.match(REFERENCE_PATTERN);
+  return m ? normalizeReference(m[1]) : null;
+}
 
 function tokenize(text: string): string[] {
   return text
@@ -62,12 +72,37 @@ function softPreferenceScore(listing: InventoryListing, preferences?: SearchPref
  * `preferences` (price/location/dial/condition, collected once per contact) filters price
  * hard when set — falling back to sorting by closest price if that empties the pool — and
  * nudges sort order for the freeform fields.
+ *
+ * When the query names a specific reference number, that's a hard filter: only listings whose
+ * own `ref` normalizes to an exact match are ever returned — never falling back to keyword
+ * overlap or (if nothing matches) the "show something anyway" pool below. A reference search
+ * is a request for THAT watch, not something similar; an empty result here is exactly what
+ * should happen, and the caller (flow.ts) already turns zero matches into "I'll keep watching
+ * the network" rather than silence.
  */
 export async function findMatches(request: ItemRequest, limit: number, preferences?: SearchPreferences): Promise<InventoryListing[]> {
   const wantType = request.action === "buy" ? "FS" : "WTB";
-  const tokens = tokenize(request.query);
   const candidates = await getActiveListings(wantType);
+  const requestedRef = extractRequestedReference(request.query);
 
+  if (requestedRef) {
+    const exact = candidates.filter((l) => l.ref && normalizeReference(l.ref) === requestedRef);
+    const priceFiltered = exact.filter((l) => inPriceRange(l, preferences));
+    const pool = priceFiltered.length > 0 ? priceFiltered : exact;
+    const ranked = pool
+      .map((listing) => ({
+        listing,
+        prefScore: softPreferenceScore(listing, preferences),
+        priceDist: priceDistance(listing, preferences),
+      }))
+      .sort(
+        (a, b) =>
+          b.prefScore - a.prefScore || a.priceDist - b.priceDist || Number(b.listing.rating) - Number(a.listing.rating)
+      );
+    return ranked.slice(0, limit).map((r) => r.listing);
+  }
+
+  const tokens = tokenize(request.query);
   const priceFiltered = candidates.filter((l) => inPriceRange(l, preferences));
   const pool = priceFiltered.length > 0 ? priceFiltered : candidates;
 
