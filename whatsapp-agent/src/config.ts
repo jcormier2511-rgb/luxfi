@@ -137,19 +137,32 @@ export const config = {
   aiMatching: {
     enabled: (process.env.ENABLE_AI_MATCHING ?? "false").toLowerCase() === "true",
     testPhone: process.env.AI_MATCHING_TEST_PHONE?.trim() || null,
+    // Which backend src/ai/client.ts routes to — see src/ai/providers/{anthropic,openai}.ts.
+    // Defaults to "anthropic" (the originally built/tested path) so an unset env var never
+    // silently changes behavior for anyone already relying on it.
+    provider: (process.env.AI_MATCHING_PROVIDER ?? "anthropic").toLowerCase() === "openai" ? "openai" : "anthropic",
     apiKey: process.env.ANTHROPIC_API_KEY ?? "",
     model: process.env.AI_MATCHING_MODEL ?? "claude-sonnet-5",
+    // No hardcoded default model id here — see providers/openai.ts's comment on why guessing
+    // one would be worse than staying inert until it's set explicitly.
+    openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+    openaiModel: process.env.AI_MATCHING_OPENAI_MODEL ?? "",
   },
 };
 
 /**
- * All three conditions required: the master flag, a real API key configured, and this exact
- * phone number set as the (single) test phone — so turning the flag on alone can never light
- * this up for real users. No test phone configured means the feature is inert for everyone,
- * even with the flag on, rather than silently defaulting to "enabled for all."
+ * All three conditions required: the master flag, a real API key configured FOR WHICHEVER
+ * PROVIDER is selected, and this exact phone number set as the (single) test phone — so
+ * turning the flag on alone can never light this up for real users. No test phone configured
+ * means the feature is inert for everyone, even with the flag on, rather than silently
+ * defaulting to "enabled for all."
  */
 export function isAiMatchingEnabledForPhone(phone: string): boolean {
-  return config.aiMatching.enabled && !!config.aiMatching.apiKey && !!config.aiMatching.testPhone && phone === config.aiMatching.testPhone;
+  const hasProviderCredentials =
+    config.aiMatching.provider === "openai"
+      ? !!config.aiMatching.openaiApiKey && !!config.aiMatching.openaiModel
+      : !!config.aiMatching.apiKey;
+  return config.aiMatching.enabled && hasProviderCredentials && !!config.aiMatching.testPhone && phone === config.aiMatching.testPhone;
 }
 
 /** Pure — the actual chat-id/allowlist matching logic, unit-testable without env/config wiring. */
