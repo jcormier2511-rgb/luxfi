@@ -1,10 +1,11 @@
-import { config } from "../config";
-import { Contact, ConversationState, ItemRequest, InventoryListing } from "../types";
+import { config, isAiMatchingEnabledForPhone } from "../config";
+import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences } from "../types";
 import { findMatchesHybrid, formatMatchCard, formatMatchApproved } from "../matching/engine";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
 import { getEntitlement, recordBillingRequested } from "../billing/entitlementStore";
+import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 
 const OPT_OUT_WORDS = ["stop", "unsubscribe", "cancel", "opt out", "optout"];
 
@@ -188,6 +189,23 @@ async function handlePreferenceAnswer(state: ConversationState, text: string, me
   await startSearch(state, request, messages);
 }
 
+/**
+ * Fi Concierge Stage 3 (Conversational Orchestrator, first slice): a buyer/seller who already
+ * stated everything in one message ("looking for a Daytona under 27k, black dial, pre-owned,
+ * USA") should never be walked through the price → location → dial → condition interview below
+ * anyway — that's exactly the "not natural language" complaint. Only attempted for the AI
+ * matching test phone (config.isAiMatchingEnabledForPhone), so this never changes behavior —
+ * or cost — for the rest of the population; every other contact keeps the interview unchanged.
+ * Returns null on any AI failure/disabled state so the caller falls back to the interview,
+ * preserving the mandatory-price-filter guarantee even when AI is down.
+ */
+async function tryNaturalLanguagePreferences(phone: string, text: string): Promise<SearchPreferences | null> {
+  if (!isAiMatchingEnabledForPhone(phone)) return null;
+  const interpreted = await interpretQuery(text);
+  if (!interpreted) return null;
+  return toSearchPreferences(interpreted);
+}
+
 export async function handleIncomingMessage(phone: string, text: string, contact?: Contact): Promise<FlowResult> {
   const state = getState(phone);
   const messages: string[] = [];
@@ -265,10 +283,16 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
 
   if (!state.preferencesCollected) {
-    state.pendingPreferenceCollection = { step: "price", request: parsed[0] };
-    messages.push("Before I search, a few quick preferences — just this once:\n\n" + PRICE_QUESTION);
-    saveState(state);
-    return { state, messages };
+    const naturalLanguagePrefs = await tryNaturalLanguagePreferences(phone, text);
+    if (naturalLanguagePrefs) {
+      state.preferences = naturalLanguagePrefs;
+      state.preferencesCollected = true;
+    } else {
+      state.pendingPreferenceCollection = { step: "price", request: parsed[0] };
+      messages.push("Before I search, a few quick preferences — just this once:\n\n" + PRICE_QUESTION);
+      saveState(state);
+      return { state, messages };
+    }
   }
 
   await startSearch(state, parsed[0], messages);

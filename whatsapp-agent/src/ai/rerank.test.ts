@@ -38,6 +38,8 @@ const query: InterpretedQuery = {
   maxPrice: null,
   minPrice: null,
   location: null,
+  dialColor: null,
+  condition: null,
   hardRequirements: [],
   preferences: [],
 };

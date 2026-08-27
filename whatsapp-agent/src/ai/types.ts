@@ -25,6 +25,8 @@ export interface InterpretedQuery {
   maxPrice: number | null;
   minPrice: number | null;
   location: string | null;
+  dialColor: string | null;
+  condition: string | null;
   hardRequirements: string[];
   preferences: string[];
 }

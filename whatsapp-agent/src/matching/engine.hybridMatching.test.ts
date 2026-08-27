@@ -64,6 +64,8 @@ function interpreted(overrides: Partial<Awaited<ReturnType<typeof queryInterpret
     maxPrice: null,
     minPrice: null,
     location: null,
+    dialColor: null,
+    condition: null,
     hardRequirements: [],
     preferences: [],
     ...overrides,
