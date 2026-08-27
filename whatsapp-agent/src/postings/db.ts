@@ -186,6 +186,13 @@ async function ensureSchema(): Promise<void> {
           matches_created INTEGER,
           error TEXT
         );
+
+        -- Additive migrations for columns introduced after their table's original
+        -- CREATE TABLE — CREATE TABLE IF NOT EXISTS silently skips a table that already
+        -- exists, so a column added later needs its own idempotent ADD COLUMN IF NOT EXISTS
+        -- to actually reach a database that already has an older version of these tables.
+        ALTER TABLE postings ADD COLUMN IF NOT EXISTS reminder_sent_for_expires_at TIMESTAMPTZ;
+        ALTER TABLE matches ADD COLUMN IF NOT EXISTS connected_at TIMESTAMPTZ;
         `
       )
       .then(() => undefined);

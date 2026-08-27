@@ -3,7 +3,7 @@ import { getOrCreateCanonicalUser } from "./identity";
 import { PostingRow, getPrimaryImageUrl } from "./postingsStore";
 import { getEntitlement } from "../billing/entitlementStore";
 import { sendText } from "../whapi/client";
-import { config } from "../config";
+import { config, isPostingChatEnabled } from "../config";
 
 async function getPhoneForCanonicalUser(canonicalUserId: number): Promise<string | null> {
   return withSchema(async (pool) => {
@@ -83,6 +83,13 @@ async function notifyOneRecipient(
   counterpart: PostingRow,
   reasons: string[]
 ): Promise<void> {
+  // Checked at send time, not just once at ingestion — a group removed from
+  // V4_ALLOWED_CHAT_IDS (or the master flag turned off) after this posting was already stored
+  // must stop it from generating notifications immediately. Checked BEFORE the claim below so
+  // nothing gets marked "notified" for a message that was never actually sent — if the group
+  // becomes allowed again later, this stays retryable rather than permanently skipped.
+  if (!isPostingChatEnabled(self)) return;
+
   const claimed = await withSchema((pool) =>
     pool.query(
       `INSERT INTO match_recipients (match_id, recipient_canonical_user_id, match_revision, notified_at)
@@ -136,6 +143,13 @@ export async function notifyMatch(matchId: number, revision: number): Promise<vo
 export async function passMatch(matchId: number, phone: string): Promise<"passed" | "already_decided" | "invalid"> {
   const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
   return withSchema(async (pool) => {
+    const matchRow = await pool.query(`SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id=$1`, [matchId]);
+    if (matchRow.rows.length === 0) return "invalid";
+    const { fs_posting_id, wtb_posting_id } = matchRow.rows[0];
+    // Checked at decision time, not just at ingestion — a posting from a group that's no
+    // longer allowed must not accept a pass decision either.
+    if (!(await isOwnPostingChatEnabled(pool, fs_posting_id, wtb_posting_id, canonicalUserId))) return "invalid";
+
     const recipientResult = await pool.query(
       `SELECT * FROM match_recipients WHERE match_id=$1 AND recipient_canonical_user_id=$2 ORDER BY match_revision DESC LIMIT 1`,
       [matchId, canonicalUserId]
@@ -161,6 +175,27 @@ interface MatchRecipientRow {
   id: number;
   decision: "pending" | "approved" | "passed";
   connected_at: string | null;
+}
+
+/**
+ * Decision-time allowlist gate (spec: apply V4_ALLOWED_CHAT_IDS at approve/pass time, not
+ * just at ingestion) — resolves whichever of the match's two postings belongs to the
+ * requesting user and checks whether it's still chat-enabled. A posting that isn't
+ * resolvable to either side (shouldn't happen for a real recipient) is never blocked on this
+ * check alone.
+ */
+async function isOwnPostingChatEnabled(
+  client: QueryClient,
+  fsPostingId: number,
+  wtbPostingId: number,
+  canonicalUserId: number
+): Promise<boolean> {
+  const result = await client.query(`SELECT canonical_user_id, source_type, source_chat_id FROM postings WHERE id = ANY($1::int[])`, [
+    [fsPostingId, wtbPostingId],
+  ]);
+  const mine = result.rows.find((r) => r.canonical_user_id === canonicalUserId);
+  if (!mine) return true;
+  return isPostingChatEnabled(mine);
 }
 
 /** `lock` uses FOR UPDATE — only ever set true for the CALLER's own row, never the counterpart's, to avoid two concurrent approvals on the same match deadlocking on each other's rows. */
@@ -211,6 +246,12 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
     const matchRow = await client.query(`SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id=$1`, [matchId]);
     if (matchRow.rows.length === 0) return { outcome: { status: "invalid" as const }, notify: null };
     const { fs_posting_id, wtb_posting_id } = matchRow.rows[0];
+
+    // Checked at decision time, not just at ingestion — a posting from a group that's no
+    // longer allowed (or with the master flag now off) must not accept an approve decision.
+    if (!(await isOwnPostingChatEnabled(client, fs_posting_id, wtb_posting_id, canonicalUserId))) {
+      return { outcome: { status: "invalid" as const }, notify: null };
+    }
 
     const userResult = await client.query(`SELECT * FROM canonical_users WHERE id=$1 FOR UPDATE`, [canonicalUserId]);
     const user = userResult.rows[0];
@@ -289,13 +330,21 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
     if (counterpartRecipient && !counterpartRecipient.connected_at) {
       // I'm the second (mutual-completing) approver — the counterpart was left on
       // "pending_confirmation" and never got revealed; tell them now, exactly once.
-      const claimCounterpart = await client.query(
-        `UPDATE match_recipients SET connected_at = now() WHERE id=$1 AND connected_at IS NULL RETURNING id`,
-        [counterpartRecipient.id]
-      );
-      if (claimCounterpart.rows.length > 0) {
-        const myContact = await getCounterpartContact(client, matchId, counterpart.canonicalUserId!);
-        notify = { canonicalUserId: counterpart.canonicalUserId!, myContact: { name: myContact.name, phone: myContact.phone } };
+      // Checked at (push) notification time, before claiming — the counterpart's own
+      // posting's group must still be allowed, even though it was allowed when the
+      // match/notification was originally created. Checking before the claim (rather than
+      // after) leaves this retryable rather than permanently consumed if their group is
+      // later re-allowed.
+      const counterpartStillEnabled = await isOwnPostingChatEnabled(client, fs_posting_id, wtb_posting_id, counterpart.canonicalUserId!);
+      if (counterpartStillEnabled) {
+        const claimCounterpart = await client.query(
+          `UPDATE match_recipients SET connected_at = now() WHERE id=$1 AND connected_at IS NULL RETURNING id`,
+          [counterpartRecipient.id]
+        );
+        if (claimCounterpart.rows.length > 0) {
+          const myContact = await getCounterpartContact(client, matchId, counterpart.canonicalUserId!);
+          notify = { canonicalUserId: counterpart.canonicalUserId!, myContact: { name: myContact.name, phone: myContact.phone } };
+        }
       }
     }
 

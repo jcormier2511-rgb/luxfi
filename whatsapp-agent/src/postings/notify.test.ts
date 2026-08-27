@@ -4,6 +4,12 @@ import assert from "node:assert/strict";
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 process.env.TRIAL_MAX_APPROVED_MATCHES = "3";
+// approveMatch/passMatch/notifyOneRecipient are now allowlist-gated at decision/notification
+// time, not just at ingestion — these tests post into chat "g1", so v4 needs to be enabled
+// for it here too (the allowlist mechanism itself is covered separately in
+// config.allowedChatIds.test.ts / groupMonitor.allowedChatIds.test.ts).
+process.env.ENABLE_V4_POSTINGS = "true";
+process.env.V4_ALLOWED_CHAT_IDS = "*";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require("./db") as typeof import("./db");
@@ -92,6 +98,30 @@ test("approveMatch is idempotent — a duplicate click on the same match is a no
 
   const approvals = await db.withSchema((pool) => pool.query(`SELECT * FROM approvals WHERE match_id=$1`, [matchId]));
   assert.equal(approvals.rows.length, 1, "a duplicate approve must not insert a second approval row");
+});
+
+test("concurrent duplicate clicks on the same match are serialized atomically — exactly one approval, ledger row, and counter increment", async () => {
+  await resetAll();
+  const { matchId } = await createMatch("buyer-concurrent");
+
+  // Real concurrent calls (not sequential) — this exercises the FOR UPDATE row locking +
+  // ON CONFLICT DO NOTHING combination inside one transaction, not just JS-level sequencing.
+  const outcomes = await Promise.all(
+    Array.from({ length: 5 }, () => approveMatch(matchId, "buyer-concurrent"))
+  );
+  assert.ok(
+    outcomes.every((o) => o.status === "approved"),
+    "every concurrent click should resolve to the same approved outcome"
+  );
+
+  const approvals = await db.withSchema((pool) => pool.query(`SELECT * FROM approvals WHERE match_id=$1`, [matchId]));
+  assert.equal(approvals.rows.length, 1, "concurrent duplicate clicks must still insert exactly one approval row");
+
+  const ledger = await db.withSchema((pool) => pool.query(`SELECT * FROM billing_ledger WHERE match_id=$1`, [matchId]));
+  assert.equal(ledger.rows.length, 1, "concurrent duplicate clicks must still insert exactly one ledger row");
+
+  const canonicalUsers = await db.withSchema((pool) => pool.query(`SELECT total_approved_count FROM canonical_users`));
+  assert.equal(canonicalUsers.rows[0].total_approved_count, 1, "the account-level counter must increment exactly once, not five times");
 });
 
 test("the first three approvals for an account are complimentary; the fourth is locked", async () => {

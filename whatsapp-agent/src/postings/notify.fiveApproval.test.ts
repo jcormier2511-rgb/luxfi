@@ -4,6 +4,10 @@ import assert from "node:assert/strict";
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 process.env.TRIAL_MAX_APPROVED_MATCHES = "3";
+// approveMatch/passMatch are now allowlist-gated at decision time — these tests post into
+// chat "g1", so v4 needs to be enabled for it here too.
+process.env.ENABLE_V4_POSTINGS = "true";
+process.env.V4_ALLOWED_CHAT_IDS = "*";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require("./db") as typeof import("./db");

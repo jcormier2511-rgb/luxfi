@@ -139,3 +139,17 @@ export function isChatIdAllowed(chatId: string, allowedChatIds: string[]): boole
 export function isV4ChatEnabled(chatId: string): boolean {
   return config.postingsV4.enabled && isChatIdAllowed(chatId, config.postingsV4.allowedChatIds);
 }
+
+/**
+ * The allowlist must keep applying to a posting for as long as it exists, not just at the
+ * moment it was ingested — a group removed from V4_ALLOWED_CHAT_IDS (or the master flag
+ * turned off) after a posting was already stored must stop it from generating notifications,
+ * reminders, or approve/pass decisions immediately, without needing to touch or delete the
+ * stored row. An API-mirrored WatchFacts listing was never chat-gated in the first place, so
+ * it's always allowed here regardless of the chat allowlist.
+ */
+export function isPostingChatEnabled(posting: { source_type: string; source_chat_id: string | null }): boolean {
+  if (posting.source_type !== "chat") return true;
+  if (!posting.source_chat_id) return false;
+  return isV4ChatEnabled(posting.source_chat_id);
+}

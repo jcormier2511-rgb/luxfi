@@ -4,6 +4,11 @@ import assert from "node:assert/strict";
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 process.env.V4_REMINDER_DAYS_BEFORE_EXPIRY = "3";
+// sendExpirationReminders is now allowlist-gated at send time — these tests post into chat
+// "g1", so v4 needs to be enabled for it here too (see the dedicated
+// "never gets a reminder once its group is no longer allowed" test below for the gate itself).
+process.env.ENABLE_V4_POSTINGS = "true";
+process.env.V4_ALLOWED_CHAT_IDS = "g1";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require("./db") as typeof import("./db");
@@ -152,4 +157,54 @@ test("an API-mirrored (non-chat) posting never gets an expiration reminder", asy
 
   const result = await sendExpirationReminders();
   assert.equal(result.remindersSent, 0, "reminders are scoped to chat-originated monitors only");
+});
+
+test("a posting whose group is no longer on the allowlist never gets a reminder", async (t) => {
+  await db._resetDbForTests();
+  const sent: unknown[] = [];
+  t.mock.method(whapiClient, "sendText", async () => {
+    sent.push(true);
+  });
+
+  // This file's V4_ALLOWED_CHAT_IDS is "g1" only — "some-other-group" represents a chat that
+  // isn't (or is no longer) on the allowlist, even though the posting already exists.
+  const posting = await ingestChatPosting({
+    platform: "whatsapp",
+    chatId: "some-other-group",
+    messageId: "wtb-reminder-5",
+    senderIdentity: "buyer-reminder-5",
+    text: "WTB Rolex Daytona 116500LN budget $30,000",
+  });
+  await setExpiresInDays(posting.posting!.id, 1);
+
+  const result = await sendExpirationReminders();
+  assert.equal(result.remindersSent, 0);
+  assert.equal(sent.length, 0);
+});
+
+test("a failed send never permanently marks the reminder as sent — it's retried on the next run", async (t) => {
+  await db._resetDbForTests();
+  let shouldFail = true;
+  t.mock.method(whapiClient, "sendText", async () => {
+    if (shouldFail) throw new Error("simulated delivery failure");
+  });
+
+  const posting = await ingestChatPosting({
+    platform: "whatsapp",
+    chatId: "g1",
+    messageId: "wtb-reminder-6",
+    senderIdentity: "buyer-reminder-6",
+    text: "WTB Rolex Daytona 116500LN budget $30,000",
+  });
+  await setExpiresInDays(posting.posting!.id, 1);
+
+  const failedRun = await sendExpirationReminders();
+  assert.equal(failedRun.remindersSent, 0, "a failed send must not count as sent");
+
+  const afterFailure = await getPosting(posting.posting!.id);
+  assert.equal(afterFailure!.reminder_sent_for_expires_at, null, "a failed send must never mark reminder_sent_for_expires_at");
+
+  shouldFail = false;
+  const retryRun = await sendExpirationReminders();
+  assert.equal(retryRun.remindersSent, 1, "the same posting must be retried and succeed on the next run");
 });
