@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyText, normalizeText, normalizeReference, extractReference, referencesMatch, normalizePriceShorthand } from "./normalize";
+import {
+  classifyText,
+  normalizeText,
+  normalizeReference,
+  extractReference,
+  referencesMatch,
+  normalizePriceShorthand,
+  hasMultipleDistinctPrices,
+} from "./normalize";
 
 test("classifyText recognizes FS keywords", () => {
   assert.equal(classifyText("FS Rolex Daytona 116500LN $28,000"), "FS");
@@ -125,4 +133,20 @@ test("required regression: referencesMatch never matches a different reference s
 test("referencesMatch still requires exact equality once both sides are fully specified", () => {
   assert.ok(referencesMatch("116508-0013", "1165080013")); // formatting-only difference
   assert.equal(referencesMatch("116500LN", "116500LV"), false); // different dial code, same length
+});
+
+test("required regression: hasMultipleDistinctPrices flags a multi-item dealer price-list dump", () => {
+  const dump =
+    "PRICE UPDATE: Daytona 116500LN $63,000, GMT 126710 $28,000, Sub 126610 $18,000, Nautilus 5711 $660,000";
+  assert.equal(hasMultipleDistinctPrices(dump), true);
+});
+
+test("hasMultipleDistinctPrices returns false for a single-item listing, including one that repeats its own price", () => {
+  assert.equal(hasMultipleDistinctPrices("FS Rolex Daytona 116500LN, asking $28,500"), false);
+  assert.equal(hasMultipleDistinctPrices("FS Rolex Daytona 116500LN $28,500 — firm at $28,500, no lowballs"), false);
+});
+
+test("hasMultipleDistinctPrices returns false for text with no price at all", () => {
+  assert.equal(hasMultipleDistinctPrices("WTB looking for a nice watch, any brand"), false);
+  assert.equal(hasMultipleDistinctPrices(""), false);
 });

@@ -1,6 +1,6 @@
 import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
-import { normalizeReference, extractReference, referencesMatch, normalizePriceShorthand } from "../postings/normalize";
+import { normalizeReference, extractReference, referencesMatch, normalizePriceShorthand, hasMultipleDistinctPrices } from "../postings/normalize";
 import { isAiMatchingEnabledForPhone } from "../config";
 import { interpretQuery } from "../ai/queryInterpreter";
 import { rerankCandidates } from "../ai/rerank";
@@ -37,6 +37,21 @@ function score(listing: InventoryListing, tokens: string[]): number {
 function parseListingPrice(raw: string): number | undefined {
   const n = normalizePriceShorthand(raw);
   return n === null ? undefined : n;
+}
+
+/**
+ * True when a listing's own free text names more than one distinct $ amount — the signature of
+ * an unstructured multi-item dealer price-list dump rather than one specific watch. A chat-
+ * captured listing already gets this check at ingestion (normalizeText -> extractUnambiguousPrice
+ * returns null, so it's never even saved as a single price). A WatchFacts API "single" listing
+ * (empty listings[]) never went through that check — it trusts the API's own `sale.price` field
+ * directly — so a bundle blast that the API nonetheless returned as one row would otherwise pass
+ * straight through to matching with a confident-looking structured price. Excluded here,
+ * regardless of what its own `price` field claims, so it can never be presented as a match for
+ * one specific watch.
+ */
+function isUnambiguousListing(listing: InventoryListing): boolean {
+  return !hasMultipleDistinctPrices(listing.description || "");
 }
 
 /** True if a listing's price falls inside the preference range, or no range was set. */
@@ -88,7 +103,9 @@ function softPreferenceScore(listing: InventoryListing, preferences?: SearchPref
  */
 export async function findMatches(request: ItemRequest, limit: number, preferences?: SearchPreferences): Promise<InventoryListing[]> {
   const wantType = request.action === "buy" ? "FS" : "WTB";
-  const candidates = await getActiveListings(wantType);
+  // Excludes multi-item price-list dumps before they ever reach the reference/token branches
+  // below — see isUnambiguousListing.
+  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing);
   const requestedRef = extractRequestedReference(request.query);
 
   if (requestedRef) {
@@ -170,7 +187,8 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   }
 
   const wantType = interpreted.action === "buy" ? "FS" : "WTB";
-  const candidates = await getActiveListings(wantType);
+  // Excludes multi-item price-list dumps before AI ever sees the pool — see isUnambiguousListing.
+  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing);
   const requestedFamily = interpreted.referenceFamily ? normalizeReference(interpreted.referenceFamily) : null;
 
   // Deterministic exclusion, same rule findMatches uses: a candidate WITH its own reference

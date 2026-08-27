@@ -113,19 +113,39 @@ export function normalizePriceShorthand(raw: string): number | null {
   return hadShortDecimal && value > 0 && value < LOW_VALUE_THOUSANDS_THRESHOLD ? value * 1000 : value;
 }
 
+/** The distinct normalized $-amounts named in `text` — shared by extractUnambiguousPrice (below) and hasMultipleDistinctPrices, so "how many different prices does this text mention" is computed exactly one way. */
+function distinctPriceValues(text: string): Set<number> {
+  const matches = text.match(PRICE_PATTERN);
+  if (!matches) return new Set();
+  const values = matches.map((m) => normalizePriceShorthand(m)).filter((v): v is number => v !== null);
+  return new Set(values);
+}
+
 /**
  * A single, unambiguous $-amount in the text. Multiple distinct price mentions (e.g. a
  * multi-item dealer price list dumped as one message) make it impossible to know which price
  * belongs to which item, so this returns null rather than guessing by picking the first one.
  */
 function extractUnambiguousPrice(text: string): number | null {
-  const matches = text.match(PRICE_PATTERN);
-  if (!matches) return null;
-  const values = matches.map((m) => normalizePriceShorthand(m)).filter((v): v is number => v !== null);
-  const distinct = new Set(values);
+  const distinct = distinctPriceValues(text);
   if (distinct.size !== 1) return null;
   const [only] = distinct;
   return Number.isFinite(only) ? only : null;
+}
+
+/**
+ * True when `text` names more than one distinct $ amount — the signature of an unstructured
+ * multi-item dealer price-list dump rather than one specific watch's listing text. Exported so
+ * matching (matching/engine.ts) can treat such a listing as untrustworthy regardless of what its
+ * OWN structured `price` field claims — a WatchFacts API "single" listing (empty `listings[]`)
+ * whose title/description is itself a bundle blast never went through this ambiguity check the
+ * way a chat-captured listing's price does (see normalizeText below), since its price comes
+ * straight from the API's own `sale.price` field, not from re-parsing this text. Content alone
+ * can still reveal the mismatch: a "single" listing whose own text names a dozen different
+ * prices is never actually about one watch, no matter what its price field says.
+ */
+export function hasMultipleDistinctPrices(text: string): boolean {
+  return distinctPriceValues(text).size > 1;
 }
 
 /** Shared by v3 (matching/engine.ts) and v4 (this file) — one reference-extraction rule, not two hand-synced copies. */

@@ -187,6 +187,30 @@ test("required regression: a bundle of several watches returns only the one matc
   assert.equal(matches[0].ref, "116500LN");
 });
 
+test("required regression: a WatchFacts 'single' listing whose own description is a multi-item price-list dump is never surfaced, even when its structured ref/price would otherwise match", async () => {
+  await _resetDbForTests();
+  // Mirrors the live bug report: a dealer "PRICE UPDATE" blast came back from the WatchFacts API
+  // as one row (empty listings[], so mapToInventoryListings trusted sale.price directly) whose
+  // OWN reference/price happened to line up with the request, but whose description names many
+  // other watches at wildly different prices — the signature of a bundle blast, not one listing.
+  await upsertListings(
+    [
+      row("bundle-blast", {
+        brand: "Rolex",
+        ref: "116500LN",
+        price: "24000",
+        item: "PRICE UPDATE",
+        description:
+          "PRICE UPDATE: Daytona 116500LN $63,000, GMT 126710 $28,000, Sub 126610 $18,000, Nautilus 5711 $660,000",
+      }),
+    ],
+    new Date().toISOString()
+  );
+
+  const matches = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5, { priceMax: 27000 });
+  assert.equal(matches.length, 0, "a listing whose description names many distinct prices must never be surfaced as a single match");
+});
+
 test("required regression: a WatchFacts match card names the exact reference, price/ASK, location, source, and listing URL", () => {
   const listing = {
     id: "sale-1",
