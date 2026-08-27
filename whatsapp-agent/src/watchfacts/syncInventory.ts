@@ -2,7 +2,8 @@ import { chromium, Browser, Page } from "playwright";
 import { config } from "../config";
 import { login } from "./scraper";
 import { fetchAllFlashSales, isActive, mapToInventoryListings, resolveListingDetails, resolveWtbAuctionType, RawFlashSale } from "./api";
-import { upsertListings, markMissingInactive, recordSyncAttempt, recordTypeSyncSuccess, recordTypeSyncError } from "./inventoryDb";
+import { upsertListings, markMissingInactive, recordSyncAttempt, recordTypeSyncSuccess, recordTypeSyncError, saveAiEnrichment } from "./inventoryDb";
+import { enrichAndSplitListings } from "./aiEnrich";
 import { ingestApiFsSync } from "../postings/ingest";
 import { ApiFsListing } from "../postings/postingsStore";
 import { ListingType } from "../types";
@@ -42,12 +43,19 @@ export async function syncOneSide(
     // Each sale's structured sub-listings are mapped individually (a bundle lot of several
     // watches becomes several InventoryListings, not just its first one) — see
     // mapToInventoryListings.
-    const listings = dedupedRaw.flatMap((s) => mapToInventoryListings(s, type));
+    const mapped = dedupedRaw.flatMap((s) => mapToInventoryListings(s, type));
+    // AI enrichment/splitting (ENABLE_AI_MATCHING) — a no-op pass-through when disabled. Only
+    // ever touches an unstructured multi-watch blast that the deterministic mapper above
+    // couldn't already break apart; never runs for content unchanged since the last sync.
+    const { rows: listings, toSave } = await enrichAndSplitListings(mapped);
 
     if (listings.length > 0) {
       const syncedAt = now.toISOString();
       await upsertListings(listings, syncedAt);
       await markMissingInactive("WF", type, listings.map((l) => l.id), syncedAt);
+      for (const item of toSave) {
+        await saveAiEnrichment("WF", item.type, item.externalId, item.hash, item.enrichment);
+      }
     }
 
     // Fi Build Spec v4: mirrors FS into the `postings` table and reverse-matches any new or

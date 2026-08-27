@@ -4,6 +4,7 @@ import { config, isV4ChatEnabled } from "../config";
 import { InventoryListing, ListingType } from "../types";
 import { ingestAndMatch } from "../postings/ingest";
 import { normalizeText } from "../postings/normalize";
+import { enrichListingText } from "../ai/enrichment";
 
 // Dealer-group shorthand, distinct from the 1:1 flow's classify() (which expects
 // first-person phrasing like "buy: X"). Groups post in trading-floor jargon instead.
@@ -56,6 +57,69 @@ function appendGroupListing(row: InventoryListing): void {
 }
 
 /**
+ * Builds the row(s) to record for one captured group message. When AI matching is enabled
+ * (ENABLE_AI_MATCHING), an unstructured multi-watch price-list dump is split into one row per
+ * watch AI found real evidence for in the text; otherwise (and always when AI is off, unset, or
+ * finds at most one watch) this is exactly the original single-row deterministic behavior via
+ * normalizeText. A message is only ever processed once (see alreadyProcessed in server.ts), so
+ * there's no separate content-hash cache needed here the way the WatchFacts sync path has one.
+ */
+async function buildGroupRows(
+  groupId: string,
+  senderPhone: string,
+  senderName: string | undefined,
+  type: ListingType,
+  text: string
+): Promise<InventoryListing[]> {
+  if (config.aiMatching.enabled) {
+    const enrichment = await enrichListingText(text);
+    if (enrichment.length > 1) {
+      return enrichment.map((e, i) => ({
+        id: `group-${groupId}-${Date.now()}-${i}`,
+        type,
+        category: "watches",
+        item: e.evidence,
+        brand: e.brand || "",
+        ref: e.referenceRaw || e.referenceFamily || "",
+        condition: e.condition || "",
+        price: e.price != null ? String(e.price) : "ASK",
+        location: e.location || "",
+        contactName: senderName || senderPhone,
+        contactPhone: senderPhone,
+        source: "WA-Group",
+        rating: "",
+        description: e.evidence,
+      }));
+    }
+  }
+
+  // Shared with the v4 chat-ingestion path (postingsStore.ts) — brand/reference extraction,
+  // and price validation that returns null (never a guess) when the message names more than
+  // one distinct $ amount, e.g. a multi-item dealer price-list dump. Without this, a huge
+  // group post could get an arbitrary price attributed to it and, since it previously never
+  // extracted brand/ref at all, could never be reference-filtered out of an unrelated search.
+  const normalized = normalizeText(text);
+  return [
+    {
+      id: `group-${groupId}-${Date.now()}`,
+      type,
+      category: "watches",
+      item: text.slice(0, 120),
+      brand: normalized.brand,
+      ref: normalized.reference,
+      condition: "",
+      price: normalized.price !== null ? String(normalized.price) : "ASK",
+      location: "",
+      contactName: senderName || senderPhone,
+      contactPhone: senderPhone,
+      source: "WA-Group",
+      rating: "",
+      description: text,
+    },
+  ];
+}
+
+/**
  * Silently parses a WhatsApp group message for a WTB/FS-style post. Never sends a reply into
  * the group — group monitoring is read-only by design (matches the "Fi never posts, only
  * reads" promise on the landing page). Not yet validated against a real dealer group; add one
@@ -79,31 +143,11 @@ export async function handleGroupMessage(
   const type = classifyGroupPost(text);
   if (!type) return;
 
-  // Shared with the v4 chat-ingestion path (postingsStore.ts) — brand/reference extraction,
-  // and price validation that returns null (never a guess) when the message names more than
-  // one distinct $ amount, e.g. a multi-item dealer price-list dump. Without this, a huge
-  // group post could get an arbitrary price attributed to it and, since it previously never
-  // extracted brand/ref at all, could never be reference-filtered out of an unrelated search.
-  const normalized = normalizeText(text);
-  const row: InventoryListing = {
-    id: `group-${groupId}-${Date.now()}`,
-    type,
-    category: "watches",
-    item: text.slice(0, 120),
-    brand: normalized.brand,
-    ref: normalized.reference,
-    condition: "",
-    price: normalized.price !== null ? String(normalized.price) : "ASK",
-    location: "",
-    contactName: senderName || senderPhone,
-    contactPhone: senderPhone,
-    source: "WA-Group",
-    rating: "",
-    description: text,
-  };
-
-  appendGroupListing(row);
-  console.log(`[group-monitor] captured ${type} post from ${senderPhone} in group ${groupId}: "${text.slice(0, 60)}"`);
+  const rows = await buildGroupRows(groupId, senderPhone, senderName, type, text);
+  rows.forEach(appendGroupListing);
+  console.log(
+    `[group-monitor] captured ${type} post from ${senderPhone} in group ${groupId} as ${rows.length} row(s): "${text.slice(0, 60)}"`
+  );
 
   // Gated on BOTH the master flag AND this specific group being explicitly allowlisted (spec:
   // controlled test-group rollout) — see config.postingsV4 / ENABLE_V4_POSTINGS /

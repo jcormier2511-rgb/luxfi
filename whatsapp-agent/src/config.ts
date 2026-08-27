@@ -128,7 +128,29 @@ export const config = {
     // exists. Configurable so a later ops decision (e.g. 7 days) doesn't need a code change.
     reminderDaysBeforeExpiry: Number(process.env.V4_REMINDER_DAYS_BEFORE_EXPIRY ?? 3),
   },
+  // Hybrid AI-assisted matching (src/ai/) — layers NL query interpretation and AI reranking
+  // on top of the existing deterministic engine; never replaces it. Off by default, and even
+  // once enabled, only ever active for AI_MATCHING_TEST_PHONE — every other contact keeps
+  // getting the plain deterministic matching/engine.ts path unchanged. Requires
+  // ANTHROPIC_API_KEY; with it unset, the feature stays inert regardless of the flag rather
+  // than guessing at credentials.
+  aiMatching: {
+    enabled: (process.env.ENABLE_AI_MATCHING ?? "false").toLowerCase() === "true",
+    testPhone: process.env.AI_MATCHING_TEST_PHONE?.trim() || null,
+    apiKey: process.env.ANTHROPIC_API_KEY ?? "",
+    model: process.env.AI_MATCHING_MODEL ?? "claude-sonnet-5",
+  },
 };
+
+/**
+ * All three conditions required: the master flag, a real API key configured, and this exact
+ * phone number set as the (single) test phone — so turning the flag on alone can never light
+ * this up for real users. No test phone configured means the feature is inert for everyone,
+ * even with the flag on, rather than silently defaulting to "enabled for all."
+ */
+export function isAiMatchingEnabledForPhone(phone: string): boolean {
+  return config.aiMatching.enabled && !!config.aiMatching.apiKey && !!config.aiMatching.testPhone && phone === config.aiMatching.testPhone;
+}
 
 /** Pure — the actual chat-id/allowlist matching logic, unit-testable without env/config wiring. */
 export function isChatIdAllowed(chatId: string, allowedChatIds: string[]): boolean {

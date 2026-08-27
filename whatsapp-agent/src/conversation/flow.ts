@@ -1,6 +1,6 @@
 import { config } from "../config";
 import { Contact, ConversationState, ItemRequest } from "../types";
-import { findMatches, formatMatchCard, formatMatchApproved } from "../matching/engine";
+import { findMatchesHybrid, formatMatchCard, formatMatchApproved } from "../matching/engine";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
 import { getEntitlement, recordBillingRequested } from "../billing/entitlementStore";
@@ -71,16 +71,19 @@ export interface FlowResult {
 
 /** Runs a fresh search for `request`, showing Match Cards and arming them for approve/pass. */
 async function startSearch(state: ConversationState, request: ItemRequest, messages: string[]): Promise<void> {
-  const matches = await findMatches(request, config.trial.maxOptionsPerItem, state.preferences);
-  if (matches.length === 0) {
+  // findMatchesHybrid only ever activates AI-assisted matching for the configured test phone
+  // (see config.isAiMatchingEnabledForPhone) — every other contact gets exactly the plain
+  // deterministic engine, unchanged.
+  const results = await findMatchesHybrid(state.phone, request, config.trial.maxOptionsPerItem, state.preferences);
+  if (results.length === 0) {
     messages.push(`No live matches yet for "${request.query}" — I'll keep watching the network.`);
     state.pendingMatches = undefined;
     return;
   }
 
-  matches.forEach((m, i) => messages.push(formatMatchCard(m, i, request.action)));
+  results.forEach(({ listing, explanation }, i) => messages.push(formatMatchCard(listing, i, request.action, explanation)));
   messages.push('Reply "approve <number>" to connect, or "pass <number>" to skip one.');
-  state.pendingMatches = { request, matches, decisions: matches.map(() => "pending") };
+  state.pendingMatches = { request, matches: results.map((r) => r.listing), decisions: results.map(() => "pending") };
 }
 
 /**

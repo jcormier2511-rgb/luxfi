@@ -53,6 +53,23 @@ async function ensureSchema(): Promise<void> {
           fs_count INTEGER NOT NULL DEFAULT 0,
           wtb_count INTEGER NOT NULL DEFAULT 0
         );
+        -- AI enrichment cache (hybrid matching, ENABLE_AI_MATCHING) — deliberately its own
+        -- table, keyed on the ORIGINAL pre-split external id, rather than columns on
+        -- inventory_listings: an unstructured bundle blast gets split into several derived
+        -- rows with their OWN ids (see watchfacts/aiEnrich.ts), so a hash/enrichment saved
+        -- against inventory_listings' row would never be found again for that original id on
+        -- the next sync. Keeping the cache decoupled from inventory_listings' row lifecycle
+        -- means content-hash caching works the same way whether or not a given sync happened
+        -- to split that content into multiple rows.
+        CREATE TABLE IF NOT EXISTS ai_enrichment_cache (
+          source TEXT NOT NULL,
+          type TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          enrichment JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (source, type, external_id)
+        );
         -- Additive migration for a table created by an earlier deploy (which only had the
         -- legacy columns above): add the new per-type columns. Legacy columns are
         -- deliberately kept (not dropped) so a Railway rollback to the previous version can
@@ -92,7 +109,7 @@ async function ensureSchema(): Promise<void> {
  * it actually connects and drops them.
  */
 export async function _resetDbForTests(): Promise<void> {
-  await getPool().query(`DROP TABLE IF EXISTS inventory_listings, sync_meta`);
+  await getPool().query(`DROP TABLE IF EXISTS inventory_listings, sync_meta, ai_enrichment_cache`);
   schemaReady = null;
   await ensureSchema();
 }
@@ -315,6 +332,26 @@ export async function searchListingsForDiagnostics(term: string): Promise<Diagno
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
   }));
+}
+
+/** Content hashes of everything already enriched for `source`, keyed `${type}:${externalId}`. */
+export async function getStoredAiHashes(source: string): Promise<Map<string, string>> {
+  await ensureSchema();
+  const result = await getPool().query(`SELECT type, external_id, content_hash FROM ai_enrichment_cache WHERE source = $1`, [source]);
+  const map = new Map<string, string>();
+  for (const row of result.rows) map.set(`${row.type}:${row.external_id}`, row.content_hash);
+  return map;
+}
+
+export async function saveAiEnrichment(source: string, type: ListingType, externalId: string, hash: string, enrichment: unknown): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `INSERT INTO ai_enrichment_cache (source, type, external_id, content_hash, enrichment, updated_at)
+     VALUES ($1, $2, $3, $4, $5, now())
+     ON CONFLICT (source, type, external_id) DO UPDATE SET
+       content_hash = excluded.content_hash, enrichment = excluded.enrichment, updated_at = now()`,
+    [source, type, externalId, hash, JSON.stringify(enrichment)]
+  );
 }
 
 export type TypeSyncState = "ok" | "error" | "disabled" | "never_run";

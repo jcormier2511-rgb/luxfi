@@ -1,6 +1,9 @@
 import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
 import { normalizeReference, extractReference, referencesMatch } from "../postings/normalize";
+import { isAiMatchingEnabledForPhone } from "../config";
+import { interpretQuery } from "../ai/queryInterpreter";
+import { rerankCandidates } from "../ai/rerank";
 
 // Shares extractReference/REFERENCE_PATTERN with postings/normalize.ts (v4) — one reference-
 // extraction rule for both, not two hand-synced copies. A reference number in the free-text
@@ -130,6 +133,76 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   return finalPool.slice(0, limit).map((r) => r.listing);
 }
 
+export interface MatchResult {
+  listing: InventoryListing;
+  /** Set only on a hybrid/AI-assisted pick — an explanation grounded in that listing's own text. */
+  explanation?: string;
+}
+
+/**
+ * AI-assisted matching path — off by default (ENABLE_AI_MATCHING=false) and, even when
+ * enabled, active only for `AI_MATCHING_TEST_PHONE` (see config.isAiMatchingEnabledForPhone).
+ * Every other contact — and this contact whenever any AI call fails — gets the plain
+ * deterministic findMatches() above, unchanged.
+ *
+ * AI only ever narrows/explains a pool that deterministic rules have already made safe:
+ * candidates come from the same getActiveListings(wantType) as findMatches (active, correct
+ * side only, never an inactive row); any candidate whose OWN reference explicitly conflicts
+ * with the requested one is excluded BEFORE AI ever sees the pool (referencesMatch) and
+ * re-checked again AFTER AI ranks it — this is the one rule AI is never allowed to override,
+ * so a wrong AI pick still can't surface a 116508 for a 116500 request. A hard price ceiling is
+ * applied the same way, both before and after. Nothing about approval/trial/entitlement/
+ * billing/ledger state is touched here — this function only decides which listings to show;
+ * flow.ts's existing approve/pass handling is completely unaffected either way.
+ */
+export async function findMatchesHybrid(phone: string, request: ItemRequest, limit: number, preferences?: SearchPreferences): Promise<MatchResult[]> {
+  if (!isAiMatchingEnabledForPhone(phone)) {
+    return (await findMatches(request, limit, preferences)).map((listing) => ({ listing }));
+  }
+
+  const interpreted = await interpretQuery(request.query);
+  if (!interpreted) {
+    return (await findMatches(request, limit, preferences)).map((listing) => ({ listing }));
+  }
+
+  const wantType = interpreted.action === "buy" ? "FS" : "WTB";
+  const candidates = await getActiveListings(wantType);
+  const requestedFamily = interpreted.referenceFamily ? normalizeReference(interpreted.referenceFamily) : null;
+
+  // Deterministic exclusion, same rule findMatches uses: a candidate WITH its own reference
+  // that explicitly conflicts with the requested one is never eligible, regardless of what an
+  // AI reranker might otherwise say about it.
+  const eligible = candidates.filter((l) => !requestedFamily || !l.ref || referencesMatch(l.ref, requestedFamily));
+
+  const priceCeiling = interpreted.maxPrice ?? preferences?.priceMax;
+  const withinBudget = eligible.filter((l) => {
+    if (priceCeiling === undefined || priceCeiling === null) return true;
+    const price = parseListingPrice(l.price);
+    return price === undefined || price <= priceCeiling; // ASK/unparseable price can't be judged against a ceiling — never excluded on that basis
+  });
+
+  // No arbitrary fallback pool here (unlike findMatches' non-reference branch): showing an
+  // unrelated listing "anyway" is exactly the failure mode this whole rework exists to remove.
+  const pool = (withinBudget.length > 0 ? withinBudget : eligible).slice(0, 25); // cap what's sent to the model
+
+  const picks = await rerankCandidates(interpreted, pool);
+  if (picks === null) {
+    // The AI call itself failed — not "found nothing" — so fall back rather than show nothing.
+    return (await findMatches(request, limit, preferences)).map((listing) => ({ listing }));
+  }
+
+  const byId = new Map(eligible.map((l) => [l.id, l] as const));
+  const results: MatchResult[] = [];
+  for (const pick of picks) {
+    const listing = byId.get(pick.id);
+    if (!listing) continue; // re-verified against the safety-gated pool, not just what was sent to AI
+    if (requestedFamily && listing.ref && !referencesMatch(listing.ref, requestedFamily)) continue; // belt & suspenders
+    results.push({ listing, explanation: pick.explanation });
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
 function watchName(listing: InventoryListing): string {
   if (listing.description) return listing.description;
   return listing.item.toLowerCase().startsWith(listing.brand.toLowerCase())
@@ -149,7 +222,7 @@ function sourceLabel(listing: InventoryListing): string {
   return listing.source || "Unknown";
 }
 
-export function formatMatchCard(listing: InventoryListing, index: number, action: ItemRequest["action"]): string {
+export function formatMatchCard(listing: InventoryListing, index: number, action: ItemRequest["action"], explanation?: string): string {
   const roleLabel = action === "buy" ? "Seller" : "Buyer";
   const priceLabel = action === "buy" ? "Asking" : "Bid";
   const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
@@ -163,6 +236,7 @@ export function formatMatchCard(listing: InventoryListing, index: number, action
     `Source: ${sourceLabel(listing)}`,
   ];
   if (listing.detailUrl) lines.push(`Listing: ${listing.detailUrl}`);
+  if (explanation) lines.push(`Why: ${explanation}`);
   return lines.join("\n");
 }
 
