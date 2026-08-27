@@ -9,7 +9,7 @@ delete process.env.OPENAI_API_KEY;
 delete process.env.AI_MATCHING_OPENAI_MODEL;
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { callOpenAiJson } = require("./openai") as typeof import("./openai");
+const { callOpenAiJson, runOpenAiDiagnosticCall } = require("./openai") as typeof import("./openai");
 
 test("required regression: callOpenAiJson never touches the network without BOTH an API key and a configured model", async (t) => {
   const spy = t.mock.method(globalThis, "fetch", async () => {
@@ -17,5 +17,15 @@ test("required regression: callOpenAiJson never touches the network without BOTH
   });
   const result = await callOpenAiJson({ system: "sys", user: "hello" });
   assert.equal(result, null);
+  assert.equal(spy.mock.callCount(), 0);
+});
+
+test("runOpenAiDiagnosticCall reports 'unconfigured' rather than attempting a network call", async (t) => {
+  const spy = t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("must never call fetch when unconfigured");
+  });
+  const result = await runOpenAiDiagnosticCall();
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.type, "unconfigured");
   assert.equal(spy.mock.callCount(), 0);
 });

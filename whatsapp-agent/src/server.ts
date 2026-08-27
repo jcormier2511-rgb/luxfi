@@ -18,6 +18,7 @@ import { initSchema } from "./postings/db";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
+import { runOpenAiDiagnosticCall } from "./ai/providers/openai";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
 // (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
@@ -325,6 +326,20 @@ export function createServer() {
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
     if (!q) return res.status(400).json({ error: "?q=<search term> is required" });
     res.json({ ok: true, results: await searchListingsForDiagnostics(q) });
+  });
+
+  // On-demand diagnostic: `curl "https://<host>/admin/ai-diagnostic?token=..."` — a minimal,
+  // isolated call to OpenAI's Responses API to verify AI_MATCHING_OPENAI_MODEL + OPENAI_API_KEY
+  // actually work, independent of this app's own matching prompts. Deliberately admin-triggered
+  // rather than run automatically (at startup or per-search) — an extra OpenAI call on every
+  // deploy/request costs money and isn't needed once this has confirmed the model/key are good.
+  // Currently OpenAI-specific since that's the provider being debugged; the response is already
+  // safe to return as-is (no key, no full customer data — see runOpenAiDiagnosticCall).
+  app.get("/admin/ai-diagnostic", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    res.json(await runOpenAiDiagnosticCall());
   });
 
   app.use("/assets", express.static(config.assets.dir));
