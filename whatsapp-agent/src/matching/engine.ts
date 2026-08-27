@@ -1,6 +1,6 @@
 import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
-import { normalizeReference, extractReference, referencesMatch } from "../postings/normalize";
+import { normalizeReference, extractReference, referencesMatch, normalizePriceShorthand } from "../postings/normalize";
 import { isAiMatchingEnabledForPhone } from "../config";
 import { interpretQuery } from "../ai/queryInterpreter";
 import { rerankCandidates } from "../ai/rerank";
@@ -32,11 +32,11 @@ function score(listing: InventoryListing, tokens: string[]): number {
   return matches;
 }
 
+/** Single shared price-parsing path (see normalizePriceShorthand) — a stored listing's price
+ *  string is never re-parsed a second, different way at filter/display time. */
 function parseListingPrice(raw: string): number | undefined {
-  const cleaned = raw.replace(/[^0-9.]/g, "");
-  if (!cleaned) return undefined;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : undefined;
+  const n = normalizePriceShorthand(raw);
+  return n === null ? undefined : n;
 }
 
 /** True if a listing's price falls inside the preference range, or no range was set. */
@@ -73,16 +73,18 @@ function softPreferenceScore(listing: InventoryListing, preferences?: SearchPref
 /**
  * A buyer's request ("buy") matches against FS (for sale) listings;
  * a seller's request ("sell") matches against WTB (want to buy) listings.
- * `preferences` (price/location/dial/condition, collected once per contact) filters price
- * hard when set — falling back to sorting by closest price if that empties the pool — and
- * nudges sort order for the freeform fields.
+ * `preferences` (price/location/dial/condition, collected once per contact) applies price as a
+ * MANDATORY pre-filter, before any ranking — a listing outside the stated range is excluded
+ * outright, never shown anyway just to have something to display. Location/dial/condition nudge
+ * sort order for the freeform fields instead of hard-excluding, since those are much fuzzier to
+ * match on exact text.
  *
  * When the query names a specific reference number, that's a hard filter: only listings whose
  * own `ref` normalizes to an exact match are ever returned — never falling back to keyword
- * overlap or (if nothing matches) the "show something anyway" pool below. A reference search
- * is a request for THAT watch, not something similar; an empty result here is exactly what
- * should happen, and the caller (flow.ts) already turns zero matches into "I'll keep watching
- * the network" rather than silence.
+ * overlap or (if nothing matches, or nothing in that price range) the "show something anyway"
+ * pool. A reference search is a request for THAT watch, not something similar; an empty result
+ * here is exactly what should happen, and the caller (flow.ts) already turns zero matches into
+ * "I'll keep watching the network" rather than silence.
  */
 export async function findMatches(request: ItemRequest, limit: number, preferences?: SearchPreferences): Promise<InventoryListing[]> {
   const wantType = request.action === "buy" ? "FS" : "WTB";
@@ -91,8 +93,9 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
 
   if (requestedRef) {
     const exact = candidates.filter((l) => l.ref && referencesMatch(l.ref, requestedRef));
-    const priceFiltered = exact.filter((l) => inPriceRange(l, preferences));
-    const pool = priceFiltered.length > 0 ? priceFiltered : exact;
+    // No price-ignoring fallback: a listing over budget is excluded, period — showing it anyway
+    // "so there's something to display" is worse than truthfully showing nothing.
+    const pool = exact.filter((l) => inPriceRange(l, preferences));
     const ranked = pool
       .map((listing) => ({
         listing,
@@ -107,8 +110,9 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   }
 
   const tokens = tokenize(request.query);
-  const priceFiltered = candidates.filter((l) => inPriceRange(l, preferences));
-  const pool = priceFiltered.length > 0 ? priceFiltered : candidates;
+  // Same mandatory price pre-filter as the reference branch above — a hard budget is never
+  // relaxed just because nothing else in the broader pool happens to fit it.
+  const pool = candidates.filter((l) => inPriceRange(l, preferences));
 
   const ranked = pool
     .map((listing) => ({
@@ -174,16 +178,21 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   // AI reranker might otherwise say about it.
   const eligible = candidates.filter((l) => !requestedFamily || !l.ref || referencesMatch(l.ref, requestedFamily));
 
+  // Mandatory pre-filter, same as findMatches — a stated hard maximum is never relaxed, and
+  // never applied only "if something would otherwise be left." A listing whose price is
+  // missing/ambiguous (ASK, or unparseable) is excluded when a ceiling is stated, rather than
+  // presented as a confirmed match with an unverified price.
   const priceCeiling = interpreted.maxPrice ?? preferences?.priceMax;
   const withinBudget = eligible.filter((l) => {
     if (priceCeiling === undefined || priceCeiling === null) return true;
     const price = parseListingPrice(l.price);
-    return price === undefined || price <= priceCeiling; // ASK/unparseable price can't be judged against a ceiling — never excluded on that basis
+    return price !== undefined && price <= priceCeiling;
   });
 
-  // No arbitrary fallback pool here (unlike findMatches' non-reference branch): showing an
-  // unrelated listing "anyway" is exactly the failure mode this whole rework exists to remove.
-  const pool = (withinBudget.length > 0 ? withinBudget : eligible).slice(0, 25); // cap what's sent to the model
+  // No arbitrary fallback pool here: a listing over budget, or one AI can't verify against the
+  // stated budget, is excluded outright — showing it anyway "so there's something to display"
+  // is exactly the failure mode this whole rework exists to remove.
+  const pool = withinBudget.slice(0, 25); // cap what's sent to the model
 
   const picks = await rerankCandidates(interpreted, pool);
   if (picks === null) {
@@ -191,23 +200,36 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
     return (await findMatches(request, limit, preferences)).map((listing) => ({ listing }));
   }
 
-  const byId = new Map(eligible.map((l) => [l.id, l] as const));
+  // Built from `withinBudget`/`eligible`-filtered data, not the broader unfiltered `candidates`
+  // — a pick whose id somehow isn't in this map (an over-budget or reference-conflicting
+  // listing) is silently dropped below, never resurfaced.
+  const byId = new Map(withinBudget.map((l) => [l.id, l] as const));
   const results: MatchResult[] = [];
   for (const pick of picks) {
     const listing = byId.get(pick.id);
     if (!listing) continue; // re-verified against the safety-gated pool, not just what was sent to AI
     if (requestedFamily && listing.ref && !referencesMatch(listing.ref, requestedFamily)) continue; // belt & suspenders
+    if (priceCeiling !== undefined && priceCeiling !== null) {
+      const price = parseListingPrice(listing.price);
+      if (price === undefined || price > priceCeiling) continue; // belt & suspenders — never surface an over-budget or unverifiable price under a stated ceiling
+    }
     results.push({ listing, explanation: pick.explanation });
     if (results.length >= limit) break;
   }
   return results;
 }
 
+/**
+ * A short, clean title for the "Watch:" line — never the raw original listing text. That text
+ * (the actual dealer message, or the WatchFacts listing's own description) has its own always-
+ * present "Description:" line in formatMatchCard below, so the two are never conflated: one is
+ * a normalized title, the other is a verbatim source quote, and a reader can tell which is
+ * which instead of the card's "watch" price/details being ambiguous between the two.
+ */
 function watchName(listing: InventoryListing): string {
-  if (listing.description) return listing.description;
   return listing.item.toLowerCase().startsWith(listing.brand.toLowerCase())
     ? listing.item
-    : `${listing.brand} ${listing.item}`;
+    : `${listing.brand} ${listing.item}`.trim();
 }
 
 /**
@@ -234,6 +256,10 @@ export function formatMatchCard(listing: InventoryListing, index: number, action
     `${priceLabel}: ${priceText}`,
     `Location: ${listing.location || "Not specified"}`,
     `Source: ${sourceLabel(listing)}`,
+    // Always present, distinct from the normalized "Watch:" title above — the verbatim
+    // stored source text (the dealer's own message, or the WatchFacts listing's own
+    // description), so a reader can see exactly what the seller/buyer actually wrote.
+    `Description: ${listing.description || "Not provided"}`,
   ];
   if (listing.detailUrl) lines.push(`Listing: ${listing.detailUrl}`);
   if (explanation) lines.push(`Why: ${explanation}`);

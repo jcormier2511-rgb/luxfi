@@ -1,6 +1,7 @@
 import { config } from "../config";
-import { Contact, ConversationState, ItemRequest } from "../types";
+import { Contact, ConversationState, ItemRequest, InventoryListing } from "../types";
 import { findMatchesHybrid, formatMatchCard, formatMatchApproved } from "../matching/engine";
+import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
 import { getEntitlement, recordBillingRequested } from "../billing/entitlementStore";
@@ -81,9 +82,20 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
     return;
   }
 
-  results.forEach(({ listing, explanation }, i) => messages.push(formatMatchCard(listing, i, request.action, explanation)));
+  // Confirms each listing's detailUrl actually resolves before it's ever sent in a card —
+  // a constructed WatchFacts URL isn't guaranteed to be a valid live page (wrong id, expired
+  // listing, site-side error). An unreachable URL is dropped rather than sent broken; matching
+  // itself (and the listing's own contactPhone) is completely unaffected either way.
+  const validated: { listing: InventoryListing; explanation?: string }[] = await Promise.all(
+    results.map(async ({ listing, explanation }) => ({
+      listing: { ...listing, detailUrl: await getValidatedListingUrl(listing.detailUrl) },
+      explanation,
+    }))
+  );
+
+  validated.forEach(({ listing, explanation }, i) => messages.push(formatMatchCard(listing, i, request.action, explanation)));
   messages.push('Reply "approve <number>" to connect, or "pass <number>" to skip one.');
-  state.pendingMatches = { request, matches: results.map((r) => r.listing), decisions: results.map(() => "pending") };
+  state.pendingMatches = { request, matches: validated.map((r) => r.listing), decisions: validated.map(() => "pending") };
 }
 
 /**

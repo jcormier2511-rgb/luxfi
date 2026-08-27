@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyText, normalizeText, normalizeReference, extractReference, referencesMatch } from "./normalize";
+import { classifyText, normalizeText, normalizeReference, extractReference, referencesMatch, normalizePriceShorthand } from "./normalize";
 
 test("classifyText recognizes FS keywords", () => {
   assert.equal(classifyText("FS Rolex Daytona 116500LN $28,000"), "FS");
@@ -55,6 +55,34 @@ test("normalizeText returns null price when the message names more than one dist
 test("normalizeText still extracts a price when the same amount is mentioned more than once", () => {
   const result = normalizeText("FS Rolex Daytona 116500LN $28,500 — firm at $28,500, no lowballs");
   assert.equal(result.price, 28500);
+});
+
+test("required regression: normalizePriceShorthand treats 25.5, 25,5, and 25.5k as the same amount", () => {
+  assert.equal(normalizePriceShorthand("25.5"), 25500);
+  assert.equal(normalizePriceShorthand("25,5"), 25500);
+  assert.equal(normalizePriceShorthand("25.5k"), 25500);
+  assert.equal(normalizePriceShorthand("$25.5k"), 25500);
+});
+
+test("normalizePriceShorthand leaves a real thousands-separated amount and a legitimate small integer alone", () => {
+  assert.equal(normalizePriceShorthand("26,200"), 26200);
+  assert.equal(normalizePriceShorthand("$26,200"), 26200);
+  assert.equal(normalizePriceShorthand("1,234,567"), 1234567);
+  assert.equal(normalizePriceShorthand("500"), 500, "a bare whole integer is a literal amount, not shorthand for 500,000");
+});
+
+test("required regression: normalizePriceShorthand fixes the exact reported bug — a truncated $26.2 becomes $26,200, not $26.20", () => {
+  assert.equal(normalizePriceShorthand("$26.2"), 26200);
+});
+
+test("normalizePriceShorthand takes only the FIRST currency when several are mentioned together", () => {
+  assert.equal(normalizePriceShorthand("25,5usd/35,4cad"), 25500);
+  assert.equal(normalizePriceShorthand("26200hkd/23800hkd"), 26200);
+});
+
+test("normalizePriceShorthand returns null for text with no number in it", () => {
+  assert.equal(normalizePriceShorthand("price on ask"), null);
+  assert.equal(normalizePriceShorthand(""), null);
 });
 
 test("normalizeReference strips formatting and uppercases for comparison", () => {

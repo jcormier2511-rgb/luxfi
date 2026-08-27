@@ -110,6 +110,37 @@ test("required regression: a bare base reference in the query still finds a list
   assert.equal(matches[0].id, "exact");
 });
 
+test("required regression: a hard maximum price excludes an over-budget listing outright — never shown just because nothing else fits", async () => {
+  await _resetDbForTests();
+  await upsertListings(
+    [row("over-budget", { brand: "Rolex", ref: "116500LN", price: "26200", description: "Rolex Daytona 116500LN" })],
+    new Date().toISOString()
+  );
+
+  const matches = await findMatches({ action: "buy", query: "buy Rolex Daytona 116500LN" }, 5, { priceMax: 25000 });
+  assert.equal(matches.length, 0, "the only candidate is $1,200 over budget and must be excluded, not surfaced anyway");
+});
+
+test("required regression: a hard maximum price also excludes an over-budget listing in the broad (no-reference) search branch", async () => {
+  await _resetDbForTests();
+  await upsertListings([row("over-budget", { brand: "Rolex", price: "26200", description: "Rolex Submariner" })], new Date().toISOString());
+
+  const matches = await findMatches({ action: "buy", query: "Rolex" }, 5, { priceMax: 25000 });
+  assert.equal(matches.length, 0, "must never fall back to the unfiltered pool just because the price filter emptied it");
+});
+
+test("a listing within the stated budget still matches normally", async () => {
+  await _resetDbForTests();
+  await upsertListings(
+    [row("in-budget", { brand: "Rolex", ref: "116500LN", price: "24000", description: "Rolex Daytona 116500LN" })],
+    new Date().toISOString()
+  );
+
+  const matches = await findMatches({ action: "buy", query: "buy Rolex Daytona 116500LN" }, 5, { priceMax: 25000 });
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].id, "in-budget");
+});
+
 test("without a reference in the query, matching still falls back to the broader pool as before", async () => {
   await _resetDbForTests();
   await upsertListings([row("a", { brand: "Rolex", description: "Rolex Submariner" })], new Date().toISOString());
@@ -180,6 +211,49 @@ test("required regression: a WatchFacts match card names the exact reference, pr
   assert.match(card, /North America/);
   assert.match(card, /Source: WatchFacts/);
   assert.match(card, /https:\/\/watchfacts\.com\/flash-sales\/sale-1/);
+});
+
+test("required regression: the card always includes a Description field with the verbatim stored source text, distinct from the normalized Watch title", () => {
+  const listing = {
+    id: "sale-3",
+    type: "FS" as const,
+    category: "watches",
+    item: "Rolex Daytona 116500LN",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "Used",
+    price: "26200",
+    location: "North America",
+    contactName: "Dealer",
+    contactPhone: "123",
+    source: "WF",
+    rating: "",
+    description: "Rolex HK stock, Daytona 116500LN blk $433,000hkd 6/2026, box and papers",
+    detailUrl: "https://watchfacts.com/flash-sales/sale-3",
+  };
+  const card = formatMatchCard(listing, 0, "buy");
+  assert.match(card, /Description: Rolex HK stock, Daytona 116500LN blk \$433,000hkd 6\/2026, box and papers/);
+});
+
+test("the card reports 'Not provided' rather than an empty Description line when no source text exists", () => {
+  const listing = {
+    id: "sale-4",
+    type: "FS" as const,
+    category: "watches",
+    item: "Rolex Daytona 116500LN",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "",
+    price: "26200",
+    location: "",
+    contactName: "",
+    contactPhone: "",
+    source: "WF",
+    rating: "",
+    description: "",
+  };
+  const card = formatMatchCard(listing, 0, "buy");
+  assert.match(card, /Description: Not provided/);
 });
 
 test("required regression: an ASK-priced listing's card never invents a price", () => {
