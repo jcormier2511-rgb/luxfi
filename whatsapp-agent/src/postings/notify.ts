@@ -1,6 +1,7 @@
 import { withSchema, withTransaction } from "./db";
 import { getOrCreateCanonicalUser } from "./identity";
 import { PostingRow, getPrimaryImageUrl } from "./postingsStore";
+import { recordNotificationFailure } from "./status";
 import { getEntitlement } from "../billing/entitlementStore";
 import { sendText } from "../whapi/client";
 import { config, isPostingChatEnabled } from "../config";
@@ -123,6 +124,7 @@ async function notifyOneRecipient(
     await sendText(phone, formatMatchMessage(matchId, self, counterpart, reasons, imageUrl));
   } catch (err) {
     console.error(`[postings] failed to deliver match notification ${matchId} to ${phone}:`, err);
+    await recordNotificationFailure((err as Error).message);
   }
 }
 
@@ -361,6 +363,7 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
         await sendText(phone, `You're connected! ${result.notify.myContact.name}: ${result.notify.myContact.phone}`);
       } catch (err) {
         console.error(`[postings] failed to deliver connection introduction for match ${matchId} to ${phone}:`, err);
+        await recordNotificationFailure((err as Error).message);
       }
     }
   }

@@ -187,6 +187,18 @@ async function ensureSchema(): Promise<void> {
           error TEXT
         );
 
+        -- Spec §14 admin visibility: "notifications sent and failed." Sent is always counted
+        -- live from match_recipients.notified_at (the real source of truth); failed has no
+        -- other record anywhere (a failed sendText was only ever console.error'd), so this
+        -- singleton row is the one thing that actually needs its own persisted counter.
+        CREATE TABLE IF NOT EXISTS postings_meta (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          notifications_failed_count INTEGER NOT NULL DEFAULT 0,
+          last_notification_error TEXT,
+          last_notification_error_at TIMESTAMPTZ
+        );
+        INSERT INTO postings_meta (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
         -- Additive migrations for columns introduced after their table's original
         -- CREATE TABLE — CREATE TABLE IF NOT EXISTS silently skips a table that already
         -- exists, so a column added later needs its own idempotent ADD COLUMN IF NOT EXISTS
@@ -236,7 +248,7 @@ export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>)
 export async function _resetDbForTests(): Promise<void> {
   await getPool().query(`
     DROP TABLE IF EXISTS
-      reconciliation_runs, billing_ledger, approvals, match_recipients, matches,
+      reconciliation_runs, postings_meta, billing_ledger, approvals, match_recipients, matches,
       posting_images, postings, linked_identities, canonical_users
     CASCADE
   `);

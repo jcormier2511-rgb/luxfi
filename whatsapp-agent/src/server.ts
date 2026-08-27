@@ -13,6 +13,7 @@ import { approveMatch, passMatch, ApprovalOutcome } from "./postings/notify";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
 import { getPosting, extendPosting } from "./postings/postingsStore";
+import { getV4OperationalStatus } from "./postings/status";
 import { initSchema } from "./postings/db";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
@@ -378,12 +379,27 @@ export function createServer() {
       schemaReady = false;
       schemaError = (err as Error).message;
     }
+    // Spec §14: active monitor/match counts, notifications sent/failed, and the last
+    // reconciliation run's outcome, all queried live (see getV4OperationalStatus) — kept as a
+    // best-effort addition alongside the config/schema fields above rather than failing the
+    // whole endpoint if this query has a problem, since those existing fields are themselves
+    // useful for diagnosing a DB issue.
+    let operational: Awaited<ReturnType<typeof getV4OperationalStatus>> | null = null;
+    let operationalError: string | null = null;
+    try {
+      operational = await getV4OperationalStatus();
+    } catch (err) {
+      operationalError = (err as Error).message;
+    }
+
     res.json({
       enabled: config.postingsV4.enabled,
       allowedChatIds: config.postingsV4.allowedChatIds,
       reminderDaysBeforeExpiry: config.postingsV4.reminderDaysBeforeExpiry,
       schemaReady,
       schemaError,
+      ...operational,
+      operationalError,
     });
   });
 

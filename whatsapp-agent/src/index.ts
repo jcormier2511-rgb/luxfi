@@ -3,6 +3,7 @@ import { createServer } from "./server";
 import { runInventorySync } from "./watchfacts/syncInventory";
 import { initSchema } from "./postings/db";
 import { sendExpirationReminders } from "./postings/reminders";
+import { runReconciliation } from "./postings/matching";
 
 const app = createServer();
 
@@ -32,6 +33,23 @@ if (config.postingsV4.enabled) {
   };
   reminderTick();
   setInterval(reminderTick, reminderIntervalMs);
+
+  // Fi Build Spec v4 §4.3: reconciliation must run periodically, not only on-demand via
+  // POST /admin/reconciliation — it's the safety net that recovers a match missed because of a
+  // webhook/API/process failure, which by definition can't be relied on to be triggered
+  // manually. runReconciliation() itself is idempotent (an already-known, unchanged match is a
+  // no-op — see matching.ts), so an overlapping/frequent tick is harmless, just wasted work.
+  const reconciliationIntervalMs = Number(process.env.V4_RECONCILIATION_INTERVAL_MINUTES ?? 30) * 60_000;
+  const reconciliationTick = () => {
+    runReconciliation()
+      .then((r) => {
+        if (r.error) console.error(`[postings] scheduled reconciliation failed: ${r.error}`);
+        else if (r.matchesCreatedOrChanged > 0) console.log(`[postings] reconciliation created/changed ${r.matchesCreatedOrChanged} match(es)`);
+      })
+      .catch((err) => console.error("[postings] scheduled reconciliation run threw:", err.message));
+  };
+  reconciliationTick();
+  setInterval(reconciliationTick, reconciliationIntervalMs);
 }
 
 // Refresh the WatchFacts Trading Floor feed on boot, then on a fixed interval. Each run is a
