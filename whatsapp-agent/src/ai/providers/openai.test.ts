@@ -18,28 +18,39 @@ function errorResponse(status: number, body: unknown, requestId = "req_abc123"):
   } as unknown as Response;
 }
 
-test("callOpenAiJson parses a valid chat-completions response", async (t) => {
+test("required regression: callOpenAiJson calls the Responses API (not chat/completions), with store:false and reasoning effort none", async (t) => {
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
-    assert.equal(url, "https://api.openai.com/v1/chat/completions");
+    assert.equal(url, "https://api.openai.com/v1/responses");
     const body = JSON.parse(init.body as string);
     assert.equal(body.model, "gpt-test-model");
-    assert.deepEqual(body.messages, [
+    assert.deepEqual(body.input, [
       { role: "system", content: "sys" },
       { role: "user", content: "user text" },
     ]);
+    assert.deepEqual(body.reasoning, { effort: "none" });
+    assert.equal(body.store, false);
     return {
       ok: true,
-      json: async () => ({ choices: [{ message: { content: '{"action":"buy"}' } }] }),
+      json: async () => ({ output_text: '{"action":"buy"}' }),
     } as Response;
   });
   const result = await callOpenAiJson<{ action: string }>({ system: "sys", user: "user text" });
   assert.deepEqual(result, { action: "buy" });
 });
 
+test("callOpenAiJson falls back to output[0].content[0].text when output_text isn't present", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => ({
+    ok: true,
+    json: async () => ({ output: [{ content: [{ text: '{"action":"sell"}' }] }] }),
+  }) as unknown as Response);
+  const result = await callOpenAiJson<{ action: string }>({ system: "sys", user: "user text" });
+  assert.deepEqual(result, { action: "sell" });
+});
+
 test("callOpenAiJson strips a markdown fence the model might wrap the JSON in", async (t) => {
   t.mock.method(globalThis, "fetch", async () => ({
     ok: true,
-    json: async () => ({ choices: [{ message: { content: '```json\n{"action":"sell"}\n```' } }] }),
+    json: async () => ({ output_text: '```json\n{"action":"sell"}\n```' }),
   }) as unknown as Response);
   const result = await callOpenAiJson<{ action: string }>({ system: "sys", user: "user text" });
   assert.deepEqual(result, { action: "sell" });

@@ -44,26 +44,29 @@ async function parseOpenAiError(res: Response): Promise<OpenAiErrorDetail> {
 }
 
 /**
- * OpenAI Chat Completions API via Node's built-in `fetch` — mirrors callAnthropicJson's
- * contract exactly: never throws, collapses missing key/model, network failure, a non-2xx
- * response, or unparseable JSON to null. Requires BOTH OPENAI_API_KEY and
+ * OpenAI Responses API (NOT Chat Completions) via Node's built-in `fetch` — mirrors
+ * callAnthropicJson's contract exactly: never throws, collapses missing key/model, network
+ * failure, a non-2xx response, or unparseable JSON to null. Requires BOTH OPENAI_API_KEY and
  * AI_MATCHING_OPENAI_MODEL to be set explicitly — there's no hardcoded default model id here,
  * since guessing one that might be wrong or already deprecated for your account is worse than
  * staying inert until you name the exact model you want.
  *
- * Uses free-text JSON in the prompt (not OpenAI's strict `json_object` response format) so this
- * stays symmetric with the Anthropic provider: some callers here need a top-level JSON ARRAY
- * back (enrichment, rerank), and json_object mode requires a top-level object.
+ * Confirmed via runOpenAiDiagnosticCall (GET /admin/ai-diagnostic) that the configured model
+ * works on the Responses API but rejected Chat Completions with a 400 — this function
+ * originally targeted Chat Completions and was switched once that was verified, rather than
+ * guessed upfront. `store: false` and `reasoning: {effort: "none"}` keep this cheap/fast: these
+ * are extraction/classification calls, not tasks that benefit from paid reasoning tokens, and
+ * nothing here needs OpenAI retaining the conversation server-side.
  *
- * Note: some newer/reasoning-tier OpenAI models are Responses-API-only and may reject Chat
- * Completions' parameters (`max_tokens`, plain `messages`) outright with a 400 — see
- * runOpenAiDiagnosticCall below, which isolates exactly that question independently of this
- * function's own structured-output prompting.
+ * Uses free-text JSON in the prompt (not the Responses API's strict structured-output schema)
+ * so this stays symmetric with the Anthropic provider: some callers here need a top-level JSON
+ * ARRAY back (enrichment, rerank), which is simpler to keep as one prompt-based convention
+ * across both providers than a per-provider structured-schema path for every call site.
  */
 export async function callOpenAiJson<T>(req: AiJsonRequest): Promise<T | null> {
   if (!config.aiMatching.openaiApiKey || !config.aiMatching.openaiModel) return null;
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    const res = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -71,11 +74,13 @@ export async function callOpenAiJson<T>(req: AiJsonRequest): Promise<T | null> {
       },
       body: JSON.stringify({
         model: config.aiMatching.openaiModel,
-        max_tokens: req.maxTokens ?? 1024,
-        messages: [
+        input: [
           { role: "system", content: req.system },
           { role: "user", content: req.user },
         ],
+        reasoning: { effort: "none" },
+        max_output_tokens: req.maxTokens ?? 1024,
+        store: false,
       }),
     });
     if (!res.ok) {
@@ -83,8 +88,8 @@ export async function callOpenAiJson<T>(req: AiJsonRequest): Promise<T | null> {
       console.error("[ai/openai] request failed", { status: res.status, ...detail });
       return null;
     }
-    const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const text = body.choices?.[0]?.message?.content;
+    const body = (await res.json()) as { output_text?: string; output?: { content?: { text?: string }[] }[] };
+    const text = body.output_text ?? body.output?.[0]?.content?.[0]?.text;
     if (!text) return null;
     return parseJsonFromModelText<T>(text);
   } catch (err) {
@@ -101,13 +106,11 @@ export interface OpenAiDiagnosticResult {
 }
 
 /**
- * Minimal, isolated call to OpenAI's Responses API (NOT Chat Completions) — verifies the
- * configured model + key work at all, independent of this app's own structured-output prompts.
- * Deliberately a separate raw fetch (no SDK/zod dependency added) rather than reusing
- * callOpenAiJson's endpoint: some reasoning-tier models are Responses-API-only, so a failure
- * here points squarely at the model name/key/API surface, not at anything the matching prompts
- * themselves do. Exposed via GET /admin/ai-diagnostic so this can be triggered on demand rather
- * than adding an extra OpenAI call (and cost) to every single deploy.
+ * Minimal, isolated call to OpenAI's Responses API — verifies the configured model + key work
+ * at all, using a trivial static prompt rather than this app's own dynamic system/user prompts,
+ * so a failure here points squarely at the model name/key/API surface, not at anything specific
+ * to a real matching call. Exposed via GET /admin/ai-diagnostic so this can be triggered on
+ * demand rather than adding an extra OpenAI call (and cost) to every single deploy.
  */
 export async function runOpenAiDiagnosticCall(): Promise<OpenAiDiagnosticResult> {
   if (!config.aiMatching.openaiApiKey || !config.aiMatching.openaiModel) {
