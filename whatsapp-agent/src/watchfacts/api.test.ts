@@ -140,8 +140,43 @@ test("mapToInventoryListings uses ASK for every sub-listing in a bundle, never t
   );
 });
 
+test("required regression: a bundle sub-listing's item/description come from its own detail.title, never the parent sale's bundle-wide title", () => {
+  const bundleSale = sale({
+    isBundle: true,
+    title: "MASSIVE DEALER LOT — everything must go, DM for full list",
+    listings: [
+      { id: "a", brand: "Rolex", model: null, reference: "116500LN", normalizedReference: null, title: "Rolex Daytona 116500LN white dial", condition: "Used", frontImage: null, box: null, papers: null, dialColor: null },
+      { id: "b", brand: "Patek Philippe", model: null, reference: "5711", normalizedReference: null, title: "Patek Nautilus 5711 blue dial", condition: "Used", frontImage: null, box: null, papers: null, dialColor: null },
+    ],
+  });
+  const listings = mapToInventoryListings(bundleSale, "FS");
+  assert.ok(
+    listings.every((l) => !/MASSIVE DEALER LOT/.test(l.description) && !/MASSIVE DEALER LOT/.test(l.item)),
+    "a sub-listing's own description/item must never carry the whole dealer blast text"
+  );
+  assert.equal(listings[0].item, "Rolex Daytona 116500LN white dial");
+  assert.equal(listings[1].description, "Patek Nautilus 5711 blue dial");
+});
+
+test("required regression: when a sub-listing has no structured reference field, one is extracted from that sub-listing's own title only", () => {
+  const bundleSale = sale({
+    isBundle: true,
+    listings: [
+      // WatchFacts sometimes leaves reference/normalizedReference empty even though the title has it.
+      { id: "a", brand: "Rolex", model: null, reference: null, normalizedReference: null, title: "Rolex Daytona 116500LN white dial", condition: "Used", frontImage: null, box: null, papers: null, dialColor: null },
+      { id: "b", brand: "Patek Philippe", model: null, reference: null, normalizedReference: null, title: "Patek Nautilus 5711 blue dial", condition: "Used", frontImage: null, box: null, papers: null, dialColor: null },
+    ],
+  });
+  const listings = mapToInventoryListings(bundleSale, "FS");
+  assert.equal(listings[0].ref, "116500LN", "must extract from this sub-listing's own title, not fall back to empty");
+  assert.equal(listings[1].ref, "5711", "each sub-listing's reference extraction is independent of its siblings");
+});
+
 test("mapToInventoryListings falls back to one empty-detail entry when a sale has no listings array", () => {
-  const listings = mapToInventoryListings(sale({ listings: [] }), "FS");
+  // A title with no extractable reference isolates this test's actual purpose (one placeholder
+  // entry, not zero/many) from the separate reference-extraction-from-title behavior, which has
+  // its own dedicated tests above.
+  const listings = mapToInventoryListings(sale({ listings: [], title: "Assorted watch lot" }), "FS");
   assert.equal(listings.length, 1);
   assert.equal(listings[0].ref, "");
   assert.equal(listings[0].id, "sale-1");

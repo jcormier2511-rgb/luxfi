@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyText, normalizeText, normalizeReference, extractReference } from "./normalize";
+import { classifyText, normalizeText, normalizeReference, extractReference, referencesMatch } from "./normalize";
 
 test("classifyText recognizes FS keywords", () => {
   assert.equal(classifyText("FS Rolex Daytona 116500LN $28,000"), "FS");
@@ -77,4 +77,24 @@ test('required regression: extractReference never treats a $-prefixed price as a
 test("normalizeText never captures a $-prefixed price as the reference field", () => {
   const result = normalizeText("WTB Rolex under $20000");
   assert.equal(result.reference, "");
+});
+
+test("required regression: extractReference handles references with periods and chained separators", () => {
+  assert.equal(extractReference("Patek Nautilus 3510.50"), "3510.50");
+  assert.equal(extractReference("Patek 5712/1A-001 steel"), "5712/1A-001");
+});
+
+test("referencesMatch: a bare base reference matches a suffixed variant of the same watch", () => {
+  assert.ok(referencesMatch("116500", "116500LN"));
+  assert.ok(referencesMatch("116500LN", "116500")); // order-independent
+});
+
+test("required regression: referencesMatch never matches a different reference sharing a digit prefix", () => {
+  assert.equal(referencesMatch("116500", "116508"), false);
+  assert.equal(referencesMatch("116500LN", "116508-0013"), false);
+});
+
+test("referencesMatch still requires exact equality once both sides are fully specified", () => {
+  assert.ok(referencesMatch("116508-0013", "1165080013")); // formatting-only difference
+  assert.equal(referencesMatch("116500LN", "116500LV"), false); // different dial code, same length
 });

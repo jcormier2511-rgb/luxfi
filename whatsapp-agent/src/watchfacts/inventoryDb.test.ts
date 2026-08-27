@@ -20,6 +20,7 @@ const {
   getSyncStatus,
   recordTypeSyncSuccess,
   recordTypeSyncError,
+  searchListingsForDiagnostics,
   _forceSchemaRecheckForTests,
   _resetDbForTests,
   _closePoolForTests,
@@ -59,6 +60,21 @@ test("upsert updates an existing row instead of duplicating it", async () => {
   assert.equal(active.length, 1);
   assert.equal(active[0].price, "2000");
   assert.equal(active[0].detailUrl, "https://watchfacts.com/flash-sales/a");
+});
+
+test("searchListingsForDiagnostics finds a match by ref, item, or description, including inactive rows", async () => {
+  await _resetDbForTests();
+  const t1 = new Date().toISOString();
+  await upsertListings([row("a", "FS", { ref: "116500LN" })], t1);
+  await upsertListings([row("b", "FS", { ref: "", item: "mentions 116500LN in title" })], t1);
+  await upsertListings([row("c", "FS", { ref: "999999" })], t1);
+  await markMissingInactive("WF", "FS", ["b", "c"], t1); // marks "a" inactive
+
+  const results = await searchListingsForDiagnostics("116500");
+  const ids = results.map((r) => r.externalId).sort();
+  assert.deepEqual(ids, ["a", "b"], "must match by ref OR item text, and must not exclude inactive rows");
+  const a = results.find((r) => r.externalId === "a")!;
+  assert.equal(a.isActive, false, "diagnostics must surface inactive status, not hide it");
 });
 
 test("FS and WTB rows sharing the same external id stay separate", async () => {

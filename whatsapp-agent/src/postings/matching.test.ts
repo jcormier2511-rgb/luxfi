@@ -76,6 +76,20 @@ test("scoreMatch: reference equality is normalized (formatting differences don't
   assert.equal(result!.score, 100);
 });
 
+test("scoreMatch: a bare base reference matches a listing's suffixed variant of the same watch", () => {
+  const fs = posting({ reference: "116500LN" });
+  const wtb = posting({ reference: "116500" }); // buyer typed the base reference with no dial-code suffix
+  const result = scoreMatch(fs, wtb);
+  assert.ok(result, "116500 must still find the 116500LN listing");
+  assert.equal(result!.score, 100);
+});
+
+test("required regression: a bare base reference never matches a different reference that happens to share a prefix", () => {
+  const fs = posting({ reference: "116508-0013" });
+  const wtb = posting({ reference: "116500" });
+  assert.equal(scoreMatch(fs, wtb), null, "116500 and 116508-0013 are different watches, not a prefix family");
+});
+
 test("scoreMatch: a broad match is allowed only when WTB gave no reference or brand at all", () => {
   const fs = posting({ brand: "Rolex", reference: "116500LN" });
   const wtb = posting({ brand: "", reference: "" });

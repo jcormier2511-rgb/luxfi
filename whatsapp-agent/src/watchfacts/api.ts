@@ -1,5 +1,6 @@
 import { Page } from "playwright";
 import { InventoryListing, ListingType } from "../types";
+import { extractReference } from "../postings/normalize";
 
 /**
  * Real WatchFacts Trading Floor API, found by capturing network traffic from a logged-in
@@ -101,23 +102,33 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
   const isBundleOfMultiple = details.length > 1;
   const price = !isBundleOfMultiple && sale.price > 0 ? String(sale.price) : "ASK";
 
-  return details.map((detail, i) => ({
-    id: isBundleOfMultiple ? `${sale.id}-${detail?.id ?? i}` : sale.id,
-    type,
-    category: "watches",
-    item: sale.title ?? "",
-    brand: detail?.brand ?? "",
-    ref: detail?.reference ?? detail?.normalizedReference ?? "",
-    condition: detail?.condition ?? "",
-    price,
-    location: sale.region ?? "",
-    contactName: sale.companyName || sale.fromName || "",
-    contactPhone: sale.whatsappNumber || sale.companyWhatsapp || "",
-    source: "WF",
-    rating: sale.companyStars != null ? String(sale.companyStars) : "",
-    description: sale.title ?? "",
-    detailUrl: `https://watchfacts.com/flash-sales/${sale.id}`,
-  }));
+  return details.map((detail, i) => {
+    // Prefer the individual sub-listing's own title over the parent sale's — the sale title is
+    // the whole dealer blast/bundle headline, which is exactly the "generic bundle" text that
+    // must never stand in for one specific watch's description.
+    const title = detail?.title || sale.title || "";
+    // WatchFacts doesn't always populate a sub-listing's structured reference field — when it's
+    // missing, extract one from THAT sub-listing's own title only, never from the parent sale's
+    // (bundle-wide) text, which could contain several other watches' reference numbers.
+    const ref = detail?.reference || detail?.normalizedReference || extractReference(title) || "";
+    return {
+      id: isBundleOfMultiple ? `${sale.id}-${detail?.id ?? i}` : sale.id,
+      type,
+      category: "watches",
+      item: title,
+      brand: detail?.brand ?? "",
+      ref,
+      condition: detail?.condition ?? "",
+      price,
+      location: sale.region ?? "",
+      contactName: sale.companyName || sale.fromName || "",
+      contactPhone: sale.whatsappNumber || sale.companyWhatsapp || "",
+      source: "WF",
+      rating: sale.companyStars != null ? String(sale.companyStars) : "",
+      description: title,
+      detailUrl: `https://watchfacts.com/flash-sales/${sale.id}`,
+    };
+  });
 }
 
 async function fetchFlashSalesPage(page: Page, auctionType: string, pageNum: number): Promise<RawFlashSale[]> {

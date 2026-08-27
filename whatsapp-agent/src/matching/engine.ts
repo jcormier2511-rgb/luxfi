@@ -1,6 +1,6 @@
 import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
-import { normalizeReference, extractReference } from "../postings/normalize";
+import { normalizeReference, extractReference, referencesMatch } from "../postings/normalize";
 
 // Shares extractReference/REFERENCE_PATTERN with postings/normalize.ts (v4) — one reference-
 // extraction rule for both, not two hand-synced copies. A reference number in the free-text
@@ -87,7 +87,7 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   const requestedRef = extractRequestedReference(request.query);
 
   if (requestedRef) {
-    const exact = candidates.filter((l) => l.ref && normalizeReference(l.ref) === requestedRef);
+    const exact = candidates.filter((l) => l.ref && referencesMatch(l.ref, requestedRef));
     const priceFiltered = exact.filter((l) => inPriceRange(l, preferences));
     const pool = priceFiltered.length > 0 ? priceFiltered : exact;
     const ranked = pool
@@ -144,17 +144,26 @@ function watchName(listing: InventoryListing): string {
  * "Fi Intelligence" (dealer reputation, price trend, market range, authenticity) is omitted
  * — no data source for any of that exists in the pipeline yet.
  */
+function sourceLabel(listing: InventoryListing): string {
+  if (listing.source === "WF") return "WatchFacts";
+  return listing.source || "Unknown";
+}
+
 export function formatMatchCard(listing: InventoryListing, index: number, action: ItemRequest["action"]): string {
   const roleLabel = action === "buy" ? "Seller" : "Buyer";
   const priceLabel = action === "buy" ? "Asking" : "Bid";
   const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
-  return (
-    `Potential Match #${index + 1}\n` +
-    `${roleLabel}: ${listing.contactName || "Unnamed"}\n` +
-    `Watch: ${watchName(listing)}\n` +
-    `${priceLabel}: ${priceText}\n` +
-    `Location: ${listing.location || "Not specified"}`
-  );
+  const watchLine = listing.ref ? `${watchName(listing)} (Ref. ${listing.ref})` : watchName(listing);
+  const lines = [
+    `Potential Match #${index + 1}`,
+    `${roleLabel}: ${listing.contactName || "Unnamed"}`,
+    `Watch: ${watchLine}`,
+    `${priceLabel}: ${priceText}`,
+    `Location: ${listing.location || "Not specified"}`,
+    `Source: ${sourceLabel(listing)}`,
+  ];
+  if (listing.detailUrl) lines.push(`Listing: ${listing.detailUrl}`);
+  return lines.join("\n");
 }
 
 /** Sent after "approve <n>" — adds the phone number so the two sides can actually connect. */

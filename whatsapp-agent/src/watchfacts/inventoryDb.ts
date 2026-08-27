@@ -277,6 +277,46 @@ export async function getActiveListings(type?: ListingType): Promise<InventoryLi
   return [...dbListings, ...loadGroupListings(type)];
 }
 
+export interface DiagnosticListingRow {
+  externalId: string;
+  type: string;
+  ref: string;
+  item: string;
+  description: string;
+  isActive: boolean;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+/**
+ * Read-only diagnostic search across ACTIVE AND INACTIVE rows (unlike getActiveListings), so a
+ * production investigation can see whether a listing exists at all, what's actually stored in
+ * `ref`/`item`/`description`, whether it's been marked inactive, and whether `last_seen_at`
+ * reflects a recent sync — without needing raw DB credentials. Matches a case-insensitive
+ * substring against ref, item, or description. Exposed via GET /admin/inventory-search.
+ */
+export async function searchListingsForDiagnostics(term: string): Promise<DiagnosticListingRow[]> {
+  await ensureSchema();
+  const result = await getPool().query(
+    `SELECT external_id, type, ref, item, description, is_active, first_seen_at, last_seen_at
+     FROM inventory_listings
+     WHERE ref ILIKE $1 OR item ILIKE $1 OR description ILIKE $1
+     ORDER BY last_seen_at DESC
+     LIMIT 50`,
+    [`%${term}%`]
+  );
+  return result.rows.map((row) => ({
+    externalId: row.external_id,
+    type: row.type,
+    ref: row.ref,
+    item: row.item.length > 200 ? row.item.slice(0, 200) + "…" : row.item,
+    description: row.description.length > 200 ? row.description.slice(0, 200) + "…" : row.description,
+    isActive: row.is_active,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+  }));
+}
+
 export type TypeSyncState = "ok" | "error" | "disabled" | "never_run";
 
 export interface TypeSyncStatus {

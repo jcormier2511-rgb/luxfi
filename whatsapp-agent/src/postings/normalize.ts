@@ -16,7 +16,10 @@ const PRICE_PATTERN = /\$\s?[\d,]+(?:\.\d+)?/g;
 // reference (Patek 3700/5711, Rolex 1601, etc.) using pattern-matching alone, so that
 // ambiguity is intentionally left unresolved rather than guessed at with a year-range heuristic
 // that would just as often reject a legitimate reference search.
-const REFERENCE_PATTERN = /(?<!\$\s?)\b(\d{4,6}[A-Z]{0,3}(?:[-/][A-Z0-9]+)?)\b/i;
+// Trailing separator group allows for real reference shapes beyond a single dash/slash suffix:
+// Patek uses a dot ("3510.50") and can chain more than one separator ("5712/1A-001"), so the
+// group repeats (`*`) and accepts `.` alongside `-`/`/`.
+const REFERENCE_PATTERN = /(?<!\$\s?)\b(\d{4,6}[A-Z]{0,3}(?:[-/.][A-Z0-9]+)*)\b/i;
 const BRAND_LIST = [
   "rolex",
   "patek philippe",
@@ -80,6 +83,22 @@ function extractUnambiguousPrice(text: string): number | null {
 export function extractReference(text: string): string | null {
   const m = text.match(REFERENCE_PATTERN);
   return m ? m[1].toUpperCase() : null;
+}
+
+/**
+ * True when two references are the same watch, allowing for a bare base reference matching a
+ * variant that adds a letter/dial suffix — e.g. a search for "116500" (no suffix) must still
+ * find a listing stored as "116500LN". This is a prefix check in EITHER direction, so it only
+ * ever matches when one reference's digits/letters are the other's, plus more on the end — it
+ * can never match two references that simply share a prefix but then diverge (normalizeReference
+ * on "116508" is "116508", which does not start with "116500", so the two stay distinct).
+ */
+export function referencesMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const na = normalizeReference(a);
+  const nb = normalizeReference(b);
+  if (!na || !nb) return false;
+  return na === nb || na.startsWith(nb) || nb.startsWith(na);
 }
 
 export function normalizeText(text: string): NormalizedFields {

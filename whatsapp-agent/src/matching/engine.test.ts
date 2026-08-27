@@ -20,7 +20,7 @@ const engine = require("./engine") as typeof import("./engine");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const api = require("../watchfacts/api") as typeof import("../watchfacts/api");
 const { upsertListings, _resetDbForTests, _closePoolForTests } = inventoryDb;
-const { findMatches } = engine;
+const { findMatches, formatMatchCard } = engine;
 const { mapToInventoryListings } = api;
 
 after(async () => {
@@ -95,6 +95,21 @@ test("reference matching is normalized — formatting differences don't block a 
   assert.equal(matches[0].id, "a");
 });
 
+test("required regression: a bare base reference in the query still finds a listing stored with a dial-code suffix", async () => {
+  await _resetDbForTests();
+  await upsertListings(
+    [
+      row("exact", { brand: "Rolex", ref: "116500LN", description: "Rolex Daytona 116500LN" }),
+      row("wrong-ref", { brand: "Rolex", ref: "116508-0013", description: "Rolex Daytona 116508-0013 bundle lot" }),
+    ],
+    new Date().toISOString()
+  );
+
+  const matches = await findMatches({ action: "buy", query: "buy Rolex 116500" }, 5);
+  assert.equal(matches.length, 1, "116500 must still find the 116500LN listing");
+  assert.equal(matches[0].id, "exact");
+});
+
 test("without a reference in the query, matching still falls back to the broader pool as before", async () => {
   await _resetDbForTests();
   await upsertListings([row("a", { brand: "Rolex", description: "Rolex Submariner" })], new Date().toISOString());
@@ -139,4 +154,52 @@ test("required regression: a bundle of several watches returns only the one matc
   const matches = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5);
   assert.equal(matches.length, 1, "only the one sub-listing matching the requested reference should come back");
   assert.equal(matches[0].ref, "116500LN");
+});
+
+test("required regression: a WatchFacts match card names the exact reference, price/ASK, location, source, and listing URL", () => {
+  const listing = {
+    id: "sale-1",
+    type: "FS" as const,
+    category: "watches",
+    item: "Rolex Daytona 116500LN white dial",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "Used",
+    price: "28500",
+    location: "North America",
+    contactName: "Marco D.",
+    contactPhone: "15551234567",
+    source: "WF",
+    rating: "4",
+    description: "Rolex Daytona 116500LN white dial",
+    detailUrl: "https://watchfacts.com/flash-sales/sale-1",
+  };
+  const card = formatMatchCard(listing, 0, "buy");
+  assert.match(card, /116500LN/, "the exact reference must appear on the card");
+  assert.match(card, /\$28500/, "the price must appear on the card");
+  assert.match(card, /North America/);
+  assert.match(card, /Source: WatchFacts/);
+  assert.match(card, /https:\/\/watchfacts\.com\/flash-sales\/sale-1/);
+});
+
+test("required regression: an ASK-priced listing's card never invents a price", () => {
+  const listing = {
+    id: "sale-2",
+    type: "FS" as const,
+    category: "watches",
+    item: "Patek Nautilus 5711",
+    brand: "Patek Philippe",
+    ref: "5711",
+    condition: "Used",
+    price: "ASK",
+    location: "",
+    contactName: "",
+    contactPhone: "",
+    source: "WF",
+    rating: "",
+    description: "Patek Nautilus 5711",
+  };
+  const card = formatMatchCard(listing, 0, "buy");
+  assert.match(card, /price on ask/i);
+  assert.doesNotMatch(card, /\$ASK/);
 });

@@ -7,7 +7,7 @@ import { alreadyProcessed, getState, resetState } from "./conversation/stateStor
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
-import { getActiveListings, getSyncStatus } from "./watchfacts/inventoryDb";
+import { getActiveListings, getSyncStatus, searchListingsForDiagnostics } from "./watchfacts/inventoryDb";
 import { getEntitlement, setManualOverride } from "./billing/entitlementStore";
 import { approveMatch, passMatch, ApprovalOutcome } from "./postings/notify";
 import { runReconciliation } from "./postings/matching";
@@ -311,6 +311,19 @@ export function createServer() {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(await getSyncStatus(config.watchfacts.enableWtbSync));
+  });
+
+  // Read-only diagnostic: `curl "https://<host>/admin/inventory-search?token=...&q=116500"` —
+  // searches ref/item/description (active AND inactive rows) without needing raw DB
+  // credentials or shell access. Used to confirm what's actually stored for a given reference
+  // when a live search unexpectedly returns nothing.
+  app.get("/admin/inventory-search", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (!q) return res.status(400).json({ error: "?q=<search term> is required" });
+    res.json({ ok: true, results: await searchListingsForDiagnostics(q) });
   });
 
   app.use("/assets", express.static(config.assets.dir));
