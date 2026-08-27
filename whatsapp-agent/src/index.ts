@@ -4,6 +4,7 @@ import { runInventorySync } from "./watchfacts/syncInventory";
 import { initSchema } from "./postings/db";
 import { sendExpirationReminders } from "./postings/reminders";
 import { runReconciliation } from "./postings/matching";
+import { initConciergeSchema } from "./concierge/db";
 
 const app = createServer();
 
@@ -19,6 +20,13 @@ app.listen(config.server.port, () => {
 initSchema()
   .then(() => console.log(`[postings] v4 schema ready${config.postingsV4.enabled ? "" : " (v4 disabled)"}`))
   .catch((err) => console.error("[postings] v4 schema initialization failed:", err.message));
+
+// Fi Concierge expansion, Stage 1 (group registry) — additive schema only, no behavior change
+// yet. Nothing reads from designated_groups outside the new /admin/concierge/groups* routes
+// until a later stage wires it into actual eligibility checks.
+initConciergeSchema()
+  .then(() => console.log("[concierge] schema ready (group registry only, not yet wired into eligibility)"))
+  .catch((err) => console.error("[concierge] schema initialization failed:", err.message));
 
 // Expiration reminders only run when v4 itself is enabled — with it off, no chat postings
 // ever get created (see groupMonitor.ts), so there would be nothing to remind about anyway.

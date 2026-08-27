@@ -1,7 +1,7 @@
 import express from "express";
 import fs from "fs";
 import path from "path";
-import { config } from "./config";
+import { config, isConciergeAdminPhone } from "./config";
 import { extractIncomingMessages, IncomingWebhook, sendText } from "./whapi/client";
 import { alreadyProcessed, getState, resetState } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
@@ -19,6 +19,7 @@ import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
 import { runOpenAiDiagnosticCall } from "./ai/providers/openai";
+import { listDesignatedGroups, enableGroup, disableGroup, setReferenceRequestsEnabled } from "./concierge/groupRegistry";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
 // (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
@@ -340,6 +341,57 @@ export function createServer() {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(await runOpenAiDiagnosticCall());
+  });
+
+  // Fi Concierge expansion, Stage 1: Group Registry (additive to the existing
+  // V4_ALLOWED_CHAT_IDS env-var allowlist — see src/concierge/db.ts). Read-only listing needs
+  // only the shared webhook token, same as every other read-only /admin/* route; the three
+  // mutating actions below additionally require `adminPhone` to be a number configured in
+  // WATCHFACTS_ADMIN_PHONES — the token alone (which anyone with server-admin access holds) is
+  // not sufficient to change what a real WhatsApp group can do.
+  app.get("/admin/concierge/groups", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    res.json({ ok: true, groups: await listDesignatedGroups() });
+  });
+
+  function requireConciergeAdmin(req: express.Request, res: express.Response): boolean {
+    if (req.query.token !== config.server.webhookToken) {
+      res.status(401).json({ error: "invalid token" });
+      return false;
+    }
+    const adminPhone = typeof req.body?.adminPhone === "string" ? req.body.adminPhone : "";
+    if (!adminPhone || !isConciergeAdminPhone(adminPhone)) {
+      res.status(403).json({ error: "adminPhone is not a configured WatchFacts administrator" });
+      return false;
+    }
+    return true;
+  }
+
+  app.post("/admin/concierge/groups/enable", async (req, res) => {
+    if (!requireConciergeAdmin(req, res)) return;
+    const chatId = typeof req.body?.chatId === "string" ? req.body.chatId : "";
+    if (!chatId) return res.status(400).json({ error: "chatId is required" });
+    const groupName = typeof req.body?.groupName === "string" ? req.body.groupName : undefined;
+    res.json({ ok: true, group: await enableGroup(chatId, groupName) });
+  });
+
+  app.post("/admin/concierge/groups/disable", async (req, res) => {
+    if (!requireConciergeAdmin(req, res)) return;
+    const chatId = typeof req.body?.chatId === "string" ? req.body.chatId : "";
+    if (!chatId) return res.status(400).json({ error: "chatId is required" });
+    await disableGroup(chatId);
+    res.json({ ok: true });
+  });
+
+  app.post("/admin/concierge/groups/reference-requests", async (req, res) => {
+    if (!requireConciergeAdmin(req, res)) return;
+    const chatId = typeof req.body?.chatId === "string" ? req.body.chatId : "";
+    if (!chatId) return res.status(400).json({ error: "chatId is required" });
+    if (typeof req.body?.enabled !== "boolean") return res.status(400).json({ error: "enabled (boolean) is required" });
+    await setReferenceRequestsEnabled(chatId, req.body.enabled);
+    res.json({ ok: true });
   });
 
   app.use("/assets", express.static(config.assets.dir));

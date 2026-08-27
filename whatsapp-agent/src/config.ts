@@ -159,6 +159,17 @@ export const config = {
     openaiApiKey: process.env.OPENAI_API_KEY ?? "",
     openaiModel: process.env.AI_MATCHING_OPENAI_MODEL ?? "",
   },
+  // Fi Concierge expansion (src/concierge/) — group registry admin actions (enable/disable a
+  // group, toggle reference requests) require the requesting phone to be on this list, in
+  // addition to the existing WEBHOOK_TOKEN every other /admin/* route already requires. Empty
+  // by default: no phone number is an admin until explicitly configured, rather than any
+  // token-holder being able to act as one.
+  concierge: {
+    adminPhones: (process.env.WATCHFACTS_ADMIN_PHONES ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
 };
 
 /**
@@ -184,6 +195,11 @@ export function isChatIdAllowed(chatId: string, allowedChatIds: string[]): boole
 /** Both conditions required: the master flag AND this specific chat explicitly allowed. */
 export function isV4ChatEnabled(chatId: string): boolean {
   return config.postingsV4.enabled && isChatIdAllowed(chatId, config.postingsV4.allowedChatIds);
+}
+
+/** True only for a phone explicitly configured as a WatchFacts administrator (WATCHFACTS_ADMIN_PHONES). */
+export function isConciergeAdminPhone(phone: string): boolean {
+  return config.concierge.adminPhones.includes(phone);
 }
 
 /**
