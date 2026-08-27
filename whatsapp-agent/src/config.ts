@@ -106,4 +106,14 @@ export const config = {
     enableWtbSync: (process.env.ENABLE_WTB_SYNC ?? "false").toLowerCase() === "true",
   },
   storageDir: path.join(persistDir, "storage"),
+  // Fi Build Spec v4 automatic monitoring/matching system (src/postings/) — reuses the same
+  // Postgres database as everything else (config.database.url above; no competing database),
+  // but its ingestion/notification path is gated behind this flag until its migrations,
+  // integration tests, and notification behavior have been verified end-to-end. Off by
+  // default: with this false, group-chat posts still feed the existing v3 CSV path
+  // unchanged, and WatchFacts FS syncs still write inventory_listings unchanged — nothing
+  // about the currently-deployed behavior depends on this flag being on.
+  postingsV4: {
+    enabled: (process.env.ENABLE_V4_POSTINGS ?? "false").toLowerCase() === "true",
+  },
 };

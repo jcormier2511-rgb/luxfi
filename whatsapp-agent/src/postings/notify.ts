@@ -1,6 +1,6 @@
 import { withSchema, withTransaction } from "./db";
 import { getOrCreateCanonicalUser } from "./identity";
-import { PostingRow } from "./postingsStore";
+import { PostingRow, getPrimaryImageUrl } from "./postingsStore";
 import { getEntitlement } from "../billing/entitlementStore";
 import { sendText } from "../whapi/client";
 import { config } from "../config";
@@ -45,7 +45,13 @@ function watchLabel(posting: PostingRow): string {
  * request/response turn the way the v3 flow's numbered list is — the recipient needs a way
  * to say which match they mean.
  */
-function formatMatchMessage(matchId: number, self: PostingRow, counterpart: PostingRow, reasons: string[]): string {
+function formatMatchMessage(
+  matchId: number,
+  self: PostingRow,
+  counterpart: PostingRow,
+  reasons: string[],
+  imageUrl: string | null
+): string {
   const roleLabel = self.type === "FS" ? "Buyer" : "Seller";
   const priceLabel = counterpart.price !== null ? `$${counterpart.price}` : "price on ask";
   return (
@@ -56,6 +62,7 @@ function formatMatchMessage(matchId: number, self: PostingRow, counterpart: Post
     `Asking/Bid: ${priceLabel}\n` +
     `Location: ${counterpart.location || "Not specified"}\n\n` +
     reasons.map((r) => `- ${r}`).join("\n") +
+    (imageUrl ? `\n\nPhoto: ${imageUrl}` : "") +
     `\n\nReply "approve ${matchId}" to connect, or "pass ${matchId}" to skip.`
   );
 }
@@ -90,8 +97,13 @@ async function notifyOneRecipient(
   const phone = await getPhoneForCanonicalUser(recipientCanonicalUserId);
   if (!phone) return; // e.g. the API-mirrored FS side has no WhatsApp identity to notify
 
+  // Best-effort only — a listing with no captured image (most chat posts today, since
+  // downloading/durable-storing WhatsApp media is still out of scope per spec §18) just omits
+  // the "Photo:" line, same honest omission pattern as the missing "Fi Intelligence" block.
+  const imageUrl = await getPrimaryImageUrl(counterpart.id);
+
   try {
-    await sendText(phone, formatMatchMessage(matchId, self, counterpart, reasons));
+    await sendText(phone, formatMatchMessage(matchId, self, counterpart, reasons, imageUrl));
   } catch (err) {
     console.error(`[postings] failed to deliver match notification ${matchId} to ${phone}:`, err);
   }

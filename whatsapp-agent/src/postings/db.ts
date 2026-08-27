@@ -108,6 +108,8 @@ async function ensureSchema(): Promise<void> {
         CREATE UNIQUE INDEX IF NOT EXISTS posting_images_dedupe
           ON posting_images (posting_id, content_hash)
           WHERE content_hash IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS posting_images_source_url_dedupe
+          ON posting_images (posting_id, source_url);
 
         CREATE TABLE IF NOT EXISTS matches (
           id SERIAL PRIMARY KEY,

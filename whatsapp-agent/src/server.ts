@@ -40,7 +40,8 @@ function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number): strin
   }
 }
 
-async function tryHandleV4Decision(phone: string, text: string): Promise<string | null> {
+export async function tryHandleV4Decision(phone: string, text: string): Promise<string | null> {
+  if (!config.postingsV4.enabled) return null; // whole v4 surface stays inert until verified
   if (getState(phone).pendingMatches) return null; // v3 flow owns this reply
   const m = text.trim().match(V4_DECISION_PATTERN);
   if (!m) return null;
@@ -81,7 +82,7 @@ export function createServer() {
       try {
         if (message.isGroup) {
           // Silent by design — never reply into a group, only ingest WTB/FS-looking posts.
-          await handleGroupMessage(message.id, message.groupId!, message.phone, message.senderName, message.text);
+          await handleGroupMessage(message.id, message.groupId!, message.phone, message.senderName, message.text, message.imageUrl);
           continue;
         }
 

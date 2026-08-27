@@ -61,6 +61,11 @@ export interface IncomingWebhook {
     from: string;
     from_name?: string;
     text?: { body: string };
+    // NOTE: shape (image.link/image.caption) is Whapi's documented convention for media
+    // messages but hasn't been confirmed against a real captured image-message payload yet —
+    // same documented-limitation status as from_name above. If chat-originated postings never
+    // pick up an imageUrl from a real dealer-group photo post, check this shape first.
+    image?: { link?: string; caption?: string };
   }[];
 }
 
@@ -71,20 +76,25 @@ export interface IncomingMessage {
   isGroup: boolean;
   groupId?: string; // digits of chat_id, only set when isGroup
   senderName?: string;
+  // Set only for an image message that had a caption — an image with no caption has no text
+  // to classify as FS/WTB (see postings/normalize.ts), so it's dropped entirely rather than
+  // ingested with empty text.
+  imageUrl?: string;
 }
 
 export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[] {
   return (body.messages ?? [])
-    .filter((m) => !m.from_me && m.type === "text" && m.text?.body)
+    .filter((m) => !m.from_me && ((m.type === "text" && m.text?.body) || (m.type === "image" && m.image?.caption)))
     .map((m) => {
       const isGroup = (m.chat_id ?? "").includes("@g.us");
       return {
         id: m.id,
         phone: digitsOnly(isGroup ? m.from : m.chat_id || m.from),
-        text: m.text!.body,
+        text: m.type === "image" ? m.image!.caption! : m.text!.body,
         isGroup,
         groupId: isGroup ? digitsOnly(m.chat_id) : undefined,
         senderName: m.from_name,
+        imageUrl: m.type === "image" ? m.image?.link : undefined,
       };
     });
 }

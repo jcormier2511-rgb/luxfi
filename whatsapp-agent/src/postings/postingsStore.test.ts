@@ -70,6 +70,12 @@ test("editing a message's price is a material change; editing whitespace-only is
   assert.equal(edited.posting!.price, "35000");
 });
 
+test("a chat posting's image (from a WhatsApp photo-with-caption post) is captured and retrievable", async () => {
+  await db._resetDbForTests();
+  const result = await ingestChatPosting(chatInput({ imageUrl: "https://media.whapi.example/abc123.jpg" }));
+  assert.equal(await store.getPrimaryImageUrl(result.posting!.id), "https://media.whapi.example/abc123.jpg");
+});
+
 test("mirrorApiFsPosting upserts an API FS listing idempotently by external id", async () => {
   await db._resetDbForTests();
   const listing = {
@@ -84,8 +90,14 @@ test("mirrorApiFsPosting upserts an API FS listing idempotently by external id",
     detailUrl: "https://watchfacts.com/flash-sales/ext-1",
     description: "Rolex Daytona 116500LN",
   };
-  await mirrorApiFsPosting(listing);
-  await mirrorApiFsPosting({ ...listing, price: "$27,500" }); // re-sync with a price change
+  const first = await mirrorApiFsPosting(listing);
+  assert.equal(first.created, true);
+  assert.equal(first.materialChange, true);
+
+  const second = await mirrorApiFsPosting({ ...listing, price: "$27,500" }); // re-sync with a price change
+  assert.equal(second.created, false);
+  assert.equal(second.materialChange, true, "a changed price must be reported as a material change");
+  assert.equal(second.posting.id, first.posting.id);
 
   const result = await db.withSchema((pool) =>
     pool.query(`SELECT * FROM postings WHERE source_type='api' AND external_listing_id=$1`, ["ext-1"])
@@ -93,6 +105,42 @@ test("mirrorApiFsPosting upserts an API FS listing idempotently by external id",
   assert.equal(result.rows.length, 1, "must upsert, not duplicate");
   assert.equal(result.rows[0].price, "27500");
   assert.equal(result.rows[0].type, "FS");
+});
+
+test("mirrorApiFsPosting reports materialChange: false on an unchanged re-sync (never re-triggers matching for nothing)", async () => {
+  await db._resetDbForTests();
+  const listing = {
+    id: "ext-2",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "$29,000",
+    contactName: "WatchFacts Seller",
+    contactPhone: "10000000000",
+    description: "Rolex Daytona 116500LN",
+  };
+  await mirrorApiFsPosting(listing);
+  const resynced = await mirrorApiFsPosting({ ...listing }); // identical re-sync
+  assert.equal(resynced.created, false);
+  assert.equal(resynced.materialChange, false);
+});
+
+test("mirrorApiFsPosting captures WatchFacts' own listing image (frontImage)", async () => {
+  await db._resetDbForTests();
+  const result = await mirrorApiFsPosting({
+    id: "ext-img",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "$29,000",
+    contactName: "Seller",
+    contactPhone: "1",
+    description: "",
+    imageUrl: "https://cdn.watchfacts.com/listings/ext-img/front.jpg",
+  });
+  assert.equal(await store.getPrimaryImageUrl(result.posting.id), "https://cdn.watchfacts.com/listings/ext-img/front.jpg");
 });
 
 test("markApiPostingsInactive deactivates only API FS rows absent from the latest sync", async () => {

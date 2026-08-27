@@ -41,6 +41,38 @@ export interface ChatPostingInput {
   senderIdentity: string;
   senderName?: string;
   text: string;
+  // Best-effort: a WhatsApp image message's media URL when the post included a photo with a
+  // caption (see whapi/client.ts's extractIncomingMessages) — not confirmed against a real
+  // Whapi image-message payload yet, same documented-limitation pattern as from_name below.
+  imageUrl?: string;
+}
+
+/** Idempotent by (posting_id, source_url) — a re-sync/re-delivery with the same image is a no-op, not a duplicate row. */
+export async function setPostingImages(postingId: number, imageUrls: string[]): Promise<void> {
+  const urls = imageUrls.filter(Boolean);
+  if (urls.length === 0) return;
+  await withSchema((pool) =>
+    Promise.all(
+      urls.map((url, i) =>
+        pool.query(
+          `INSERT INTO posting_images (posting_id, source_url, display_order, is_primary)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (posting_id, source_url) DO NOTHING`,
+          [postingId, url, i, i === 0]
+        )
+      )
+    )
+  );
+}
+
+export async function getPrimaryImageUrl(postingId: number): Promise<string | null> {
+  return withSchema(async (pool) => {
+    const result = await pool.query(
+      `SELECT source_url FROM posting_images WHERE posting_id=$1 ORDER BY is_primary DESC, display_order ASC LIMIT 1`,
+      [postingId]
+    );
+    return result.rows[0]?.source_url ?? null;
+  });
 }
 
 export interface IngestResult {
@@ -92,6 +124,7 @@ export async function ingestChatPosting(input: ChatPostingInput): Promise<Ingest
           expiresAt,
         ]
       );
+      if (input.imageUrl) await setPostingImages(insert.rows[0].id, [input.imageUrl]);
       return { posting: insert.rows[0], created: true, materialChange: true };
     }
 
@@ -108,6 +141,7 @@ export async function ingestChatPosting(input: ChatPostingInput): Promise<Ingest
        WHERE id=$6 RETURNING *`,
       [input.text, normalized.brand, normalized.reference, normalized.price, normalized.currency, old.id]
     );
+    if (input.imageUrl) await setPostingImages(old.id, [input.imageUrl]);
     return { posting: update.rows[0], created: false, materialChange };
   });
 }
@@ -128,36 +162,67 @@ export interface ApiFsListing {
   contactPhone: string;
   detailUrl?: string;
   description: string;
+  // WatchFacts' own listing detail image (RawListingDetail.frontImage) — a confirmed, real
+  // field from the authenticated API response, unlike the chat side's best-effort imageUrl.
+  imageUrl?: string | null;
 }
 
-export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<void> {
+export interface MirrorFsResult {
+  posting: PostingRow;
+  created: boolean;
+  materialChange: boolean;
+}
+
+/**
+ * Mirrors one live WatchFacts API FS listing into `postings`, reporting whether this is a
+ * brand-new listing or a materially-changed one (spec: "every successful sync must trigger
+ * reverse matching of new or materially updated FS listings") — an unchanged re-sync of an
+ * already-known listing must NOT re-trigger matching/notifications. Read-then-write (rather
+ * than a single upsert) so the "old" values are available to diff against, mirroring
+ * ingestChatPosting's own materialChange pattern above.
+ */
+export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorFsResult> {
   const priceNum = Number(listing.price.replace(/[^0-9.]/g, ""));
+  const price = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
   const expiresAt = new Date(Date.now() + THIRTY_DAYS_MS).toISOString();
-  await withSchema((pool) =>
-    pool.query(
-      `INSERT INTO postings
-         (source_platform, source_type, external_listing_id, type, original_text, brand, reference, condition,
-          price, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
-       VALUES ('watchfacts_api','api',$1,'FS',$2,$3,$4,$5,$6,$7,$8,$9,'active',$10, now())
-       ON CONFLICT (source_platform, type, external_listing_id) WHERE source_type = 'api' DO UPDATE SET
-         original_text = excluded.original_text, brand = excluded.brand, reference = excluded.reference,
-         condition = excluded.condition, price = excluded.price, contact_name = excluded.contact_name,
-         contact_phone = excluded.contact_phone, detail_url = excluded.detail_url, status = 'active',
-         updated_at = now(), last_seen_at = now()`,
-      [
-        listing.id,
-        listing.description || listing.item,
-        listing.brand,
-        listing.ref,
-        listing.condition,
-        Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null,
-        listing.contactName,
-        listing.contactPhone,
-        listing.detailUrl ?? "",
-        expiresAt,
-      ]
-    )
-  );
+  const originalText = listing.description || listing.item;
+
+  const result = await withSchema(async (pool) => {
+    const existing = await pool.query<PostingRow>(
+      `SELECT * FROM postings WHERE source_platform='watchfacts_api' AND type='FS' AND external_listing_id=$1 AND source_type='api'`,
+      [listing.id]
+    );
+
+    if (existing.rows.length === 0) {
+      const insert = await pool.query<PostingRow>(
+        `INSERT INTO postings
+           (source_platform, source_type, external_listing_id, type, original_text, brand, reference, condition,
+            price, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
+         VALUES ('watchfacts_api','api',$1,'FS',$2,$3,$4,$5,$6,$7,$8,$9,'active',$10, now())
+         RETURNING *`,
+        [listing.id, originalText, listing.brand, listing.ref, listing.condition, price, listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt]
+      );
+      return { posting: insert.rows[0], created: true, materialChange: true };
+    }
+
+    const old = existing.rows[0];
+    const materialChange =
+      !valuesEqual(old.reference, listing.ref) ||
+      !valuesEqual(old.brand, listing.brand) ||
+      !valuesEqual(old.price, price) ||
+      !valuesEqual(old.condition, listing.condition);
+
+    const update = await pool.query<PostingRow>(
+      `UPDATE postings SET original_text=$1, brand=$2, reference=$3, condition=$4, price=$5,
+         contact_name=$6, contact_phone=$7, detail_url=$8, status='active', updated_at=now(), last_seen_at=now()
+       WHERE id=$9 RETURNING *`,
+      [originalText, listing.brand, listing.ref, listing.condition, price, listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
+    );
+    return { posting: update.rows[0], created: false, materialChange };
+  });
+
+  if (listing.imageUrl) await setPostingImages(result.posting.id, [listing.imageUrl]);
+  return result;
 }
 
 /** Mirrors markMissingInactive for the API-mirrored postings — only called after a fully successful FS sync. */

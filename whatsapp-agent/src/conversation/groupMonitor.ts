@@ -73,7 +73,8 @@ export async function handleGroupMessage(
   groupId: string,
   senderPhone: string,
   senderName: string | undefined,
-  text: string
+  text: string,
+  imageUrl?: string
 ): Promise<void> {
   const type = classifyGroupPost(text);
   if (!type) return;
@@ -99,6 +100,13 @@ export async function handleGroupMessage(
   appendGroupListing(row);
   console.log(`[group-monitor] captured ${type} post from ${senderPhone} in group ${groupId}: "${text.slice(0, 60)}"`);
 
+  // Gated: the v4 automatic monitoring/matching path (postings ingestion + notifications)
+  // stays off in production until its migrations, integration tests, and notification
+  // behavior are verified — see config.postingsV4 / ENABLE_V4_POSTINGS. appendGroupListing
+  // above (the existing v3 CSV capture) is unaffected either way, and never sends a message
+  // itself, so this flag can never cause a duplicate acknowledgment/match card/introduction.
+  if (!config.postingsV4.enabled) return;
+
   try {
     await ingestAndMatch({
       platform: "whatsapp",
@@ -107,6 +115,7 @@ export async function handleGroupMessage(
       senderIdentity: senderPhone,
       senderName,
       text,
+      imageUrl,
     });
   } catch (err) {
     console.error(`[group-monitor] postings ingestion/matching failed for message ${messageId}:`, err);

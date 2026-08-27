@@ -1,4 +1,4 @@
-import { ingestChatPosting, ChatPostingInput } from "./postingsStore";
+import { ingestChatPosting, ChatPostingInput, mirrorApiFsPosting, markApiPostingsInactive, ApiFsListing } from "./postingsStore";
 import { runImmediateMatch } from "./matching";
 import { sendText } from "../whapi/client";
 
@@ -25,4 +25,24 @@ export async function ingestAndMatch(input: ChatPostingInput): Promise<void> {
       console.error(`[postings] failed to send monitoring acknowledgment to ${input.senderIdentity}:`, err);
     }
   }
+}
+
+/**
+ * Single entry point for what a successful WatchFacts FS sync must do to the v4 matching
+ * system (spec requirement: "every successful sync must trigger reverse matching of new or
+ * materially updated FS listings against all active chat-originated WTB monitors"). Reuses
+ * the exact same mirrorApiFsPosting/runImmediateMatch/notifyMatch pipeline the chat-ingestion
+ * path uses — matching is one shared engine over the one `postings` table, not a second,
+ * source-specific matching implementation. An unchanged re-sync of an already-known listing
+ * (materialChange: false) is a no-op here, same as an unedited chat-message redelivery,
+ * so a routine sync never re-notifies anyone about a listing nothing actually changed on.
+ */
+export async function ingestApiFsSync(listings: ApiFsListing[]): Promise<void> {
+  for (const listing of listings) {
+    const { posting, materialChange } = await mirrorApiFsPosting(listing);
+    if (materialChange) {
+      await runImmediateMatch(posting);
+    }
+  }
+  await markApiPostingsInactive(listings.map((l) => l.id));
 }

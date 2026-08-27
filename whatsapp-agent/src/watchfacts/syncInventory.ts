@@ -3,7 +3,8 @@ import { config } from "../config";
 import { login } from "./scraper";
 import { fetchAllFlashSales, isActive, mapToInventoryListing, resolveWtbAuctionType, RawFlashSale } from "./api";
 import { upsertListings, markMissingInactive, recordSyncAttempt, recordTypeSyncSuccess, recordTypeSyncError } from "./inventoryDb";
-import { mirrorApiFsPosting, markApiPostingsInactive } from "../postings/postingsStore";
+import { ingestApiFsSync } from "../postings/ingest";
+import { ApiFsListing } from "../postings/postingsStore";
 import { ListingType } from "../types";
 
 export interface SyncResult {
@@ -37,7 +38,8 @@ export async function syncOneSide(
   try {
     const resolvedAuctionType = typeof auctionType === "string" ? auctionType : await auctionType();
     const raw = await fetchAllFlashSales(page, resolvedAuctionType);
-    const listings = dedupeById(raw.filter((s) => isActive(s, now))).map((s) => mapToInventoryListing(s, type));
+    const dedupedRaw = dedupeById(raw.filter((s) => isActive(s, now)));
+    const listings = dedupedRaw.map((s) => mapToInventoryListing(s, type));
 
     if (listings.length > 0) {
       const syncedAt = now.toISOString();
@@ -45,17 +47,30 @@ export async function syncOneSide(
       await markMissingInactive("WF", type, listings.map((l) => l.id), syncedAt);
     }
 
-    // Mirrors FS only into the new Fi Build Spec v4 `postings` table so automatic matching has
-    // a live source (see src/postings/matching.ts) — never blocks or fails the existing,
-    // already-tested inventory_listings write above if this additive step has a problem.
-    if (type === "FS") {
+    // Fi Build Spec v4: mirrors FS into the `postings` table and reverse-matches any new or
+    // materially-changed listing against active chat-originated WTB monitors (see
+    // ingestApiFsSync / src/postings/matching.ts) — the same matching engine chat ingestion
+    // uses, not a second one. Gated behind ENABLE_V4_POSTINGS (off by default) until its
+    // migrations/tests/notification behavior are verified; never blocks or fails the
+    // existing, already-tested inventory_listings write above if this additive step errors.
+    if (type === "FS" && config.postingsV4.enabled) {
       try {
-        for (const listing of listings) {
-          await mirrorApiFsPosting(listing);
-        }
-        await markApiPostingsInactive(listings.map((l) => l.id));
+        const apiFsListings: ApiFsListing[] = listings.map((l, i) => ({
+          id: l.id,
+          item: l.item,
+          brand: l.brand,
+          ref: l.ref,
+          condition: l.condition,
+          price: l.price,
+          contactName: l.contactName,
+          contactPhone: l.contactPhone,
+          detailUrl: l.detailUrl,
+          description: l.description,
+          imageUrl: dedupedRaw[i]?.listings?.[0]?.frontImage ?? null,
+        }));
+        await ingestApiFsSync(apiFsListings);
       } catch (err) {
-        console.error("[watchfacts] postings mirror failed (inventory_listings sync itself succeeded):", err);
+        console.error("[watchfacts] postings mirror/reverse-match failed (inventory_listings sync itself succeeded):", err);
       }
     }
 
