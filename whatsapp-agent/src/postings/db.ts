@@ -94,6 +94,15 @@ async function ensureSchema(): Promise<void> {
         CREATE INDEX IF NOT EXISTS postings_active_by_type
           ON postings (type, status, expires_at);
 
+        -- Current scope (deliberately minimal): capture an already-accessible image URL
+        -- (WatchFacts' own frontImage field, or a WhatsApp image message's media link) as
+        -- source_url and use it directly in match notifications. mime_type/size_bytes/
+        -- content_hash exist for a FUTURE durable-storage version (downloading the image,
+        -- hashing it, deduplicating identical photos across postings, hosting it ourselves)
+        -- that is explicitly DEFERRED — nothing today downloads, hashes, or permanently
+        -- stores an image; a missing/expired/unreachable source_url just means no photo is
+        -- shown, never a failure that blocks ingestion, matching, notification, approval, or
+        -- sync (see notify.ts's getPrimaryImageUrl call site).
         CREATE TABLE IF NOT EXISTS posting_images (
           id SERIAL PRIMARY KEY,
           posting_id INTEGER NOT NULL REFERENCES postings(id),

@@ -65,6 +65,21 @@ export async function setPostingImages(postingId: number, imageUrls: string[]): 
   );
 }
 
+/**
+ * Image capture must never block the posting create/update it's attached to (spec: "image
+ * failure must never block ingestion, matching, notification, approval, or synchronization")
+ * — a bad URL, a duplicate-insert race, or a transient DB error here just means this posting
+ * ends up with no photo, not a failed ingestion or an aborted sync batch. Every call site
+ * below uses this instead of calling setPostingImages directly.
+ */
+async function setPostingImagesSafely(postingId: number, imageUrls: (string | null | undefined)[]): Promise<void> {
+  try {
+    await setPostingImages(postingId, imageUrls.filter((u): u is string => Boolean(u)));
+  } catch (err) {
+    console.error(`[postings] failed to record image(s) for posting ${postingId} (posting itself is unaffected):`, err);
+  }
+}
+
 export async function getPrimaryImageUrl(postingId: number): Promise<string | null> {
   return withSchema(async (pool) => {
     const result = await pool.query(
@@ -124,7 +139,7 @@ export async function ingestChatPosting(input: ChatPostingInput): Promise<Ingest
           expiresAt,
         ]
       );
-      if (input.imageUrl) await setPostingImages(insert.rows[0].id, [input.imageUrl]);
+      await setPostingImagesSafely(insert.rows[0].id, [input.imageUrl]);
       return { posting: insert.rows[0], created: true, materialChange: true };
     }
 
@@ -141,7 +156,7 @@ export async function ingestChatPosting(input: ChatPostingInput): Promise<Ingest
        WHERE id=$6 RETURNING *`,
       [input.text, normalized.brand, normalized.reference, normalized.price, normalized.currency, old.id]
     );
-    if (input.imageUrl) await setPostingImages(old.id, [input.imageUrl]);
+    await setPostingImagesSafely(old.id, [input.imageUrl]);
     return { posting: update.rows[0], created: false, materialChange };
   });
 }
@@ -221,7 +236,7 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
     return { posting: update.rows[0], created: false, materialChange };
   });
 
-  if (listing.imageUrl) await setPostingImages(result.posting.id, [listing.imageUrl]);
+  await setPostingImagesSafely(result.posting.id, [listing.imageUrl]);
   return result;
 }
 

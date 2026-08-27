@@ -98,9 +98,19 @@ async function notifyOneRecipient(
   if (!phone) return; // e.g. the API-mirrored FS side has no WhatsApp identity to notify
 
   // Best-effort only — a listing with no captured image (most chat posts today, since
-  // downloading/durable-storing WhatsApp media is still out of scope per spec §18) just omits
+  // downloading/durable-storing WhatsApp media is still out of scope, see db.ts) just omits
   // the "Photo:" line, same honest omission pattern as the missing "Fi Intelligence" block.
-  const imageUrl = await getPrimaryImageUrl(counterpart.id);
+  // Deliberately its own try/catch, separate from the sendText one below: an image lookup
+  // failure (missing row, a transient DB hiccup) must fall back to a text-only match card,
+  // never propagate out of here — this runs inside runImmediateMatch's per-candidate loop
+  // (see matching.ts), so an uncaught throw here would silently abort matching against every
+  // remaining candidate in that same sync/ingestion pass, not just skip one photo.
+  let imageUrl: string | null = null;
+  try {
+    imageUrl = await getPrimaryImageUrl(counterpart.id);
+  } catch (err) {
+    console.error(`[postings] image lookup failed for posting ${counterpart.id} (falling back to text-only):`, err);
+  }
 
   try {
     await sendText(phone, formatMatchMessage(matchId, self, counterpart, reasons, imageUrl));

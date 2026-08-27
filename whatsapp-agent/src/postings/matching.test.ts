@@ -185,6 +185,61 @@ test("runImmediateMatch finds a match against an eligible opposite-side posting 
   assert.equal(matches.rows[0].score, 100);
 });
 
+test("a broken image lookup during notification never blocks the match itself — falls back to text-only", async (t) => {
+  await db._resetDbForTests();
+  t.mock.method(store, "getPrimaryImageUrl", async () => {
+    throw new Error("simulated image lookup failure");
+  });
+
+  const wtb = await ingestChatPosting({
+    platform: "whatsapp",
+    chatId: "g1",
+    messageId: "wtb1",
+    senderIdentity: "2",
+    text: "WTB Rolex Daytona 116500LN budget $30,000",
+  });
+  await ingestChatPosting({
+    platform: "whatsapp",
+    chatId: "g1",
+    messageId: "fs1",
+    senderIdentity: "1",
+    text: "FS Rolex Daytona 116500LN $28,000",
+  });
+
+  const result = await runImmediateMatch(wtb.posting!);
+  assert.equal(result.matchesFound, 1, "an image-lookup failure must never prevent a match from being found/recorded");
+
+  const matches = await db.withSchema((pool) => pool.query(`SELECT * FROM matches`));
+  assert.equal(matches.rows.length, 1);
+});
+
+test("an image lookup failure on one candidate never aborts matching against the remaining candidates in the same pass", async (t) => {
+  await db._resetDbForTests();
+  t.mock.method(store, "getPrimaryImageUrl", async () => {
+    throw new Error("simulated image lookup failure");
+  });
+
+  const wtb = await ingestChatPosting({
+    platform: "whatsapp",
+    chatId: "g1",
+    messageId: "wtb1",
+    senderIdentity: "buyer",
+    text: "WTB Rolex budget $30,000", // no reference — same-brand match against every FS below
+  });
+  for (let i = 0; i < 3; i++) {
+    await ingestChatPosting({
+      platform: "whatsapp",
+      chatId: "g1",
+      messageId: `fs${i}`,
+      senderIdentity: `seller-${i}`,
+      text: `FS Rolex Daytona 11650${i}LN $10,000`,
+    });
+  }
+
+  const result = await runImmediateMatch(wtb.posting!);
+  assert.equal(result.matchesFound, 3, "every eligible candidate must still be matched even though each notification's image lookup fails");
+});
+
 test("runImmediateMatch never matches a user against their own opposite-side posting", async () => {
   await db._resetDbForTests();
   const wtb = await ingestChatPosting({
