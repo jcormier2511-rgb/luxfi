@@ -136,6 +136,17 @@ export const config = {
   // than guessing at credentials.
   aiMatching: {
     enabled: (process.env.ENABLE_AI_MATCHING ?? "false").toLowerCase() === "true",
+    // Deliberately independent of `enabled` above, not a sub-flag of it — `enabled` only ever
+    // affects ONE phone number's searches (see isAiMatchingEnabledForPhone), but ingestion-time
+    // enrichment (watchfacts/aiEnrich.ts, conversation/groupMonitor.ts) applies to the WHOLE
+    // inventory on every sync, not to any one person's request. Turning on AI for your own test
+    // searches must never silently also start running AI calls against every listing in the
+    // feed — that has to be its own explicit opt-in.
+    enrichmentEnabled: (process.env.ENABLE_AI_INVENTORY_ENRICHMENT ?? "false").toLowerCase() === "true",
+    // Hard cap on AI calls per sync run (see watchfacts/aiEnrich.ts) — kept conservative by
+    // default since a real feed can be well over a million listings with thousands posted
+    // daily; a row that exceeds this cap is simply retried on a later sync, not dropped.
+    enrichmentMaxPerSync: Number(process.env.AI_ENRICHMENT_MAX_PER_SYNC ?? 25),
     testPhone: process.env.AI_MATCHING_TEST_PHONE?.trim() || null,
     // Which backend src/ai/client.ts routes to — see src/ai/providers/{anthropic,openai}.ts.
     // Defaults to "anthropic" (the originally built/tested path) so an unset env var never

@@ -57,12 +57,13 @@ function appendGroupListing(row: InventoryListing): void {
 }
 
 /**
- * Builds the row(s) to record for one captured group message. When AI matching is enabled
- * (ENABLE_AI_MATCHING), an unstructured multi-watch price-list dump is split into one row per
- * watch AI found real evidence for in the text; otherwise (and always when AI is off, unset, or
- * finds at most one watch) this is exactly the original single-row deterministic behavior via
- * normalizeText. A message is only ever processed once (see alreadyProcessed in server.ts), so
- * there's no separate content-hash cache needed here the way the WatchFacts sync path has one.
+ * Builds the row(s) to record for one captured group message. When AI inventory enrichment is
+ * enabled (ENABLE_AI_INVENTORY_ENRICHMENT — independent of ENABLE_AI_MATCHING, see config.ts),
+ * an unstructured multi-watch price-list dump is split into one row per watch AI found real
+ * evidence for in the text; otherwise (and always when it's off, unset, or finds at most one
+ * watch) this is exactly the original single-row deterministic behavior via normalizeText. A
+ * message is only ever processed once (see alreadyProcessed in server.ts), so there's no
+ * separate content-hash cache needed here the way the WatchFacts sync path has one.
  */
 async function buildGroupRows(
   groupId: string,
@@ -71,7 +72,7 @@ async function buildGroupRows(
   type: ListingType,
   text: string
 ): Promise<InventoryListing[]> {
-  if (config.aiMatching.enabled) {
+  if (config.aiMatching.enrichmentEnabled) {
     const enrichment = await enrichListingText(text);
     if (enrichment.length > 1) {
       return enrichment.map((e, i) => ({

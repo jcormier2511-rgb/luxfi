@@ -1,9 +1,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 
-// ENABLE_AI_MATCHING is deliberately left UNSET here — proving the documented default
-// (config.aiMatching.enabled === false) keeps AI enrichment completely inert, matching every
-// other feature flag's "off means off, not just untested" convention in this codebase.
+// ENABLE_AI_INVENTORY_ENRICHMENT is deliberately left UNSET here — proving the documented
+// default (config.aiMatching.enrichmentEnabled === false) keeps AI enrichment completely inert,
+// matching every other feature flag's "off means off, not just untested" convention in this
+// codebase. This flag is independent of ENABLE_AI_MATCHING (search-only, single test phone) —
+// enrichment runs against the whole inventory, so it needs its own explicit opt-in.
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 
@@ -39,13 +41,13 @@ function row(id: string, overrides: Partial<Row> = {}): Row {
   };
 }
 
-test("ENABLE_AI_MATCHING defaults to disabled", () => {
-  assert.equal(config.aiMatching.enabled, false);
+test("ENABLE_AI_INVENTORY_ENRICHMENT defaults to disabled", () => {
+  assert.equal(config.aiMatching.enrichmentEnabled, false);
 });
 
 test("enrichAndSplitListings passes rows through unchanged, without calling AI, while disabled", async (t) => {
   const spy = t.mock.method(enrichmentModule, "enrichListingText", async () => {
-    throw new Error("must never be called while ENABLE_AI_MATCHING is off");
+    throw new Error("must never be called while ENABLE_AI_INVENTORY_ENRICHMENT is off");
   });
   const rows = [row("a", { description: "Rolex Daytona 116500LN" })];
   const outcome = await enrichAndSplitListings(rows);

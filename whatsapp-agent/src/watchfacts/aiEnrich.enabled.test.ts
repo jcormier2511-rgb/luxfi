@@ -1,13 +1,14 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 
-// ENABLE_AI_MATCHING=true set before config is ever required — separate process/file from
-// aiEnrich.disabled.test.ts, matching the codebase's established pattern (see
-// groupMonitor.featureFlag.test.ts / groupMonitor.allowedChatIds.test.ts) of testing a flag's
-// "off" and "on" behavior in isolated files rather than mutating a live config object mid-test.
+// ENABLE_AI_INVENTORY_ENRICHMENT=true set before config is ever required — separate
+// process/file from aiEnrich.disabled.test.ts, matching the codebase's established pattern
+// (see groupMonitor.featureFlag.test.ts / groupMonitor.allowedChatIds.test.ts) of testing a
+// flag's "off" and "on" behavior in isolated files rather than mutating a live config object
+// mid-test.
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
-process.env.ENABLE_AI_MATCHING = "true";
+process.env.ENABLE_AI_INVENTORY_ENRICHMENT = "true";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("./inventoryDb") as typeof import("./inventoryDb");
@@ -57,17 +58,17 @@ function enrichedWatch(overrides: Partial<Awaited<ReturnType<typeof enrichmentMo
   };
 }
 
-test("a row that already has a real reference is left as-is even if AI finds multiple watches in its text", async (t) => {
+test("required regression: a row that already has a real reference never triggers an AI call at all — cost control, not just a no-op split", async (t) => {
   await inventoryDb._resetDbForTests();
-  t.mock.method(enrichmentModule, "enrichListingText", async () => [
-    enrichedWatch({ referenceFamily: "116500", evidence: "a" }),
-    enrichedWatch({ referenceFamily: "124300", evidence: "b" }),
-  ]);
+  const spy = t.mock.method(enrichmentModule, "enrichListingText", async () => {
+    throw new Error("must never be called for a row the deterministic parser already handled");
+  });
   const rows = [row("a", { ref: "116500LN", description: "some bundle text" })];
   const outcome = await enrichAndSplitListings(rows);
   assert.equal(outcome.rows.length, 1);
   assert.equal(outcome.rows[0].id, "a");
   assert.equal(outcome.rows[0].ref, "116500LN");
+  assert.equal(spy.mock.callCount(), 0, "AI must never be called just to confirm a row is already fine");
 });
 
 test("required regression: an unstructured multi-watch blast with no ref is split into one row per watch AI found evidence for", async (t) => {
