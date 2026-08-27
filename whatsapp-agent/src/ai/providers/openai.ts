@@ -35,12 +35,16 @@ export async function callOpenAiJson<T>(req: AiJsonRequest): Promise<T | null> {
         ],
       }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error(`[ai/openai] request failed (${res.status}):`, await res.text().catch(() => "<no body>"));
+      return null;
+    }
     const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const text = body.choices?.[0]?.message?.content;
     if (!text) return null;
     return parseJsonFromModelText<T>(text);
-  } catch {
+  } catch (err) {
+    console.error("[ai/openai] request threw:", err);
     return null;
   }
 }

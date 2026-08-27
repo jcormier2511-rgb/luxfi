@@ -25,12 +25,21 @@ export async function callAnthropicJson<T>(req: AiJsonRequest): Promise<T | null
         messages: [{ role: "user", content: req.user }],
       }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Logged (not swallowed silently) — an AI outage must never break the bot (still falls
+      // back to null → deterministic matching either way), but a misconfigured model id, an
+      // invalid/revoked key, or a rate limit would otherwise be completely invisible in
+      // production, since every failure path here returns the same null as "AI just isn't
+      // available right now."
+      console.error(`[ai/anthropic] request failed (${res.status}):`, await res.text().catch(() => "<no body>"));
+      return null;
+    }
     const body = (await res.json()) as { content?: { type: string; text?: string }[] };
     const text = body.content?.find((c) => c.type === "text")?.text;
     if (!text) return null;
     return parseJsonFromModelText<T>(text);
-  } catch {
+  } catch (err) {
+    console.error("[ai/anthropic] request threw:", err);
     return null;
   }
 }
