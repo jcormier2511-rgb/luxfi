@@ -3,6 +3,7 @@ import { config } from "../config";
 import { login } from "./scraper";
 import { fetchAllFlashSales, isActive, mapToInventoryListing, resolveWtbAuctionType, RawFlashSale } from "./api";
 import { upsertListings, markMissingInactive, recordSyncAttempt, recordTypeSyncSuccess, recordTypeSyncError } from "./inventoryDb";
+import { mirrorApiFsPosting, markApiPostingsInactive } from "../postings/postingsStore";
 import { ListingType } from "../types";
 
 export interface SyncResult {
@@ -42,6 +43,20 @@ export async function syncOneSide(
       const syncedAt = now.toISOString();
       await upsertListings(listings, syncedAt);
       await markMissingInactive("WF", type, listings.map((l) => l.id), syncedAt);
+    }
+
+    // Mirrors FS only into the new Fi Build Spec v4 `postings` table so automatic matching has
+    // a live source (see src/postings/matching.ts) — never blocks or fails the existing,
+    // already-tested inventory_listings write above if this additive step has a problem.
+    if (type === "FS") {
+      try {
+        for (const listing of listings) {
+          await mirrorApiFsPosting(listing);
+        }
+        await markApiPostingsInactive(listings.map((l) => l.id));
+      } catch (err) {
+        console.error("[watchfacts] postings mirror failed (inventory_listings sync itself succeeded):", err);
+      }
     }
 
     await recordTypeSyncSuccess(type);

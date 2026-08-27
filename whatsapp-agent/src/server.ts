@@ -9,9 +9,53 @@ import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { getActiveListings, getSyncStatus } from "./watchfacts/inventoryDb";
 import { getEntitlement, setManualOverride } from "./billing/entitlementStore";
+import { approveMatch, passMatch, ApprovalOutcome } from "./postings/notify";
+import { runReconciliation } from "./postings/matching";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
+
+// Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
+// (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
+// per-conversation "approve <n>" list index (src/conversation/flow.ts). Both use the same
+// "approve <n>" / "pass <n>" wording, so v3's own pending-match list always takes priority
+// when one is open; only when there's nothing pending in v3 is the number tried as a v4
+// Postgres match id, falling through to the ordinary flow if it doesn't resolve to one.
+const V4_DECISION_PATTERN = /^(approve|pass)\s+(\d+)\b/i;
+
+function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number): string {
+  switch (outcome.status) {
+    case "approved":
+      return outcome.counterpart
+        ? `You're connected! ${outcome.counterpart.name}: ${outcome.counterpart.phone}`
+        : `Match ${matchId} approved.`;
+    case "already_approved":
+      return outcome.counterpart
+        ? `You already approved this one — ${outcome.counterpart.name}: ${outcome.counterpart.phone}`
+        : `You already approved match ${matchId}.`;
+    case "locked":
+      return config.fiFlow.declineMessage;
+    case "invalid":
+      return `I couldn't find match ${matchId}.`;
+  }
+}
+
+async function tryHandleV4Decision(phone: string, text: string): Promise<string | null> {
+  if (getState(phone).pendingMatches) return null; // v3 flow owns this reply
+  const m = text.trim().match(V4_DECISION_PATTERN);
+  if (!m) return null;
+  const matchId = parseInt(m[2], 10);
+
+  if (m[1].toLowerCase() === "approve") {
+    const outcome = await approveMatch(matchId, phone);
+    if (outcome.status === "invalid") return null; // not a real v4 match id either — fall through
+    return formatApprovalOutcome(outcome, matchId);
+  }
+
+  const result = await passMatch(matchId, phone);
+  if (result === "invalid") return null;
+  return result === "passed" ? `Passing on match ${matchId}.` : `You already decided on match ${matchId}.`;
+}
 
 export function createServer() {
   const app = express();
@@ -37,9 +81,16 @@ export function createServer() {
       try {
         if (message.isGroup) {
           // Silent by design — never reply into a group, only ingest WTB/FS-looking posts.
-          handleGroupMessage(message.groupId!, message.phone, message.senderName, message.text);
+          await handleGroupMessage(message.id, message.groupId!, message.phone, message.senderName, message.text);
           continue;
         }
+
+        const v4Reply = await tryHandleV4Decision(message.phone, message.text);
+        if (v4Reply !== null) {
+          await sendText(message.phone, v4Reply);
+          continue;
+        }
+
         const contact = getTierABContacts().find((c) => c.phone === message.phone);
         const { messages } = await handleIncomingMessage(message.phone, message.text, contact);
         for (const reply of messages) {
@@ -251,6 +302,18 @@ export function createServer() {
       const message = (err as Error).message;
       res.status(message === "a sync is already running" ? 409 : 500).json({ error: message });
     }
+  });
+
+  // Fi Build Spec v4 §4.3 safety net — sweeps every active FS×WTB pairing to recover any match
+  // missed by the immediate on-ingest path (e.g. a webhook delivery that failed mid-process).
+  // The scheduler in index.ts calls this on its own interval; this endpoint is for a manual/
+  // on-demand run. Already-known, unchanged matches are a no-op — see runReconciliation.
+  app.post("/admin/reconciliation", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const result = await runReconciliation();
+    res.json({ ok: !result.error, ...result });
   });
 
   return app;

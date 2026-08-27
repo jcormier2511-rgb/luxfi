@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { config } from "../config";
 import { InventoryListing, ListingType } from "../types";
+import { ingestAndMatch } from "../postings/ingest";
 
 // Dealer-group shorthand, distinct from the 1:1 flow's classify() (which expects
 // first-person phrasing like "buy: X"). Groups post in trading-floor jargon instead.
@@ -55,14 +56,25 @@ function appendGroupListing(row: InventoryListing): void {
 }
 
 /**
- * Silently parses a WhatsApp group message for a WTB/FS-style post and, if it looks like
- * one, appends it to the matching engine's inventory. Never sends a reply — group monitoring
- * is read-only by design (matches the "Fi never posts, only reads" promise on the landing
- * page). Not yet validated against a real dealer group; add one this channel's WhatsApp
- * number is a participant of and watch the logs / GET /admin/group-listings to confirm posts
- * are actually being captured and classified correctly.
+ * Silently parses a WhatsApp group message for a WTB/FS-style post. Never sends a reply into
+ * the group — group monitoring is read-only by design (matches the "Fi never posts, only
+ * reads" promise on the landing page). Not yet validated against a real dealer group; add one
+ * this channel's WhatsApp number is a participant of and watch the logs / GET
+ * /admin/group-listings to confirm posts are actually being captured and classified correctly.
+ *
+ * Dual-writes on purpose: the CSV path (via appendGroupListing, below) keeps feeding the
+ * existing v3 on-demand search flow unchanged; `ingestAndMatch` is the new Fi Build Spec v4
+ * automatic-monitoring path (Postgres `postings`, idempotent by messageId, immediate
+ * bidirectional matching, private notifications). Postgres is the authoritative store for
+ * the new system — the CSV is not.
  */
-export function handleGroupMessage(groupId: string, senderPhone: string, senderName: string | undefined, text: string): void {
+export async function handleGroupMessage(
+  messageId: string,
+  groupId: string,
+  senderPhone: string,
+  senderName: string | undefined,
+  text: string
+): Promise<void> {
   const type = classifyGroupPost(text);
   if (!type) return;
 
@@ -86,4 +98,17 @@ export function handleGroupMessage(groupId: string, senderPhone: string, senderN
 
   appendGroupListing(row);
   console.log(`[group-monitor] captured ${type} post from ${senderPhone} in group ${groupId}: "${text.slice(0, 60)}"`);
+
+  try {
+    await ingestAndMatch({
+      platform: "whatsapp",
+      chatId: groupId,
+      messageId,
+      senderIdentity: senderPhone,
+      senderName,
+      text,
+    });
+  } catch (err) {
+    console.error(`[group-monitor] postings ingestion/matching failed for message ${messageId}:`, err);
+  }
 }
