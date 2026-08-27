@@ -18,6 +18,10 @@ process.env.PERSIST_DIR = tmpPersistDir;
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 process.env.ENABLE_V4_POSTINGS = "true";
+// All these tests post into group "g1" — "*" opts every group in so this file exercises the
+// matching/ingestion behavior itself, independent of the controlled-rollout allowlist (that's
+// covered separately in config.allowedChatIds.test.ts and groupMonitor.featureFlag.test.ts).
+process.env.V4_ALLOWED_CHAT_IDS = "*";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require("./db") as typeof import("./db");

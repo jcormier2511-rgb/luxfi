@@ -11,6 +11,9 @@ import { getActiveListings, getSyncStatus } from "./watchfacts/inventoryDb";
 import { getEntitlement, setManualOverride } from "./billing/entitlementStore";
 import { approveMatch, passMatch, ApprovalOutcome } from "./postings/notify";
 import { runReconciliation } from "./postings/matching";
+import { getOrCreateCanonicalUser } from "./postings/identity";
+import { getPosting, extendPosting } from "./postings/postingsStore";
+import { initSchema } from "./postings/db";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
@@ -29,10 +32,10 @@ function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number): strin
       return outcome.counterpart
         ? `You're connected! ${outcome.counterpart.name}: ${outcome.counterpart.phone}`
         : `Match ${matchId} approved.`;
-    case "already_approved":
-      return outcome.counterpart
-        ? `You already approved this one — ${outcome.counterpart.name}: ${outcome.counterpart.phone}`
-        : `You already approved match ${matchId}.`;
+    case "pending_confirmation":
+      return `Got it — I'll let you know as soon as the other side confirms too.`;
+    case "posting_closed":
+      return `That listing has already reached its match limit, so this one can't be approved.`;
     case "locked":
       return config.fiFlow.declineMessage;
     case "invalid":
@@ -56,6 +59,29 @@ export async function tryHandleV4Decision(phone: string, text: string): Promise<
   const result = await passMatch(matchId, phone);
   if (result === "invalid") return null;
   return result === "passed" ? `Passing on match ${matchId}.` : `You already decided on match ${matchId}.`;
+}
+
+const V4_EXTEND_PATTERN = /^extend\s+(\d+)\b/i;
+
+/**
+ * Spec: prove the "extend" action a reminder promises actually works. Ownership is checked
+ * before extending (a posting id belongs to whoever's canonical_user_id it carries) — an
+ * unrecognized or not-mine id returns null (falls through to the ordinary flow) rather than
+ * confirming or denying that a given id exists, so this can't be used to probe ids.
+ */
+export async function tryHandleV4Extend(phone: string, text: string): Promise<string | null> {
+  if (!config.postingsV4.enabled) return null;
+  const m = text.trim().match(V4_EXTEND_PATTERN);
+  if (!m) return null;
+  const postingId = parseInt(m[1], 10);
+
+  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const posting = await getPosting(postingId);
+  if (!posting || posting.canonical_user_id !== canonicalUserId) return null;
+
+  const extended = await extendPosting(postingId);
+  if (!extended) return `That listing is no longer active, so it can't be extended.`;
+  return `Extended — active for 30 more days.`;
 }
 
 export function createServer() {
@@ -89,6 +115,12 @@ export function createServer() {
         const v4Reply = await tryHandleV4Decision(message.phone, message.text);
         if (v4Reply !== null) {
           await sendText(message.phone, v4Reply);
+          continue;
+        }
+
+        const v4ExtendReply = await tryHandleV4Extend(message.phone, message.text);
+        if (v4ExtendReply !== null) {
+          await sendText(message.phone, v4ExtendReply);
           continue;
         }
 
@@ -315,6 +347,31 @@ export function createServer() {
     }
     const result = await runReconciliation();
     res.json({ ok: !result.error, ...result });
+  });
+
+  // Reports v4 rollout state without exposing secrets (no connection string, no credentials —
+  // just booleans/config values). Also re-validates the schema on each call: since index.ts
+  // already initializes it unconditionally at startup, this should always report ready, but a
+  // failing call here (rather than a silent false) is itself the signal something's wrong.
+  app.get("/admin/v4-status", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    let schemaReady = true;
+    let schemaError: string | null = null;
+    try {
+      await initSchema();
+    } catch (err) {
+      schemaReady = false;
+      schemaError = (err as Error).message;
+    }
+    res.json({
+      enabled: config.postingsV4.enabled,
+      allowedChatIds: config.postingsV4.allowedChatIds,
+      reminderDaysBeforeExpiry: config.postingsV4.reminderDaysBeforeExpiry,
+      schemaReady,
+      schemaError,
+    });
   });
 
   return app;

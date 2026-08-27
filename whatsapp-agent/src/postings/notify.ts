@@ -149,86 +149,174 @@ export async function passMatch(matchId: number, phone: string): Promise<"passed
 }
 
 export interface ApprovalOutcome {
-  status: "approved" | "already_approved" | "locked" | "invalid";
+  status: "approved" | "pending_confirmation" | "locked" | "invalid" | "posting_closed";
   counterpart?: { name: string; phone: string };
 }
 
+interface QueryClient {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount?: number | null }>; // eslint-disable-line @typescript-eslint/no-explicit-any
+}
+
+interface MatchRecipientRow {
+  id: number;
+  decision: "pending" | "approved" | "passed";
+  connected_at: string | null;
+}
+
+/** `lock` uses FOR UPDATE — only ever set true for the CALLER's own row, never the counterpart's, to avoid two concurrent approvals on the same match deadlocking on each other's rows. */
+async function getRecipientRow(
+  client: QueryClient,
+  matchId: number,
+  canonicalUserId: number,
+  lock: boolean
+): Promise<MatchRecipientRow | null> {
+  const result = await client.query(
+    `SELECT * FROM match_recipients WHERE match_id=$1 AND recipient_canonical_user_id=$2
+     ORDER BY match_revision DESC LIMIT 1${lock ? " FOR UPDATE" : ""}`,
+    [matchId, canonicalUserId]
+  );
+  return result.rows[0] ?? null;
+}
+
 /**
- * Fi Build Spec v4 §11.3 — atomic, idempotent approval transaction. Scoped exactly to what
- * was asked for: the first 3 account-level approvals are complimentary ($0 ledger entries);
- * the 4th and later are locked unless an admin has enabled account_entitlements.
- * manual_override_enabled (checked as a pre-transaction snapshot rather than inside this
- * transaction, since that table lives in a separate connection pool — see
- * src/billing/entitlementStore.ts — an acceptable trade-off since the override flag only
- * ever changes via a rare, deliberate admin action, not a money-safety-critical race). No
- * payment processor exists, so every ledger entry is $0 — a real charge is never attempted,
- * on either the complimentary or the locked-then-overridden path.
+ * Fi Build Spec v4 §9/§11 — atomic, idempotent approval transaction that ends in an actual
+ * introduction, not just a recorded click, while never revealing either party's contact info
+ * to someone who hasn't themselves confirmed:
+ *
+ * - When the counterpart is a real WhatsApp user, BOTH sides must independently approve
+ *   before EITHER learns the other's contact info. The first approver gets
+ *   "pending_confirmation" (nothing revealed). The second approver's own approval reveals to
+ *   them synchronously (returned here) AND pushes a one-time introduction back to the first
+ *   approver, who was left waiting — see the sendText call after the transaction below.
+ * - When the counterpart has no WhatsApp identity (an API-mirrored WatchFacts listing),
+ *   there's no one to wait on, so a single approval reveals immediately.
+ * - matches.connected_at is the match-level "connected" record; match_recipients.connected_at
+ *   is the per-side idempotency claim — a duplicate click, a second approval from the same
+ *   side, or the counterpart's own later approval can never re-trigger a send once a side's
+ *   connected_at is set.
+ * - A posting that already hit its 5-approved-match cap (status != 'active') refuses any
+ *   further approval outright, even against a match that was created/surfaced before it
+ *   closed.
+ *
+ * The first 3 account-level approvals are complimentary ($0 ledger entries); the 4th and
+ * later are locked unless an admin has enabled account_entitlements.manual_override_enabled
+ * (checked as a pre-transaction snapshot — see src/billing/entitlementStore.ts). No payment
+ * processor exists, so every ledger entry is $0 — a real charge is never attempted.
  */
 export async function approveMatch(matchId: number, phone: string): Promise<ApprovalOutcome> {
   const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
   const entitlement = await getEntitlement(phone);
 
-  return withTransaction(async (client) => {
+  const result = await withTransaction(async (client) => {
+    const matchRow = await client.query(`SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id=$1`, [matchId]);
+    if (matchRow.rows.length === 0) return { outcome: { status: "invalid" as const }, notify: null };
+    const { fs_posting_id, wtb_posting_id } = matchRow.rows[0];
+
     const userResult = await client.query(`SELECT * FROM canonical_users WHERE id=$1 FOR UPDATE`, [canonicalUserId]);
     const user = userResult.rows[0];
 
-    const recipientResult = await client.query(
-      `SELECT * FROM match_recipients WHERE match_id=$1 AND recipient_canonical_user_id=$2 ORDER BY match_revision DESC LIMIT 1`,
-      [matchId, canonicalUserId]
-    );
-    if (recipientResult.rows.length === 0) return { status: "invalid" };
-    const recipient = recipientResult.rows[0];
+    const recipient = await getRecipientRow(client, matchId, canonicalUserId, true);
+    if (!recipient) return { outcome: { status: "invalid" as const }, notify: null };
 
-    if (recipient.decision === "approved") {
-      return { status: "already_approved", counterpart: await getCounterpartContact(client, matchId, canonicalUserId) };
-    }
-
-    const isComplimentary = user.total_approved_count < config.trial.maxApprovedMatches;
-    if (!isComplimentary && !entitlement.manualOverrideEnabled) {
-      return { status: "locked" };
-    }
-
-    // Idempotency key: match_id + approving_canonical_user_id. A duplicate/racing click hits
-    // this conflict and is treated as an already-approved no-op rather than double-counting.
-    const approvalInsert = await client.query(
-      `INSERT INTO approvals (match_id, approving_canonical_user_id, is_complimentary) VALUES ($1,$2,$3)
-       ON CONFLICT (match_id, approving_canonical_user_id) DO NOTHING RETURNING id`,
-      [matchId, canonicalUserId, isComplimentary]
-    );
-    if (approvalInsert.rows.length === 0) {
-      return { status: "already_approved", counterpart: await getCounterpartContact(client, matchId, canonicalUserId) };
-    }
-
-    await client.query(
-      `INSERT INTO billing_ledger (canonical_user_id, match_id, amount_cents, currency, billing_status)
-       VALUES ($1,$2,0,'USD',$3)`,
-      [canonicalUserId, matchId, isComplimentary ? "complimentary" : "admin_override_pending_billing"]
-    );
-
-    await client.query(`UPDATE canonical_users SET total_approved_count = total_approved_count + 1 WHERE id=$1`, [
-      canonicalUserId,
-    ]);
-
-    const matchRow = await client.query(`SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id=$1`, [matchId]);
-    const { fs_posting_id, wtb_posting_id } = matchRow.rows[0];
     const ownPostingId = await resolveOwnPostingId(client, fs_posting_id, wtb_posting_id, canonicalUserId);
-    if (ownPostingId !== null) {
-      const updated = await client.query(
-        `UPDATE postings SET approved_match_count = approved_match_count + 1, updated_at=now()
-         WHERE id=$1 RETURNING approved_match_count`,
-        [ownPostingId]
+
+    if (recipient.decision !== "approved") {
+      // The closed-posting guard only applies to a genuinely NEW approval — re-clicking
+      // "approve" on a match this side already approved before the posting closed must still
+      // work idempotently (same info, no new count), since it isn't a 6th approval at all.
+      if (ownPostingId !== null) {
+        const ownPosting = await client.query(`SELECT status FROM postings WHERE id=$1 FOR UPDATE`, [ownPostingId]);
+        if (ownPosting.rows[0]?.status !== "active") {
+          return { outcome: { status: "posting_closed" as const }, notify: null };
+        }
+      }
+
+      const isComplimentary = user.total_approved_count < config.trial.maxApprovedMatches;
+      if (!isComplimentary && !entitlement.manualOverrideEnabled) {
+        return { outcome: { status: "locked" as const }, notify: null };
+      }
+
+      // Idempotency key: match_id + approving_canonical_user_id. A duplicate/racing click hits
+      // this conflict and is treated as a no-op rather than double-counting.
+      const approvalInsert = await client.query(
+        `INSERT INTO approvals (match_id, approving_canonical_user_id, is_complimentary) VALUES ($1,$2,$3)
+         ON CONFLICT (match_id, approving_canonical_user_id) DO NOTHING RETURNING id`,
+        [matchId, canonicalUserId, isComplimentary]
       );
-      if (updated.rows[0].approved_match_count >= 5) {
-        await client.query(`UPDATE postings SET status='completed_match_limit' WHERE id=$1`, [ownPostingId]);
+      if (approvalInsert.rows.length > 0) {
+        await client.query(
+          `INSERT INTO billing_ledger (canonical_user_id, match_id, amount_cents, currency, billing_status)
+           VALUES ($1,$2,0,'USD',$3)`,
+          [canonicalUserId, matchId, isComplimentary ? "complimentary" : "admin_override_pending_billing"]
+        );
+        await client.query(`UPDATE canonical_users SET total_approved_count = total_approved_count + 1 WHERE id=$1`, [
+          canonicalUserId,
+        ]);
+
+        if (ownPostingId !== null) {
+          const updated = await client.query(
+            `UPDATE postings SET approved_match_count = approved_match_count + 1, updated_at=now()
+             WHERE id=$1 RETURNING approved_match_count`,
+            [ownPostingId]
+          );
+          if (updated.rows[0].approved_match_count >= 5) {
+            await client.query(`UPDATE postings SET status='completed_match_limit' WHERE id=$1`, [ownPostingId]);
+          }
+        }
+
+        await client.query(`UPDATE match_recipients SET decision='approved', decided_at=now() WHERE id=$1`, [recipient.id]);
+      }
+      // else: lost a race to a concurrent duplicate click on the same match+user — fall
+      // through and re-derive current state below, with no double side effects.
+    }
+
+    const counterpart = await getCounterpartContact(client, matchId, canonicalUserId);
+    const counterpartRecipient =
+      counterpart.canonicalUserId !== null ? await getRecipientRow(client, matchId, counterpart.canonicalUserId, false) : null;
+    const counterpartReady = counterpart.canonicalUserId === null || counterpartRecipient?.decision === "approved";
+
+    if (!counterpartReady) {
+      return { outcome: { status: "pending_confirmation" as const }, notify: null };
+    }
+
+    // Mutual condition met (or no counterpart confirmation was ever needed) — reveal to me
+    // now. Both UPDATEs are idempotency claims (WHERE ... IS NULL): harmless no-ops on a
+    // duplicate click or the counterpart's own later approval.
+    await client.query(`UPDATE match_recipients SET connected_at = now() WHERE id=$1 AND connected_at IS NULL`, [recipient.id]);
+    await client.query(`UPDATE matches SET connected_at = now() WHERE id=$1 AND connected_at IS NULL`, [matchId]);
+
+    let notify: { canonicalUserId: number; myContact: { name: string; phone: string } } | null = null;
+    if (counterpartRecipient && !counterpartRecipient.connected_at) {
+      // I'm the second (mutual-completing) approver — the counterpart was left on
+      // "pending_confirmation" and never got revealed; tell them now, exactly once.
+      const claimCounterpart = await client.query(
+        `UPDATE match_recipients SET connected_at = now() WHERE id=$1 AND connected_at IS NULL RETURNING id`,
+        [counterpartRecipient.id]
+      );
+      if (claimCounterpart.rows.length > 0) {
+        const myContact = await getCounterpartContact(client, matchId, counterpart.canonicalUserId!);
+        notify = { canonicalUserId: counterpart.canonicalUserId!, myContact: { name: myContact.name, phone: myContact.phone } };
       }
     }
 
-    await client.query(`UPDATE match_recipients SET decision='approved', decided_at=now(), connected_at=now() WHERE id=$1`, [
-      recipient.id,
-    ]);
-
-    return { status: "approved", counterpart: await getCounterpartContact(client, matchId, canonicalUserId) };
+    return {
+      outcome: { status: "approved" as const, counterpart: { name: counterpart.name, phone: counterpart.phone } },
+      notify,
+    };
   });
+
+  if (result.notify) {
+    const phone = await getPhoneForCanonicalUser(result.notify.canonicalUserId);
+    if (phone) {
+      try {
+        await sendText(phone, `You're connected! ${result.notify.myContact.name}: ${result.notify.myContact.phone}`);
+      } catch (err) {
+        console.error(`[postings] failed to deliver connection introduction for match ${matchId} to ${phone}:`, err);
+      }
+    }
+  }
+
+  return result.outcome;
 }
 
 async function resolveOwnPostingId(
@@ -253,7 +341,7 @@ async function getCounterpartContact(
   },
   matchId: number,
   approvingCanonicalUserId: number
-): Promise<{ name: string; phone: string }> {
+): Promise<{ name: string; phone: string; canonicalUserId: number | null }> {
   const matchResult = await client.query(`SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id=$1`, [matchId]);
   const { fs_posting_id, wtb_posting_id } = matchResult.rows[0] as unknown as { fs_posting_id: number; wtb_posting_id: number };
   const postings = await client.query(
@@ -262,5 +350,5 @@ async function getCounterpartContact(
   );
   const mine = postings.rows.find((r) => r.canonical_user_id === approvingCanonicalUserId);
   const other = postings.rows.find((r) => r.id !== mine?.id) ?? postings.rows[0];
-  return { name: other.contact_name, phone: other.contact_phone };
+  return { name: other.contact_name, phone: other.contact_phone, canonicalUserId: other.canonical_user_id };
 }

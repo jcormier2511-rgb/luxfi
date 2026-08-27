@@ -81,6 +81,11 @@ async function ensureSchema(): Promise<void> {
           status TEXT NOT NULL DEFAULT 'active',
           approved_match_count INTEGER NOT NULL DEFAULT 0 CHECK (approved_match_count >= 0),
           expires_at TIMESTAMPTZ NOT NULL,
+          -- Set to the exact expires_at value a reminder was last sent for (spec: remind once
+          -- per posting/expiration "version"). Comparing against the CURRENT expires_at is what
+          -- makes an extension (which changes expires_at) eligible for a fresh reminder without
+          -- a separate "extended" flag — see findPostingsNeedingReminder/claimReminderForPosting.
+          reminder_sent_for_expires_at TIMESTAMPTZ,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -128,6 +133,12 @@ async function ensureSchema(): Promise<void> {
           reasons TEXT[] NOT NULL DEFAULT '{}',
           matching_version TEXT NOT NULL DEFAULT 'v4.0',
           revision INTEGER NOT NULL DEFAULT 1,
+          -- Match-level connection record (spec: "creates one idempotent introduction/
+          -- connection record... stores pending_confirmation, connected, or equivalent
+          -- status"). NULL = pending_confirmation; set once both sides have confirmed (or
+          -- once the one side that can confirm has, when the other has no WhatsApp identity
+          -- to confirm at all — see notify.ts's approveMatch). Never cleared once set.
+          connected_at TIMESTAMPTZ,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           UNIQUE (fs_posting_id, wtb_posting_id)
@@ -141,6 +152,10 @@ async function ensureSchema(): Promise<void> {
           decision TEXT NOT NULL DEFAULT 'pending' CHECK (decision IN ('pending', 'approved', 'passed')),
           notified_at TIMESTAMPTZ,
           decided_at TIMESTAMPTZ,
+          -- Per-side idempotency claim: set exactly once, the moment THIS recipient is
+          -- actually shown/sent the counterpart's contact info (immediately if the
+          -- counterpart needs no confirmation, or retroactively once the counterpart also
+          -- approves) — never re-triggers a send once set. See notify.ts's approveMatch.
           connected_at TIMESTAMPTZ,
           UNIQUE (match_id, recipient_canonical_user_id, match_revision)
         );
@@ -181,6 +196,18 @@ async function ensureSchema(): Promise<void> {
 export async function withSchema<T>(fn: (pool: Pool) => Promise<T>): Promise<T> {
   await ensureSchema();
   return fn(getPool());
+}
+
+/**
+ * Explicit startup entry point — called unconditionally in index.ts regardless of
+ * ENABLE_V4_POSTINGS, so the additive v4 schema is created/validated in production well
+ * before the flag is ever turned on, rather than surfacing a migration surprise at that
+ * moment. Only creates tables/indexes (all IF NOT EXISTS) — never touches postings data and
+ * never sends a message, so calling it while v4 is disabled has no user-visible effect.
+ * Idempotent: safe to call any number of times (ensureSchema caches the promise per process).
+ */
+export async function initSchema(): Promise<void> {
+  await ensureSchema();
 }
 
 export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {

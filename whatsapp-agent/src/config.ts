@@ -115,5 +115,27 @@ export const config = {
   // about the currently-deployed behavior depends on this flag being on.
   postingsV4: {
     enabled: (process.env.ENABLE_V4_POSTINGS ?? "false").toLowerCase() === "true",
+    // Controlled test-group rollout: even with the master flag on, only these WhatsApp group
+    // chat ids are actually monitored. Empty (the default) means no group is enabled yet —
+    // ENABLE_V4_POSTINGS=true alone is not enough. "*" explicitly opts every group in, for a
+    // later full rollout. Comma-separated, trimmed, case-sensitive (chat ids are opaque ids,
+    // not display names).
+    allowedChatIds: (process.env.V4_ALLOWED_CHAT_IDS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    // Spec: ask a poster before their monitor expires, not just document that extension
+    // exists. Configurable so a later ops decision (e.g. 7 days) doesn't need a code change.
+    reminderDaysBeforeExpiry: Number(process.env.V4_REMINDER_DAYS_BEFORE_EXPIRY ?? 3),
   },
 };
+
+/** Pure — the actual chat-id/allowlist matching logic, unit-testable without env/config wiring. */
+export function isChatIdAllowed(chatId: string, allowedChatIds: string[]): boolean {
+  return allowedChatIds.includes("*") || allowedChatIds.includes(chatId);
+}
+
+/** Both conditions required: the master flag AND this specific chat explicitly allowed. */
+export function isV4ChatEnabled(chatId: string): boolean {
+  return config.postingsV4.enabled && isChatIdAllowed(chatId, config.postingsV4.allowedChatIds);
+}

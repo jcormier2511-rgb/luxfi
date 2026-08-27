@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { config } from "../config";
+import { config, isV4ChatEnabled } from "../config";
 import { InventoryListing, ListingType } from "../types";
 import { ingestAndMatch } from "../postings/ingest";
 
@@ -100,12 +100,14 @@ export async function handleGroupMessage(
   appendGroupListing(row);
   console.log(`[group-monitor] captured ${type} post from ${senderPhone} in group ${groupId}: "${text.slice(0, 60)}"`);
 
-  // Gated: the v4 automatic monitoring/matching path (postings ingestion + notifications)
-  // stays off in production until its migrations, integration tests, and notification
-  // behavior are verified — see config.postingsV4 / ENABLE_V4_POSTINGS. appendGroupListing
-  // above (the existing v3 CSV capture) is unaffected either way, and never sends a message
-  // itself, so this flag can never cause a duplicate acknowledgment/match card/introduction.
-  if (!config.postingsV4.enabled) return;
+  // Gated on BOTH the master flag AND this specific group being explicitly allowlisted (spec:
+  // controlled test-group rollout) — see config.postingsV4 / ENABLE_V4_POSTINGS /
+  // V4_ALLOWED_CHAT_IDS. Since nothing from a non-allowed group ever reaches ingestChatPosting,
+  // it can never appear as a matching candidate, get notified about, or be approved/passed
+  // either — the same gate covers ingestion, notification, and decision handling consistently.
+  // appendGroupListing above (the existing v3 CSV capture) is unaffected either way, and never
+  // sends a message itself, so this gate can never cause a duplicate ack/match card/intro.
+  if (!isV4ChatEnabled(groupId)) return;
 
   try {
     await ingestAndMatch({

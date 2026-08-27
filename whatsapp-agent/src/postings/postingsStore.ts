@@ -25,6 +25,7 @@ export interface PostingRow {
   status: string;
   approved_match_count: number;
   expires_at: string;
+  reminder_sent_for_expires_at: string | null;
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -300,5 +301,44 @@ export async function expireStalePostings(): Promise<number> {
        WHERE status='active' AND expires_at <= now() RETURNING id`
     );
     return result.rowCount ?? 0;
+  });
+}
+
+/**
+ * Chat-originated monitors only (spec: ask the poster before their own request/listing
+ * expires) — an API-mirrored WatchFacts listing isn't something a person is waiting on Fi
+ * for, and its own sync cadence governs its freshness, so it's excluded here on purpose.
+ * "Needs a reminder" = active, inside the reminder window, and not already reminded for the
+ * CURRENT expires_at — comparing against the current value (rather than a separate
+ * "extended" flag) is what makes an extension automatically eligible for a fresh reminder.
+ */
+export async function findPostingsNeedingReminder(daysBefore: number): Promise<PostingRow[]> {
+  return withSchema(async (pool) => {
+    const result = await pool.query<PostingRow>(
+      `SELECT * FROM postings
+       WHERE source_type = 'chat' AND status = 'active'
+         AND expires_at > now() AND expires_at <= now() + ($1 || ' days')::interval
+         AND (reminder_sent_for_expires_at IS NULL OR reminder_sent_for_expires_at <> expires_at)`,
+      [daysBefore]
+    );
+    return result.rows;
+  });
+}
+
+/**
+ * Idempotency claim, same pattern as match_recipients' ON CONFLICT DO NOTHING dedupe: only
+ * the caller that successfully flips reminder_sent_for_expires_at from "not this expiry" to
+ * "this expiry" should actually send the message — a concurrent/duplicate run finds 0 rows
+ * and skips sending. Returns the claimed row (needed for the message contents) or null.
+ */
+export async function claimReminderForPosting(id: number): Promise<PostingRow | null> {
+  return withSchema(async (pool) => {
+    const result = await pool.query<PostingRow>(
+      `UPDATE postings SET reminder_sent_for_expires_at = expires_at
+       WHERE id = $1 AND (reminder_sent_for_expires_at IS NULL OR reminder_sent_for_expires_at <> expires_at)
+       RETURNING *`,
+      [id]
+    );
+    return result.rows[0] ?? null;
   });
 }
