@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyText, normalizeText, normalizeReference } from "./normalize";
+import { classifyText, normalizeText, normalizeReference, extractReference } from "./normalize";
 
 test("classifyText recognizes FS keywords", () => {
   assert.equal(classifyText("FS Rolex Daytona 116500LN $28,000"), "FS");
@@ -66,4 +66,15 @@ test("normalizeReference strips formatting and uppercases for comparison", () =>
 test("normalizeReference makes differently-formatted references compare equal, and different ones stay different", () => {
   assert.equal(normalizeReference("116500-LN"), normalizeReference("116500ln"));
   assert.notEqual(normalizeReference("116500LN"), normalizeReference("116508-0013"));
+});
+
+test('required regression: extractReference never treats a $-prefixed price as a reference', () => {
+  assert.equal(extractReference("WTB Rolex under $20000"), null);
+  assert.equal(extractReference("WTB Rolex under $ 20000"), null); // space between $ and the amount
+  assert.equal(extractReference("FS Rolex Daytona 116500LN, asking $28500"), "116500LN", "a real reference elsewhere in the text must still be found");
+});
+
+test("normalizeText never captures a $-prefixed price as the reference field", () => {
+  const result = normalizeText("WTB Rolex under $20000");
+  assert.equal(result.reference, "");
 });

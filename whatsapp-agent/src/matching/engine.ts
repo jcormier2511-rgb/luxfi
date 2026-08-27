@@ -1,14 +1,15 @@
 import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
-import { normalizeReference } from "../postings/normalize";
+import { normalizeReference, extractReference } from "../postings/normalize";
 
-// Mirrors postings/normalize.ts's pattern — a reference number in the free-text query (e.g.
-// "buy: Rolex Daytona 116500LN") is a hard filter, not a keyword to blend into token scoring.
-const REFERENCE_PATTERN = /\b(\d{4,6}[A-Z]{0,3}(?:[-/][A-Z0-9]+)?)\b/i;
-
+// Shares extractReference/REFERENCE_PATTERN with postings/normalize.ts (v4) — one reference-
+// extraction rule for both, not two hand-synced copies. A reference number in the free-text
+// query (e.g. "buy: Rolex Daytona 116500LN") is a hard filter, not a keyword blended into
+// token scoring; extractReference already excludes a $-prefixed amount ("under $20000") from
+// being mistaken for one.
 function extractRequestedReference(query: string): string | null {
-  const m = query.match(REFERENCE_PATTERN);
-  return m ? normalizeReference(m[1]) : null;
+  const ref = extractReference(query);
+  return ref ? normalizeReference(ref) : null;
 }
 
 function tokenize(text: string): string[] {

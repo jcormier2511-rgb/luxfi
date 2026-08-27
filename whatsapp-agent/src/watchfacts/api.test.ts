@@ -100,6 +100,31 @@ test("mapToInventoryListings maps every sub-listing in a bundle individually, no
   assert.deepEqual(new Set(listings.map((l) => l.id)).size, 3, "each sub-listing must get its own unique id");
 });
 
+test("required regression: a sub-listing's id is keyed on sale.id + detail.id, not its array position", () => {
+  const detailA = { id: "watch-a", brand: "Rolex", model: null, reference: "116500LN", normalizedReference: null, title: "Daytona", condition: "Used", frontImage: null, box: null, papers: null, dialColor: null };
+  const detailB = { id: "watch-b", brand: "Patek Philippe", model: null, reference: "5711", normalizedReference: null, title: "Nautilus", condition: "Used", frontImage: null, box: null, papers: null, dialColor: null };
+
+  const originalOrder = mapToInventoryListings(sale({ isBundle: true, listings: [detailA, detailB] }), "FS");
+  // Simulates a re-sync where WatchFacts returns the same two watches in a different order
+  // (e.g. one was re-saved, or the API just doesn't guarantee stable ordering).
+  const reorderedSync = mapToInventoryListings(sale({ isBundle: true, listings: [detailB, detailA] }), "FS");
+
+  const idFor = (listings: typeof originalOrder, ref: string) => listings.find((l) => l.ref === ref)!.id;
+
+  assert.equal(
+    idFor(originalOrder, "116500LN"),
+    idFor(reorderedSync, "116500LN"),
+    "the Daytona's id must stay the same regardless of its position in the array"
+  );
+  assert.equal(
+    idFor(originalOrder, "5711"),
+    idFor(reorderedSync, "5711"),
+    "the Nautilus's id must stay the same regardless of its position in the array"
+  );
+  assert.ok(idFor(originalOrder, "116500LN").includes("watch-a"), "id must incorporate the sub-listing's own detail.id");
+  assert.ok(idFor(originalOrder, "5711").includes("watch-b"), "id must incorporate the sub-listing's own detail.id");
+});
+
 test("mapToInventoryListings uses ASK for every sub-listing in a bundle, never the shared lot total", () => {
   const bundleSale = sale({
     price: 500000, // the whole lot's price — ambiguous per individual watch

@@ -8,7 +8,15 @@
 const WTB_KEYWORDS = /\b(wtb|iso|lf|looking\s+for|in\s+search\s+of|ntq)\b/i;
 const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling)\b/i;
 const PRICE_PATTERN = /\$\s?[\d,]+(?:\.\d+)?/g;
-const REFERENCE_PATTERN = /\b(\d{4,6}[A-Z]{0,3}(?:[-/][A-Z0-9]+)?)\b/i;
+// `(?<!\$\s?)` excludes a digit run directly preceded by a $ sign (with or without a space) —
+// "$20000"/"$ 20000" is unambiguously a price, never a reference, even though bare "20000"
+// alone would otherwise fit the same shape. This is the ONE disambiguation that's actually
+// resolvable without guessing: a bare, contextless 4-digit number with no $ and no letters
+// (e.g. a model year like "2023") is inherently indistinguishable from a real 4-digit
+// reference (Patek 3700/5711, Rolex 1601, etc.) using pattern-matching alone, so that
+// ambiguity is intentionally left unresolved rather than guessed at with a year-range heuristic
+// that would just as often reject a legitimate reference search.
+const REFERENCE_PATTERN = /(?<!\$\s?)\b(\d{4,6}[A-Z]{0,3}(?:[-/][A-Z0-9]+)?)\b/i;
 const BRAND_LIST = [
   "rolex",
   "patek philippe",
@@ -68,13 +76,18 @@ function extractUnambiguousPrice(text: string): number | null {
   return Number.isFinite(only) ? only : null;
 }
 
+/** Shared by v3 (matching/engine.ts) and v4 (this file) — one reference-extraction rule, not two hand-synced copies. */
+export function extractReference(text: string): string | null {
+  const m = text.match(REFERENCE_PATTERN);
+  return m ? m[1].toUpperCase() : null;
+}
+
 export function normalizeText(text: string): NormalizedFields {
-  const refMatch = text.match(REFERENCE_PATTERN);
   const lower = text.toLowerCase();
   const brand = BRAND_LIST.find((b) => lower.includes(b)) ?? "";
   return {
     brand,
-    reference: refMatch ? refMatch[1].toUpperCase() : "",
+    reference: extractReference(text) ?? "",
     price: extractUnambiguousPrice(text),
     currency: "USD",
   };

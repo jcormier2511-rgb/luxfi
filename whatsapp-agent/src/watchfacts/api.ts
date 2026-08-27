@@ -83,7 +83,14 @@ export function resolveListingDetails(sale: RawFlashSale): (RawListingDetail | u
  * Pure mapping, independent of network/DOM — the part requirement #10's tests exercise
  * directly. Maps EVERY structured sub-listing in a sale individually rather than only the
  * bundle's first watch, so a lot of several different watches becomes several distinct
- * InventoryListings (each gets its own id, `${sale.id}-${index}`, when there's more than one).
+ * InventoryListings.
+ *
+ * Each sub-listing's id is `${sale.id}-${detail.id}` — keyed on WatchFacts' OWN sub-listing
+ * id, never on its array position. upsertListings/markMissingInactive key on this id, so a
+ * positional id would silently reassign one watch's identity to whatever happens to occupy
+ * the same array slot on the next sync (if WatchFacts reorders or removes an item from the
+ * middle of a bundle) — overwriting or losing data rather than just skipping/adding a row.
+ * detail.id is the one thing that's actually stable across syncs for the same physical watch.
  *
  * A bundle's `sale.price` is a single total for the whole lot — attributing that figure to
  * each individual sub-listing would misrepresent its actual price, so a multi-listing sale
@@ -95,7 +102,7 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
   const price = !isBundleOfMultiple && sale.price > 0 ? String(sale.price) : "ASK";
 
   return details.map((detail, i) => ({
-    id: isBundleOfMultiple ? `${sale.id}-${i}` : sale.id,
+    id: isBundleOfMultiple ? `${sale.id}-${detail?.id ?? i}` : sale.id,
     type,
     category: "watches",
     item: sale.title ?? "",

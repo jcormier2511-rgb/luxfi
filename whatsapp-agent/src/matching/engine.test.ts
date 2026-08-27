@@ -17,8 +17,11 @@ process.env.WEBHOOK_TOKEN = "test";
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const engine = require("./engine") as typeof import("./engine");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const api = require("../watchfacts/api") as typeof import("../watchfacts/api");
 const { upsertListings, _resetDbForTests, _closePoolForTests } = inventoryDb;
 const { findMatches } = engine;
+const { mapToInventoryListings } = api;
 
 after(async () => {
   await _closePoolForTests();
@@ -98,4 +101,42 @@ test("without a reference in the query, matching still falls back to the broader
 
   const matches = await findMatches({ action: "buy", query: "Rolex" }, 5);
   assert.equal(matches.length, 1, "brand-only, no-reference searches are unaffected by the strict-reference rule");
+});
+
+test('required regression: "under $20000" is never treated as a requested reference', async () => {
+  await _resetDbForTests();
+  await upsertListings([row("a", { brand: "Rolex", description: "Rolex Submariner" })], new Date().toISOString());
+
+  const matches = await findMatches({ action: "buy", query: "Rolex under $20000" }, 5);
+  assert.equal(matches.length, 1, "20000 must be recognized as a price, not force an exact-reference-only search");
+});
+
+test("required regression: a bundle of several watches returns only the one matching structured watch", async () => {
+  await _resetDbForTests();
+  // Same shape as a real WatchFacts bundle sale — mapToInventoryListings (api.ts) maps each
+  // sub-listing individually, exactly as syncInventory.ts would upsert them.
+  const bundleSale: Parameters<typeof mapToInventoryListings>[0] = {
+    id: "bundle-1",
+    isBundle: true,
+    title: "Mixed lot",
+    status: "open",
+    price: 500000,
+    deadline: "2999-01-01 00:00:00",
+    listings: [
+      { id: "d1", brand: "Rolex", model: null, reference: "116500LN", normalizedReference: null, title: "Daytona", condition: "New", frontImage: null, box: null, papers: null, dialColor: null },
+      { id: "d2", brand: "Rolex", model: null, reference: "126710BLRO", normalizedReference: null, title: "GMT-Master II", condition: "New", frontImage: null, box: null, papers: null, dialColor: null },
+      { id: "d3", brand: "Patek Philippe", model: null, reference: "5711", normalizedReference: null, title: "Nautilus", condition: "Used", frontImage: null, box: null, papers: null, dialColor: null },
+    ],
+    companyName: "Bundle Dealer",
+    fromName: null,
+    companyStars: null,
+    whatsappNumber: "10000000000",
+    companyWhatsapp: null,
+    region: "Asia",
+  };
+  await upsertListings(mapToInventoryListings(bundleSale, "FS"), new Date().toISOString());
+
+  const matches = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5);
+  assert.equal(matches.length, 1, "only the one sub-listing matching the requested reference should come back");
+  assert.equal(matches[0].ref, "116500LN");
 });
