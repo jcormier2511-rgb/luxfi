@@ -161,6 +161,7 @@ test("the primary intent verifier retains every supported non-USD currency", asy
     ["WTB Patek 5712G under HK$900,000", 900000, "HKD"],
     ["WTB Patek 5712G under S$110,000", 110000, "SGD"],
     ["WTB Patek 5712G under C$100,000", 100000, "CAD"],
+    ["WTB Patek 5712G under $100k CAD", 100000, "CAD"],
     ["WTB Patek 5712G under A$100,000", 100000, "AUD"],
     ["WTB Patek 5712G under AED 400,000", 400000, "AED"],
     ["WTB Patek 5712G under CHF 95,000", 95000, "CHF"],

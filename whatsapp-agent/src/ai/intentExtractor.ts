@@ -127,7 +127,7 @@ const CURRENCY_CODE = `(?:${[...SUPPORTED_CURRENCIES, "RMB"].join("|")})`;
 const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[$€£¥])";
 const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)";
 const NL_PRICE_TOKEN =
-  `(?:${CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b` + // $105,000 / $25k / €5000
+  `(?:${CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b(?:\\s*${CURRENCY_CODE}\\b)?` + // $105,000 / $25k CAD / €5000
     `|\\b${CURRENCY_CODE}\\s?${NUM}\\s?[kK]?\\b` + // USD 105000
     `|\\b${NUM}\\s?[kK]?\\s?${CURRENCY_CODE}\\b` + // 105.000 USD / 105k USD
     `|\\b${NUM}\\s?[kK]\\b)`; // bare 25k / 26.2k -- no currency marker at all
