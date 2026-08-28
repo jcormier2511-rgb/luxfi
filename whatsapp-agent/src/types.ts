@@ -90,6 +90,23 @@ export interface PendingNaturalFollowUp {
   missing: string[];
 }
 
+export type SellIntakeStep = "details" | "price" | "photo";
+
+/**
+ * A "sell" request doesn't search anything live yet (there's no automatic buyer-matching for a
+ * self-reported listing) — instead Fi collects what it needs to actually describe the item to a
+ * future buyer: enough identifying detail (brand/model/reference), a price, and a photo. Walks
+ * one question at a time, same pattern as PendingPreferenceCollection.
+ */
+export interface PendingSellIntake {
+  step: SellIntakeStep;
+  description: string; // accumulated free-text description, starting from the original message
+  reference: string | null;
+  price?: number;
+  priceText?: string; // the raw reply, kept for display when the number couldn't be parsed
+  imageUrl?: string;
+}
+
 export interface ConversationState {
   phone: string;
   stage: ConversationStage;
@@ -102,6 +119,7 @@ export interface ConversationState {
   preferences?: SearchPreferences;
   pendingPreferenceCollection?: PendingPreferenceCollection;
   pendingNaturalFollowUp?: PendingNaturalFollowUp;
+  pendingSellIntake?: PendingSellIntake;
   // Automatic currency conversion (src/fx/) — set via "Show prices in USD" / "Use HKD as my
   // preferred currency" (see conversation/flow.ts). ISO 4217 code. Undefined means the
   // config-wide DEFAULT_DISPLAY_CURRENCY is used instead.

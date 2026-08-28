@@ -12,6 +12,7 @@ import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
+import { extractReference, containsKnownBrand, normalizePriceShorthand } from "../postings/normalize";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -212,10 +213,13 @@ async function handleStatusCommand(state: ConversationState, messages: string[])
  *  superseding an old one — see the "never delete a pending match merely because another search
  *  starts" rule this does NOT apply to. */
 function handleCancelCommand(state: ConversationState, messages: string[]): void {
-  const hadSomethingToCancel = Boolean(state.pendingMatches || state.pendingPreferenceCollection || state.pendingNaturalFollowUp);
+  const hadSomethingToCancel = Boolean(
+    state.pendingMatches || state.pendingPreferenceCollection || state.pendingNaturalFollowUp || state.pendingSellIntake
+  );
   state.pendingMatches = undefined;
   state.pendingPreferenceCollection = undefined;
   state.pendingNaturalFollowUp = undefined;
+  state.pendingSellIntake = undefined;
   messages.push(
     hadSomethingToCancel
       ? "Okay, I've cleared your current matches. Send a new buy/sell request anytime."
@@ -247,6 +251,13 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
         : "";
     messages.push(`No live matches yet for "${request.query}"${wtbFeedNote} — I'll keep watching the network.`);
     console.log(`[router] new_search=true pending_match_preserved=${hadExistingPending}`);
+    // Real reported gap: a "sell" search with nothing to match against just stopped there,
+    // leaving the seller's message unused. There's no live automatic buyer-matching for a
+    // self-reported listing yet, so instead of searching again next time, collect what Fi
+    // actually needs to describe the item to a future buyer — see startSellIntake.
+    if (request.action === "sell") {
+      await startSellIntake(state, request, messages);
+    }
     return;
   }
 
@@ -504,6 +515,64 @@ async function handleNaturalFollowUpAnswer(state: ConversationState, text: strin
   await startSearch(state, request, messages);
 }
 
+const SELL_DETAILS_QUESTION = "Tell me a bit more about what you're selling — brand, model, and reference number if you have it.";
+const SELL_PRICE_QUESTION = "What's your asking price?";
+const SELL_PHOTO_QUESTION = "Can you send a photo of it?";
+
+/**
+ * A "sell" request has no live automatic buyer-matching wired up yet — there's nothing to
+ * search against for a self-reported listing (unlike "buy", which searches WatchFacts' own
+ * synced FS inventory directly). Real reported gap: "I want to sell a watch" ran a doomed
+ * search for the literal word "watch" and reported "no matches" instead of collecting what
+ * Fi actually needs to describe the item to a future buyer. Skips straight to the price
+ * question when the message already names a reference or a known brand — "116500 white dial"
+ * doesn't need to be asked "tell me more" when it's already specific.
+ */
+async function startSellIntake(state: ConversationState, request: ItemRequest, messages: string[]): Promise<void> {
+  const reference = extractReference(request.query);
+  const hasSpecifics = Boolean(reference) || containsKnownBrand(request.query);
+  state.pendingSellIntake = { step: hasSpecifics ? "price" : "details", description: request.query, reference };
+  messages.push(hasSpecifics ? SELL_PRICE_QUESTION : SELL_DETAILS_QUESTION);
+}
+
+/** Walks details -> price -> photo, one question at a time, then acknowledges — never loops
+ *  back to re-ask a step; whatever's given (including nothing) is accepted and it moves on,
+ *  same "ask once" principle as the rest of this file's collectors. */
+function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[]): void {
+  const pending = state.pendingSellIntake!;
+
+  if (pending.step === "details") {
+    pending.description = `${pending.description} ${text}`.trim();
+    pending.reference = pending.reference ?? extractReference(text);
+    pending.step = "price";
+    messages.push(SELL_PRICE_QUESTION);
+    return;
+  }
+
+  if (pending.step === "price") {
+    const parsedPrice = normalizePriceShorthand(text);
+    if (parsedPrice !== null) pending.price = parsedPrice;
+    else pending.priceText = text.trim();
+    pending.step = "photo";
+    messages.push(SELL_PHOTO_QUESTION);
+    return;
+  }
+
+  // step === "photo" — the final step, regardless of whether an image actually came with this message.
+  if (imageUrl) pending.imageUrl = imageUrl;
+  const priceLine =
+    pending.price !== undefined ? `$${pending.price.toLocaleString("en-US")}` : pending.priceText ? pending.priceText : "not set";
+  const photoLine = pending.imageUrl ? "received" : "not provided";
+  messages.push(
+    `Got it — here's what I have on file:\n` +
+      `Item: ${pending.description}\n` +
+      `Asking: ${priceLine}\n` +
+      `Photo: ${photoLine}\n\n` +
+      `I don't have automatic buyer-matching wired up for self-listed items yet, but your details are saved — I'll follow up if that changes.`
+  );
+  state.pendingSellIntake = undefined;
+}
+
 interface ResolvedItems {
   items: ItemRequest[];
   /** Set only when `items` came from the AI intent extractor — its own price/location/dial/
@@ -551,7 +620,7 @@ async function resolveItemRequests(phone: string, text: string): Promise<Resolve
   return { items: parseItemRequests(text) };
 }
 
-export async function handleIncomingMessage(phone: string, text: string, contact?: Contact): Promise<FlowResult> {
+export async function handleIncomingMessage(phone: string, text: string, contact?: Contact, imageUrl?: string): Promise<FlowResult> {
   const state = getState(phone);
   const messages: string[] = [];
   const firstName = contact?.name?.trim().split(/\s+/)[0] || "there";
@@ -620,6 +689,12 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   const photoRequestIndex = parsePhotoRequestCommand(text);
   if (photoRequestIndex !== null && state.pendingMatches) {
     await handlePhotoRequest(state, photoRequestIndex, messages);
+    saveState(state);
+    return { state, messages };
+  }
+
+  if (state.pendingSellIntake) {
+    handleSellIntakeAnswer(state, text, imageUrl, messages);
     saveState(state);
     return { state, messages };
   }

@@ -140,7 +140,10 @@ export function createServer() {
         }
 
         const contact = getTierABContacts().find((c) => c.phone === message.phone);
-        const { messages } = await handleIncomingMessage(message.phone, message.text, contact);
+        // imageUrl threaded through for the sell-intake photo step (matching/photoRequests.ts's
+        // seller-photo-request reply is already routed away above, before this point, so this
+        // is only ever an ordinary buyer/seller sending a photo unprompted).
+        const { messages } = await handleIncomingMessage(message.phone, message.text, contact, message.imageUrl);
         for (const reply of messages) {
           await sendText(message.phone, reply);
         }

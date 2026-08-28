@@ -53,6 +53,13 @@ const BRAND_LIST = [
   "omega",
 ];
 
+/** True when `text` names a known maker brand — used to decide whether a "sell" request already
+ *  identifies a specific item or is too vague to search/list on ("a watch" vs "a Rolex"). */
+export function containsKnownBrand(text: string): boolean {
+  const lower = text.toLowerCase();
+  return BRAND_LIST.some((b) => lower.includes(b));
+}
+
 export type PostingType = "FS" | "WTB";
 
 /**
