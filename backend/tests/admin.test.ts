@@ -123,3 +123,19 @@ test('watchfacts-verify marks manual verification and waives the Fi membership f
   expect(ok.body.watchFactsVerificationSource).toBe('manual_admin');
   expect(ok.body.fiMembershipStatus).toBe('waived_via_watchfacts');
 });
+
+test('sync/fs, sync/wtb, and reconcile admin routes return their service results', async () => {
+  const app = createApp(pool);
+
+  const fs = await request(app).post('/admin/sync/fs').set('x-admin-token', ADMIN_TOKEN);
+  expect(fs.status).toBe(200);
+  expect(['ok', 'error', 'disabled']).toContain(fs.body.status);
+
+  const wtb = await request(app).post('/admin/sync/wtb').set('x-admin-token', ADMIN_TOKEN);
+  expect(wtb.status).toBe(200);
+  expect(wtb.body.status).toBe('disabled'); // ENABLE_WTB_SYNC is false by default
+
+  const reconcile = await request(app).post('/admin/reconcile').set('x-admin-token', ADMIN_TOKEN);
+  expect(reconcile.status).toBe(200);
+  expect(typeof reconcile.body.postingsScanned).toBe('number');
+});
