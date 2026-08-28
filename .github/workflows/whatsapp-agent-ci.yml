@@ -1,0 +1,71 @@
+name: WhatsApp Agent CI
+
+on:
+  pull_request:
+    paths:
+      - "whatsapp-agent/**"
+      - ".github/workflows/whatsapp-agent-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Install, test, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: luxfi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: whatsapp-agent
+
+    env:
+      NODE_ENV: test
+      WEBHOOK_TOKEN: test
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/luxfi_test
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PERSIST_DIR: ${{ runner.temp }}/luxfi-persist
+
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: whatsapp-agent/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run targeted price and webhook regressions
+        run: >-
+          node --require ts-node/register --test --test-concurrency=1
+          src/ai/queryInterpreter.test.ts
+          src/matching/currency.test.ts
+          src/matching/engine.currencyConversion.test.ts
+          src/server.webhookMatching.test.ts
+
+      - name: Run complete test suite
+        run: npm test
+
+      - name: Run production build
+        run: npm run build
