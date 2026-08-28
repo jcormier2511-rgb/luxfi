@@ -13,7 +13,7 @@ import { handleIncomingSellerPhoto } from "./matching/photoRequests";
 import { approveMatch, passMatch, ApprovalOutcome } from "./postings/notify";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
-import { getPosting, extendPosting } from "./postings/postingsStore";
+import { getPosting, extendPosting, getOwnPostingForMatch } from "./postings/postingsStore";
 import { getV4OperationalStatus } from "./postings/status";
 import { initSchema } from "./postings/db";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
@@ -57,6 +57,38 @@ export async function tryHandleV4Decision(phone: string, text: string): Promise<
   if (m[1].toLowerCase() === "approve") {
     const outcome = await approveMatch(matchId, phone);
     if (outcome.status === "invalid") return null; // not a real v4 match id either — fall through
+    return formatApprovalOutcome(outcome, matchId);
+  }
+
+  const result = await passMatch(matchId, phone);
+  if (result === "invalid") return null;
+  return result === "passed" ? `Passing on match ${matchId}.` : `You already decided on match ${matchId}.`;
+}
+
+/**
+ * A person's own "sell a watch" conversational intake (conversation/flow.ts, source_type=
+ * 'direct') gets matched to buyers even though ENABLE_V4_POSTINGS-gated group-chat monitoring
+ * is off — it's a narrower, always-on, explicit-consent feature, not the broad rollout that
+ * flag controls. So its "approve <matchId>"/"pass <matchId>" replies need their own handler,
+ * deliberately NOT behind that flag — tryHandleV4Decision above stays exactly as it is (and as
+ * server.v4Decision.test.ts requires: it must stay a total no-op while the flag is off) for
+ * every other posting. Scoping is by ownership + source_type: only a match where the sender
+ * owns a 'direct'-sourced side is handled here; anything else falls through (returns null) so
+ * tryHandleV4Decision (when enabled) or the ordinary flow gets a turn at it.
+ */
+export async function tryHandleDirectPostingDecision(phone: string, text: string): Promise<string | null> {
+  if (getState(phone).pendingMatches) return null; // v3 flow owns this reply
+  const m = text.trim().match(V4_DECISION_PATTERN);
+  if (!m) return null;
+  const matchId = parseInt(m[2], 10);
+
+  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const mine = await getOwnPostingForMatch(matchId, canonicalUserId);
+  if (!mine || mine.source_type !== "direct") return null; // not a direct-sourced decision
+
+  if (m[1].toLowerCase() === "approve") {
+    const outcome = await approveMatch(matchId, phone);
+    if (outcome.status === "invalid") return null;
     return formatApprovalOutcome(outcome, matchId);
   }
 
@@ -125,6 +157,12 @@ export function createServer() {
         if (message.imageUrl) {
           const handledAsPhotoReply = await handleIncomingSellerPhoto(message.phone, message.imageUrl);
           if (handledAsPhotoReply) continue;
+        }
+
+        const directReply = await tryHandleDirectPostingDecision(message.phone, message.text);
+        if (directReply !== null) {
+          await sendText(message.phone, directReply);
+          continue;
         }
 
         const v4Reply = await tryHandleV4Decision(message.phone, message.text);

@@ -205,6 +205,17 @@ async function ensureSchema(): Promise<void> {
         -- to actually reach a database that already has an older version of these tables.
         ALTER TABLE postings ADD COLUMN IF NOT EXISTS reminder_sent_for_expires_at TIMESTAMPTZ;
         ALTER TABLE matches ADD COLUMN IF NOT EXISTS connected_at TIMESTAMPTZ;
+
+        -- Widens source_type for the private "sell a watch" conversational intake
+        -- (conversation/flow.ts's sell-intake flow, see postingsStore.ts's createDirectPosting):
+        -- a person telling Fi directly what they're selling, as distinct from 'chat' (a passively
+        -- monitored group message) or 'api' (a mirrored WatchFacts listing). Deliberately its own
+        -- value rather than reusing 'chat' or 'api' — isPostingChatEnabled (config.ts) already
+        -- treats any non-'chat' source_type as never chat-gated, which is exactly right here: a
+        -- direct 1:1 request carries its own explicit consent and needs none of the group-chat
+        -- allowlist rollout controls 'chat' postings do.
+        ALTER TABLE postings DROP CONSTRAINT IF EXISTS postings_source_type_check;
+        ALTER TABLE postings ADD CONSTRAINT postings_source_type_check CHECK (source_type IN ('chat', 'api', 'direct'));
         `
       )
       .then(() => undefined);

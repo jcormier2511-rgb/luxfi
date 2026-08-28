@@ -1,4 +1,12 @@
-import { ingestChatPosting, ChatPostingInput, mirrorApiFsPosting, markApiPostingsInactive, ApiFsListing } from "./postingsStore";
+import {
+  ingestChatPosting,
+  ChatPostingInput,
+  mirrorApiFsPosting,
+  markApiPostingsInactive,
+  ApiFsListing,
+  createDirectPosting,
+  DirectSellPostingInput,
+} from "./postingsStore";
 import { runImmediateMatch } from "./matching";
 import { sendText } from "../whapi/client";
 
@@ -25,6 +33,27 @@ export async function ingestAndMatch(input: ChatPostingInput): Promise<void> {
       console.error(`[postings] failed to send monitoring acknowledgment to ${input.senderIdentity}:`, err);
     }
   }
+}
+
+export interface DirectSellIngestResult {
+  matchesFound: number;
+}
+
+/**
+ * Fi's own "sell a watch" conversational intake (conversation/flow.ts) completing, not a
+ * passively-monitored group message — creates a real, always-active FS posting and runs it
+ * against every eligible active WTB posting immediately, same shared matching engine
+ * (runImmediateMatch/notifyMatch) the chat-ingestion and WatchFacts-sync paths already use.
+ * Never sends its own "I'm monitoring this" acknowledgment (unlike ingestAndMatch above) — the
+ * caller already sends its own item/price/photo summary in the same conversation turn; the
+ * returned matchesFound count lets it fold the outcome into that one message instead of
+ * stacking a second, redundant one. A found match's own notification (to either side) still
+ * goes out via notifyMatch/sendText exactly as it does for any other posting.
+ */
+export async function ingestDirectSellPosting(input: DirectSellPostingInput): Promise<DirectSellIngestResult> {
+  const posting = await createDirectPosting(input);
+  const { matchesFound } = await runImmediateMatch(posting);
+  return { matchesFound };
 }
 
 /**

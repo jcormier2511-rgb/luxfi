@@ -14,6 +14,7 @@ import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
 import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
 import { upsertListings } from "../watchfacts/inventoryDb";
+import { ingestDirectSellPosting } from "../postings/ingest";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -572,8 +573,19 @@ async function persistSellIntake(state: ConversationState, pending: PendingSellI
 
 /** Walks details -> price -> photo, one question at a time, then acknowledges — never loops
  *  back to re-ask a step; whatever's given (including nothing) is accepted and it moves on,
- *  same "ask once" principle as the rest of this file's collectors. */
-async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[]): Promise<void> {
+ *  same "ask once" principle as the rest of this file's collectors. The final "photo" step both
+ *  quietly archives the listing (persistSellIntake, v3's inventory_listings — searchable by a
+ *  future buyer's own "buy:" search, same as any other passively-captured listing) and creates
+ *  a real v4 FS posting run against every active WTB posting immediately (see postings/ingest.ts's
+ *  ingestDirectSellPosting) — the acknowledgment reflects whether that immediate search actually
+ *  found a live buyer, rather than a blanket "not wired up yet" caveat. */
+async function handleSellIntakeAnswer(
+  state: ConversationState,
+  text: string,
+  imageUrl: string | undefined,
+  messages: string[],
+  contact?: Contact
+): Promise<void> {
   const pending = state.pendingSellIntake!;
 
   if (pending.step === "details") {
@@ -598,13 +610,29 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   const priceLine =
     pending.price !== undefined ? `$${pending.price.toLocaleString("en-US")}` : pending.priceText ? pending.priceText : "not set";
   const photoLine = pending.imageUrl ? "received" : "not provided";
+
   await persistSellIntake(state, pending);
+
+  const { matchesFound } = await ingestDirectSellPosting({
+    phone: state.phone,
+    senderName: contact?.name,
+    description: pending.description,
+    reference: pending.reference ?? null,
+    price: pending.price ?? null,
+    imageUrl: pending.imageUrl,
+  });
+
+  const outcomeLine =
+    matchesFound > 0
+      ? `Good news — I found ${matchesFound === 1 ? "a buyer" : `${matchesFound} buyers`} already looking for something like this. I'll be in touch as soon as it's confirmed.`
+      : `I'm listing it now and will let you know automatically as soon as I find a qualifying buyer.`;
+
   messages.push(
     `Got it — here's what I have on file:\n` +
       `Item: ${pending.description}\n` +
       `Asking: ${priceLine}\n` +
       `Photo: ${photoLine}\n\n` +
-      `I've added this to the network — I'll message you as soon as a buyer's interested.`
+      outcomeLine
   );
   state.pendingSellIntake = undefined;
 }
@@ -730,7 +758,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
 
   if (state.pendingSellIntake) {
-    await handleSellIntakeAnswer(state, text, imageUrl, messages);
+    await handleSellIntakeAnswer(state, text, imageUrl, messages, contact);
     saveState(state);
     return { state, messages };
   }
