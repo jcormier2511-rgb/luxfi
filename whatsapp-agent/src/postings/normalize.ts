@@ -17,6 +17,9 @@ const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling|ready\s+stock|in\s+stock|avail
 // see below). Recognizing these here (not just $-amounts) is what lets hasMultipleDistinctPrices
 // actually detect that kind of listing as the multi-item dump it is.
 const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|jpy|cny|rmb|chf)";
+// Longest-first prevents the bare "$" branch from splitting HK$/C$/S$, while including euro,
+// pound, yen, and yuan symbols makes symbol-only overseas listings real priced inventory.
+const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|CN¥|[$€£¥])";
 // Trailing `\s?[kK]?` captures dealer shorthand like "$25.5k" — see normalizePriceShorthand,
 // which does the actual k-multiplication; this pattern just needs to not truncate it away.
 // Must start with an actual digit — a naive `[\d,]+` also matches a BARE comma (no digits at
@@ -24,7 +27,7 @@ const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|jpy|cny|rmb|chf)";
 // only") turn into a phantom price token. Requires either proper thousands-grouped digits or a
 // plain unbroken digit run.
 const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?\\s?[kK]?";
-const PRICE_PATTERN = new RegExp(`\\$\\s?${NUM}\\b` + `|\\b${CURRENCY_CODE}\\s?${NUM}\\b` + `|\\b${NUM}\\s?${CURRENCY_CODE}\\b`, "gi");
+const PRICE_PATTERN = new RegExp(`(?:${CURRENCY_SYMBOL})\\s?${NUM}\\b` + `|\\b${CURRENCY_CODE}\\s?${NUM}\\b` + `|\\b${NUM}\\s?${CURRENCY_CODE}\\b`, "gi");
 // `(?<!\$\s?)` excludes a digit run directly preceded by a $ sign (with or without a space) —
 // "$20000"/"$ 20000" is unambiguously a price, never a reference, even though bare "20000"
 // alone would otherwise fit the same shape. This is the ONE disambiguation that's actually

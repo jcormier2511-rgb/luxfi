@@ -131,3 +131,20 @@ test("confirmed SGD budgets retain their currency and maximum", () => {
     intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMax: 110000, currency: "SGD",
   });
 });
+
+test("explicit maximum and budget phrases remain exact ceilings", () => {
+  for (const text of ["WTB Patek 5712G maximum 100k", "WTB Patek 5712G budget of $100,000"]) {
+    assert.deepEqual(extractConfirmedNaturalLanguageIntent(text), {
+      intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMax: 100000, currency: "USD",
+    });
+  }
+});
+
+test("interpretQuery corrects an AI-inflated maximum to the explicit ceiling", async (t) => {
+  t.mock.method(client, "callAiJson", async () => ({
+    action: "buy", brand: "Patek", referenceFamily: "5712", maxPrice: 115000, minPrice: null,
+    location: null, dialColor: null, condition: null, hardRequirements: [], preferences: [],
+  }));
+  const result = await interpretQuery("WTB Patek 5712G maximum 100k");
+  assert.equal(result!.maxPrice, 100000);
+});

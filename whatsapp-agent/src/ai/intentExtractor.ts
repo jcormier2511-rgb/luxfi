@@ -1,6 +1,7 @@
 import { callAiJson } from "./client";
 import { config } from "../config";
 import { normalizePriceShorthand } from "../postings/normalize";
+import { SUPPORTED_CURRENCIES } from "../matching/currency";
 
 /**
  * The single structured shape every private WhatsApp message is converted into (Fi routing
@@ -94,7 +95,7 @@ reference is the reference number exactly as written (e.g. "5712", "5712G", "116
 dial and condition are read directly off the message — null if not mentioned, never guessed.
 year is a 4-digit model/production year if explicitly mentioned as a year (not a reference) — else null.
 boxPapers is true only if box and/or papers are explicitly mentioned as included, false only if explicitly mentioned as NOT included/missing, else null.
-priceMin/priceMax are numbers in the given currency, extracted ONLY from a number clearly adjacent to a currency marker (USD/EUR/GBP/$/€/£) or a "k"/"K" shorthand suffix — NEVER from a bare reference number or a bare 4-digit year. "105.000 USD" and "105,000 USD" and "$105,000" all mean 105000. "26.2k" means 26200. A single stated ceiling ("under 25k") sets priceMax only; a single stated floor sets priceMin only; a range sets both. Leave both null if no reliable price is stated — never guess a number.
+priceMin/priceMax are numbers in the given currency, extracted ONLY from a number clearly adjacent to a supported currency marker (USD/HKD/EUR/GBP/AED/CHF/CAD/SGD/JPY/CNY/RMB, including $/HK$/€/£/C$/S$/¥/CN¥) or a "k"/"K" shorthand suffix — NEVER from a bare reference number or a bare 4-digit year. "105.000 USD" and "105,000 USD" and "$105,000" all mean 105000. "26.2k" means 26200. A single stated ceiling ("under 25k") sets priceMax only; a single stated floor sets priceMin only; a range sets both. Leave both null if no reliable price is stated — never guess a number.
 currency is the 3-letter code (default "USD" if a $ sign or no currency is given but a price was found).
 location is a stated country/region/city — null if not mentioned.
 searchText is brand + model + reference, cleanly joined (e.g. "Patek Philippe 5712G") — never the raw sentence, never a leftover fragment like "to buy a patek 5712g".
@@ -117,9 +118,13 @@ function isValidIntent(value: unknown): value is Intent {
  * even in a buyer's own sentence, so a k-suffixed number immediately followed by a gold/karat
  * word is excluded.
  */
-const CURRENCY_CODE = "(?:USD|EUR|GBP)";
-const CURRENCY_SYMBOL = "[$€£]"; // $ € £
-const NUM = "[\\d,]+(?:\\.\\d+)?";
+// Derive the verifier's code list from the matching engine's real supported-currency list so
+// the primary NLU path cannot silently lag behind conversion/matching when a currency is added.
+// RMB is an accepted alias for CNY. Multi-character symbols must precede the bare symbols they
+// contain, otherwise "HK$" could be read as a generic "$" price.
+const CURRENCY_CODE = `(?:${[...SUPPORTED_CURRENCIES, "RMB"].join("|")})`;
+const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|CN¥|[$€£¥])";
+const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?";
 const NL_PRICE_PATTERN = new RegExp(
   `${CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b` + // $105,000 / $25k / €5000
     `|\\b${CURRENCY_CODE}\\s?${NUM}\\s?[kK]?\\b` + // USD 105000

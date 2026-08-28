@@ -202,3 +202,19 @@ test("normalizeText preserves SGD by code or S$ symbol", () => {
   assert.equal(normalizeText("FS Patek 5712G SGD 110,000").currency, "SGD");
   assert.equal(normalizeText("FS Patek 5712G S$110,000").currency, "SGD");
 });
+
+test("symbol-only EUR, GBP, JPY, and CNY listings retain their asking price", () => {
+  const cases = [
+    ["FS Patek 5712G €95,000", 95000, "EUR"],
+    ["FS Rolex 116500LN £80,000", 80000, "GBP"],
+    ["FS Patek 5712G ¥15,000,000", 15000000, "JPY"],
+    ["FS Patek 5712G CN¥700,000", 700000, "CNY"],
+  ] as const;
+
+  for (const [text, price, currency] of cases) {
+    const normalized = normalizeText(text);
+    assert.equal(normalized.price, price, text);
+    assert.equal(normalized.currency, currency, text);
+    assert.equal(classifyText(text), "FS", text);
+  }
+});

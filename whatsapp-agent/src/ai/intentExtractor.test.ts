@@ -151,6 +151,32 @@ test("euro and pound symbols are recognized as price markers", async (t) => {
   assert.equal(gbp!.priceUnreliable, false);
 });
 
+test("the primary intent verifier retains every supported non-USD currency", async (t) => {
+  let current = { amount: 0, currency: "USD" };
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMax: current.amount, currency: current.currency })
+  );
+
+  const cases = [
+    ["WTB Patek 5712G under HK$900,000", 900000, "HKD"],
+    ["WTB Patek 5712G under S$110,000", 110000, "SGD"],
+    ["WTB Patek 5712G under C$100,000", 100000, "CAD"],
+    ["WTB Patek 5712G under AED 400,000", 400000, "AED"],
+    ["WTB Patek 5712G under CHF 95,000", 95000, "CHF"],
+    ["WTB Patek 5712G under ¥15,000,000", 15000000, "JPY"],
+    ["WTB Patek 5712G under CN¥700,000", 700000, "CNY"],
+    ["WTB Patek 5712G under RMB 700,000", 700000, "CNY"],
+  ] as const;
+
+  for (const [text, amount, currency] of cases) {
+    current = { amount, currency };
+    const result = await extractIntent(text);
+    assert.equal(result!.intent.priceMax, amount, text);
+    assert.equal(result!.intent.currency, currency, text);
+    assert.equal(result!.priceUnreliable, false, text);
+  }
+});
+
 test("an invalid/unrecognized intent value from the model is rejected rather than trusted", async (t) => {
   t.mock.method(client, "callAiJson", async () => aiResult({ intent: "not-a-real-intent" }));
   assert.equal(await extractIntent("something ambiguous"), null);

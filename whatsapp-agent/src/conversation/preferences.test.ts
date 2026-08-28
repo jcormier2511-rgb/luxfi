@@ -53,6 +53,11 @@ test("'under 25k' still sets only a max", () => {
   assert.equal(range!.max, 25000);
 });
 
+test("'maximum' and 'budget of' are exact ceilings, not approximate targets", () => {
+  assert.deepEqual(parsePriceRange("maximum 100k"), { max: 100000 });
+  assert.deepEqual(parsePriceRange("budget of $100,000"), { max: 100000 });
+});
+
 test("'over 5000' still sets only a min", () => {
   const range = parsePriceRange("over 5000");
   assert.equal(range!.min, 5000);

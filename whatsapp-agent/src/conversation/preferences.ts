@@ -45,7 +45,7 @@ export function parsePriceRange(text: string): PriceRange | undefined {
     if (min !== undefined || max !== undefined) return { min, max };
   }
 
-  const maxOnlyMatch = normalized.match(/(?:under|up to|max|below|less than)\s*(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|jpy|cny|rmb|hk\$|c\$|s\$|cn¥|[$€£¥])?\s*([\d.,]+k?)/);
+  const maxOnlyMatch = normalized.match(/(?:under|up to|max(?:imum)?|below|less than|budget(?:\s+of)?)\s*(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|jpy|cny|rmb|hk\$|c\$|s\$|cn¥|[$€£¥])?\s*([\d.,]+k?)/);
   if (maxOnlyMatch) {
     const max = toNumber(maxOnlyMatch[1]);
     if (max !== undefined) return { max };
