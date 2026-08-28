@@ -258,6 +258,17 @@ test("the primary intent verifier preserves a correctly directed floor", async (
   assert.equal(result!.priceUnreliable, false);
 });
 
+test("the primary intent verifier binds a trailing ISO code to a symbol-prefixed range", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 80000, priceMax: 100000, currency: "CAD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G budget $80k-$100k CAD");
+  assert.equal(result!.intent.priceMin, 80000);
+  assert.equal(result!.intent.priceMax, 100000);
+  assert.equal(result!.intent.currency, "CAD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
 test("the primary intent verifier applies a suffix currency to the full range", async (t) => {
   t.mock.method(client, "callAiJson", async () =>
     aiResult({ intent: "buy", priceMin: 800000, priceMax: 900000, currency: "USD" })

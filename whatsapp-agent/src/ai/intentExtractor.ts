@@ -203,7 +203,7 @@ export function extractVerifiedPriceCurrency(text: string): string | null {
   // A single prefix/suffix currency applies to both endpoints of a range. Without this,
   // "800k-900k HKD" looks like one implicit-USD token plus one HKD token.
   const markedRangePatterns = [
-    new RegExp(`(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)\\s*${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?`, "i"),
+    new RegExp(`(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)\\s*${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?(?:\\s*\\b${CURRENCY_CODE}\\b)?`, "i"),
     new RegExp(`${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?\\s*(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)`, "i"),
   ];
   for (const pattern of markedRangePatterns) {

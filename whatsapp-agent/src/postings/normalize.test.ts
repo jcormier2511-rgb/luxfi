@@ -198,6 +198,12 @@ test("normalizeText preserves dollar-prefixed HKD and CAD symbols during ingesti
   assert.equal(cad.price, 30000);
 });
 
+test("normalizeText binds a trailing ISO code to a dollar-prefixed listing price", () => {
+  const normalized = normalizeText("FS Patek 5712G $100k CAD");
+  assert.equal(normalized.price, 100000);
+  assert.equal(normalized.currency, "CAD");
+});
+
 test("normalizeText binds currency to the price token, not an unrelated payment marker", () => {
   const normalized = normalizeText("FS Patek 5712G HK$820,000 — USD wire accepted");
   assert.equal(normalized.price, 820000);
