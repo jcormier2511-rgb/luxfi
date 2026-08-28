@@ -342,4 +342,14 @@ export async function markExtensionReminderSent(pool: Pool, postingId: string): 
   await pool.query('UPDATE postings SET extension_reminder_sent_at = now() WHERE id = $1', [postingId]);
 }
 
+/** This account's postings that have had an extension reminder sent and are still awaiting a reply. */
+export async function findPostingsAwaitingExtensionForUser(pool: Pool, canonicalUserId: string): Promise<Posting[]> {
+  const { rows } = await pool.query(
+    `SELECT * FROM postings
+     WHERE canonical_user_id = $1 AND status = 'active' AND extension_reminder_sent_at IS NOT NULL`,
+    [canonicalUserId]
+  );
+  return rows.map(rowToPosting);
+}
+
 export { rowToPosting };

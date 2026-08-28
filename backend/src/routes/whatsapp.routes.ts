@@ -1,10 +1,13 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
 import { verifyWhatsAppSignature } from '../adapters/whatsapp.client';
+import { getMessagingAdapter } from '../adapters/messaging.adapter';
 import { parseFreeTextPosting } from '../services/messageParsing.service';
 import { ingestAndProcessChatPosting } from '../services/chatIngestion.service';
 import { resolveCanonicalUserForPlatformIdentity } from '../services/canonicalUser.service';
-import { approveMatch, passMatch } from '../services/approval.service';
+import { approveMatch, passMatch, confirmCounterparty } from '../services/approval.service';
+import { acknowledgeKeepWorking } from '../services/conversation.service';
+import { extendPosting, findPostingsAwaitingExtensionForUser } from '../services/posting.service';
 
 interface WhatsAppMessage {
   from: string;
@@ -25,15 +28,57 @@ interface WhatsAppWebhookBody {
   }[];
 }
 
+const JOIN_COMMAND = /^join$/i;
+const EXTEND_COMMAND = /^extend$/i;
+
+async function handleExtendCommand(pool: Pool, canonicalUserId: string): Promise<void> {
+  const pending = await findPostingsAwaitingExtensionForUser(pool, canonicalUserId);
+  if (pending.length === 0) {
+    await getMessagingAdapter().send({
+      recipientCanonicalUserId: canonicalUserId,
+      text: "I don't see a monitor waiting on an extension right now.",
+    });
+    return;
+  }
+  for (const posting of pending) {
+    await extendPosting(pool, posting.id);
+  }
+  await getMessagingAdapter().send({
+    recipientCanonicalUserId: canonicalUserId,
+    text: `Extended! ${pending.length === 1 ? 'Your monitor' : `All ${pending.length} of your monitors`} will stay active for another 30 days.`,
+  });
+}
+
 async function handleTextMessage(
   pool: Pool,
   chatId: string,
   message: WhatsAppMessage,
   senderDisplayName?: string
 ): Promise<void> {
-  const body = message.text?.body ?? '';
+  const body = (message.text?.body ?? '').trim();
+
+  if (JOIN_COMMAND.test(body)) {
+    const { canonicalUserId } = await resolveCanonicalUserForPlatformIdentity(pool, {
+      platform: 'whatsapp',
+      platformUserId: message.from,
+      displayName: senderDisplayName,
+    });
+    await acknowledgeKeepWorking(canonicalUserId);
+    return;
+  }
+
+  if (EXTEND_COMMAND.test(body)) {
+    const { canonicalUserId } = await resolveCanonicalUserForPlatformIdentity(pool, {
+      platform: 'whatsapp',
+      platformUserId: message.from,
+      displayName: senderDisplayName,
+    });
+    await handleExtendCommand(pool, canonicalUserId);
+    return;
+  }
+
   const parsed = parseFreeTextPosting(body);
-  if (!parsed) return; // not recognizable as an FS/WTB post -- leave it alone
+  if (!parsed) return; // not recognizable as a command or an FS/WTB post -- leave it alone
 
   await ingestAndProcessChatPosting(pool, {
     sourceType: 'chat',
@@ -55,7 +100,6 @@ async function handleButtonReply(pool: Pool, message: WhatsAppMessage, senderDis
   const buttonId = message.interactive?.button_reply?.id;
   if (!buttonId) return;
   const [action, matchId] = buttonId.split(':');
-  if (!matchId) return;
 
   const { canonicalUserId } = await resolveCanonicalUserForPlatformIdentity(pool, {
     platform: 'whatsapp',
@@ -63,10 +107,29 @@ async function handleButtonReply(pool: Pool, message: WhatsAppMessage, senderDis
     displayName: senderDisplayName,
   });
 
+  if (action === 'keep-working') {
+    await acknowledgeKeepWorking(canonicalUserId);
+    return;
+  }
+
+  if (!matchId) return;
+
   if (action === 'approve') {
     await approveMatch(pool, matchId, canonicalUserId);
   } else if (action === 'pass') {
     await passMatch(pool, matchId, canonicalUserId);
+  } else if (action === 'confirm-share') {
+    await confirmCounterparty(pool, matchId, canonicalUserId, true);
+    await getMessagingAdapter().send({
+      recipientCanonicalUserId: canonicalUserId,
+      text: "Thanks -- I've shared your contact details.",
+    });
+  } else if (action === 'decline-share') {
+    await confirmCounterparty(pool, matchId, canonicalUserId, false);
+    await getMessagingAdapter().send({
+      recipientCanonicalUserId: canonicalUserId,
+      text: 'No problem -- your contact details were not shared.',
+    });
   }
 }
 

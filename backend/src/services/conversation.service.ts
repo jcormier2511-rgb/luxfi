@@ -50,9 +50,7 @@ export async function sendMonitoringAcknowledgment(canonicalUserId: string): Pro
 function conversionMessage(firstName: string, isWatchFactsMember: boolean): string {
   if (isWatchFactsMember) {
     return `Hi ${firstName}, I hope you've enjoyed having me work for you.
-Your $50/month Fi membership is included with WatchFacts. To continue approving introductions, authorize the $2 per-approved-match charge.
-
-[Keep Fi working for me]`;
+Your $50/month Fi membership is included with WatchFacts. To continue approving introductions, authorize the $2 per-approved-match charge.`;
   }
   return `Hi ${firstName}, I hope you've enjoyed having me work for you.
 I can keep monitoring the market and working on your behalf automatically.
@@ -60,9 +58,7 @@ I can keep monitoring the market and working on your behalf automatically.
 Fi Membership -- $50/month
 - $2 per approved match
 
-I'll continuously help you find buyers, find sellers, check pricing, and verify dealer reputation.
-
-[Keep Fi working for me]`;
+I'll continuously help you find buyers, find sellers, check pricing, and verify dealer reputation.`;
 }
 
 /** Sent once the account's third approval is recorded (spec section 11.4). */
@@ -76,6 +72,7 @@ export async function sendConversionMessage(
   await getMessagingAdapter().send({
     recipientCanonicalUserId: canonicalUserId,
     text: conversionMessage(firstName, isWatchFactsMember),
+    buttons: [{ label: 'Keep Fi working for me', action: 'keep-working' }],
   });
 }
 
@@ -83,6 +80,21 @@ export async function sendDeclineAcknowledgment(canonicalUserId: string): Promis
   await getMessagingAdapter().send({
     recipientCanonicalUserId: canonicalUserId,
     text: 'No problem -- I\'ll still flag matches for you, but approving one going forward requires active Fi billing. Message me "join" anytime you\'re ready.',
+  });
+}
+
+/**
+ * Acknowledges a "join" text or a "Keep Fi working for me" button click.
+ * Approval stays locked until an administrator manually enables the account
+ * (this MVP's entitlement gate -- see entitlement.service.ts); this only
+ * confirms the request was heard, it does not itself unlock anything.
+ */
+export async function acknowledgeKeepWorking(canonicalUserId: string): Promise<void> {
+  // eslint-disable-next-line no-console
+  console.log(`[audit] account ${canonicalUserId} requested to keep Fi working (awaiting admin entitlement override)`);
+  await getMessagingAdapter().send({
+    recipientCanonicalUserId: canonicalUserId,
+    text: "Got it -- I've noted that you'd like to keep going. An admin will enable billing on your account shortly, and I'll let you know the moment approvals are unlocked again.",
   });
 }
 

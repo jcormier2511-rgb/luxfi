@@ -1,5 +1,5 @@
 export interface OutboundButton {
-  label: 'Approve match' | 'Pass';
+  label: string;
   action: string;
 }
 

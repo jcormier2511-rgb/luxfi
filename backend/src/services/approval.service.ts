@@ -2,6 +2,7 @@ import { Pool, PoolClient } from 'pg';
 import { ACCOUNT_COMPLIMENTARY_APPROVAL_LIMIT, ContactMethod, MONITOR_APPROVED_MATCH_LIMIT } from '../types/domain';
 import { checkApprovalGate, ensureEntitlement, PER_APPROVAL_PRICE_USD } from './entitlement.service';
 import { sendConversionMessage } from './conversation.service';
+import { getMessagingAdapter } from '../adapters/messaging.adapter';
 
 export type ApproveOutcome =
   | { status: 'approved'; duplicate: boolean; isComplimentary: boolean }
@@ -97,6 +98,12 @@ export async function approveMatch(
       const entitlement = await ensureEntitlement(pool, approvingCanonicalUserId);
       await sendConversionMessage(pool, approvingCanonicalUserId, entitlement.watchFactsMemberVerified);
     }
+
+    // If the approver's own contact is already shareable, deliver the
+    // counterparty's contact to them immediately; otherwise ask the
+    // counterparty to confirm sharing theirs (spec 9.2/9.3).
+    await deliverConnectionIfRevealed(pool, matchId, approvingCanonicalUserId);
+    await requestCounterpartyConfirmationIfNeeded(pool, matchId, approvingCanonicalUserId);
 
     return { status: 'approved', duplicate: false, isComplimentary: gate.isComplimentary };
   } catch (err) {
@@ -217,6 +224,105 @@ export async function confirmCounterparty(
   } finally {
     client.release();
   }
+
+  if (!confirmed) return;
+  // Confirming makes this counterparty's contact revealable -- deliver it to
+  // whichever approver(s) were waiting on it.
+  const { rows: approverRows } = await pool.query(
+    'SELECT approving_canonical_user_id FROM approvals WHERE match_id = $1 AND approving_canonical_user_id != $2',
+    [matchId, counterpartyCanonicalUserId]
+  );
+  for (const row of approverRows) {
+    await deliverConnectionIfRevealed(pool, matchId, row.approving_canonical_user_id);
+  }
+}
+
+/**
+ * Sends `recipientCanonicalUserId` the counterparty's contact details if
+ * disclosure is authorized and this direction hasn't been delivered before
+ * (idempotent via introductions.<side>_party_contact_delivered_at). Called
+ * after both approval and counterparty confirmation, since either event can
+ * be the one that finally makes a match's contact info revealable.
+ */
+async function deliverConnectionIfRevealed(
+  pool: Pool,
+  matchId: string,
+  recipientCanonicalUserId: string
+): Promise<void> {
+  const contact = await getRevealedContact(pool, matchId, recipientCanonicalUserId);
+  if (!contact || contact.length === 0) return;
+
+  const { rows: matchRows } = await pool.query('SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id = $1', [matchId]);
+  if (matchRows.length === 0) return;
+  const { rows: fsOwnerRows } = await pool.query('SELECT canonical_user_id FROM postings WHERE id = $1', [
+    matchRows[0].fs_posting_id,
+  ]);
+  const recipientIsFsOwner = fsOwnerRows[0]?.canonical_user_id === recipientCanonicalUserId;
+  const deliveryColumn = recipientIsFsOwner ? 'fs_party_contact_delivered_at' : 'wtb_party_contact_delivered_at';
+
+  const claimed = await pool.query(
+    `UPDATE introductions SET ${deliveryColumn} = now(), updated_at = now()
+     WHERE match_id = $1 AND ${deliveryColumn} IS NULL
+     RETURNING id`,
+    [matchId]
+  );
+  if (claimed.rows.length === 0) return; // already delivered to this side before
+
+  const lines = contact.map((c) => `${c.type}: ${c.value}`);
+  await getMessagingAdapter().send({
+    recipientCanonicalUserId,
+    text: `You're connected! Here's how to reach them:\n${lines.join('\n')}`,
+  });
+}
+
+/**
+ * Asks the counterparty to authorize sharing their contact details, if
+ * needed -- their contact isn't already marked shareable and they haven't
+ * been asked for this match before (spec 9.3). Idempotent: the placeholder
+ * row insert is the idempotency key, so a retried/duplicate approval or a
+ * reconciliation pass never sends the request twice.
+ */
+async function requestCounterpartyConfirmationIfNeeded(
+  pool: Pool,
+  matchId: string,
+  approvingCanonicalUserId: string
+): Promise<void> {
+  const { rows: matchRows } = await pool.query('SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id = $1', [
+    matchId,
+  ]);
+  if (matchRows.length === 0) return;
+
+  const { rows: postingRows } = await pool.query('SELECT * FROM postings WHERE id = ANY($1)', [
+    [matchRows[0].fs_posting_id, matchRows[0].wtb_posting_id],
+  ]);
+  const fsPosting = postingRows.find((r) => r.id === matchRows[0].fs_posting_id);
+  const wtbPosting = postingRows.find((r) => r.id === matchRows[0].wtb_posting_id);
+  if (!fsPosting || !wtbPosting) return;
+
+  const approverIsFsOwner = approvingCanonicalUserId === fsPosting.canonical_user_id;
+  const counterpartyPosting = approverIsFsOwner ? wtbPosting : fsPosting;
+  const counterpartyUserId = counterpartyPosting.canonical_user_id;
+
+  const alreadyAuthorized = (counterpartyPosting.contact_methods ?? []).some((m: ContactMethod) => m.authorizedForSharing);
+  if (alreadyAuthorized) return;
+
+  const inserted = await pool.query(
+    `INSERT INTO counterparty_confirmations (match_id, counterparty_canonical_user_id, confirmed)
+     VALUES ($1, $2, false)
+     ON CONFLICT (match_id, counterparty_canonical_user_id) DO NOTHING
+     RETURNING id`,
+    [matchId, counterpartyUserId]
+  );
+  if (inserted.rows.length === 0) return; // already asked (or already answered) before
+
+  await getMessagingAdapter().send({
+    recipientCanonicalUserId: counterpartyUserId,
+    text: 'Someone approved a match on your listing and would like to connect. Share your contact details with them?',
+    buttons: [
+      { label: 'Share my contact', action: `confirm-share:${matchId}` },
+      { label: 'No thanks', action: `decline-share:${matchId}` },
+    ],
+  });
 }
 
 async function syncIntroduction(client: PoolClient, matchId: string): Promise<void> {
