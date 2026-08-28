@@ -4,6 +4,7 @@ import { enrichListingText, contentHash } from "../ai/enrichment";
 import { getStoredAiHashes } from "./inventoryDb";
 import type { UpsertRow } from "./inventoryDb";
 import { ListingEnrichment } from "../ai/types";
+import { hasMultipleDistinctPrices } from "../postings/normalize";
 
 export interface EnrichmentOutcome {
   /** The rows to actually sync — unchanged content is passed through untouched; changed
@@ -49,14 +50,21 @@ export async function enrichAndSplitListings(rows: UpsertRow[], source = "WF"): 
   let aiCallsThisRun = 0;
 
   for (const row of rows) {
-    // Already has a real structured reference — nothing for AI to add, and calling it anyway
-    // would multiply cost across the entire feed for zero benefit.
-    if (row.ref) {
+    const text = row.description || row.item;
+
+    // A structured reference alone doesn't prove this row is actually ONE watch — the
+    // deterministic extractor that set it (postings/normalize.ts's extractReference) just grabs
+    // the FIRST reference-shaped token in the text, which is exactly how a multi-item dealer
+    // price-list dump (a real reported bug: a Hong Kong dealer's whole price sheet) can end up
+    // with a real-looking `ref` despite describing dozens of different watches at different
+    // prices. hasMultipleDistinctPrices is a free, already-computed check (no AI call) — only
+    // skip the "already has a ref" fast path when the text ALSO doesn't look like a bundle, so
+    // the vast majority of genuinely single-item listings still cost nothing extra.
+    if (row.ref && !hasMultipleDistinctPrices(text)) {
       outputRows.push(row);
       continue;
     }
 
-    const text = row.description || row.item;
     const hash = contentHash(text);
     const key = `${row.type}:${row.id}`;
 

@@ -71,6 +71,27 @@ test("required regression: a row that already has a real reference never trigger
   assert.equal(spy.mock.callCount(), 0, "AI must never be called just to confirm a row is already fine");
 });
 
+test("required regression: a row WITH an existing ref still goes to AI when its own text is a multi-price bundle dump — a ref alone doesn't prove it's one watch", async (t) => {
+  await inventoryDb._resetDbForTests();
+  // Mirrors the live reported bug: extractReference grabbed the FIRST reference-shaped token
+  // ("116500LN") from a Hong Kong dealer's whole price sheet, so the row already has a `ref` —
+  // but hasMultipleDistinctPrices still recognizes the text as a bundle, so this must NOT be
+  // fast-pathed past AI just because a ref field happens to be set.
+  const spy = t.mock.method(enrichmentModule, "enrichListingText", async () => [
+    enrichedWatch({ referenceFamily: "116500LN", condition: "Used", price: 210000, currency: "HKD", evidence: "116500ln white 2011 hkd210k" }),
+    enrichedWatch({ referenceFamily: "116520", condition: "Used", price: 167000, currency: "HKD", evidence: "116520 black 2010 hkd167k" }),
+  ]);
+  const rows = [
+    row("hk-dump", {
+      ref: "116500LN",
+      description: "116500ln white 2011 hkd210k\n116520 black 2010 hkd167k",
+    }),
+  ];
+  const outcome = await enrichAndSplitListings(rows);
+  assert.equal(spy.mock.callCount(), 1, "a ref-having row that looks like a bundle must still be sent to AI");
+  assert.equal(outcome.rows.length, 2, "must split into one row per watch AI found evidence for");
+});
+
 test("required regression: an unstructured multi-watch blast with no ref is split into one row per watch AI found evidence for", async (t) => {
   await inventoryDb._resetDbForTests();
   t.mock.method(enrichmentModule, "enrichListingText", async () => [
