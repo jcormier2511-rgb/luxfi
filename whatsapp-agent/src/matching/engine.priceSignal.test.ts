@@ -13,8 +13,10 @@ process.env.WEBHOOK_TOKEN = "test";
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const engine = require("./engine") as typeof import("./engine");
+const currency = require("./currency") as typeof import("./currency");
 const { upsertListings, _resetDbForTests, _closePoolForTests } = inventoryDb;
 const { attachPriceSignals, formatMatchCard } = engine;
+const { setExchangeRateProviderForTests } = currency;
 
 after(async () => {
   await _closePoolForTests();
@@ -73,4 +75,23 @@ test("formatMatchCard appends the price signal inline on the price line when pre
 
   const withoutSignal = formatMatchCard(listing, 0, "buy");
   assert.doesNotMatch(withoutSignal, /vs\. comps/);
+});
+
+test("attachPriceSignals converts foreign results and DB comps before comparison", async (t) => {
+  t.after(() => setExchangeRateProviderForTests());
+  setExchangeRateProviderForTests(async (code) => code === "HKD" ? 0.128 : null);
+  await _resetDbForTests();
+  await upsertListings(
+    [
+      row("hkd-target", { price: "HKD 200000" }),
+      row("usd-comp-1", { price: "25000" }),
+      row("usd-comp-2", { price: "26000" }),
+    ],
+    new Date().toISOString()
+  );
+
+  const target = { listing: { ...row("hkd-target", { price: "HKD 200000" }), source: "WF" } };
+  const [signaled] = await attachPriceSignals([target]);
+  assert.equal(signaled.listing.priceUsd, 25600);
+  assert.equal(signaled.priceSignal, "Fair");
 });

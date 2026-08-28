@@ -164,3 +164,18 @@ test("normalizePriceShorthand handles a currency-code-prefixed amount with no $ 
   assert.equal(normalizePriceShorthand("HKD 233k"), 233000);
   assert.equal(normalizePriceShorthand("usd25000"), 25000);
 });
+
+test("normalizeText preserves dollar-prefixed HKD and CAD symbols during ingestion", () => {
+  const hkd = normalizeText("FS Patek 5712G HK$ 820,000");
+  assert.equal(hkd.currency, "HKD");
+  assert.equal(hkd.price, 820000);
+
+  const cad = normalizeText("FS Rolex 116500LN C$ 30,000");
+  assert.equal(cad.currency, "CAD");
+  assert.equal(cad.price, 30000);
+});
+
+test("normalizeText preserves SGD by code or S$ symbol", () => {
+  assert.equal(normalizeText("FS Patek 5712G SGD 110,000").currency, "SGD");
+  assert.equal(normalizeText("FS Patek 5712G S$110,000").currency, "SGD");
+});

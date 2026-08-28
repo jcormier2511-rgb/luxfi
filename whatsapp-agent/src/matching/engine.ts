@@ -263,10 +263,14 @@ export interface MatchResult {
  */
 export async function attachPriceSignals(results: MatchResult[]): Promise<MatchResult[]> {
   if (!results.some((r) => r.listing.type === "FS")) return results;
-  const comparablePool = await getActiveListings("FS");
-  return results.map((r) =>
-    r.listing.type === "FS" ? { ...r, priceSignal: computePriceSignal(r.listing, comparablePool) ?? undefined } : r
-  );
+  const normalizedResults = (await normalizePrices(results.map((r) => r.listing))).listings;
+  const comparablePool = (await normalizePrices(await getActiveListings("FS"))).listings;
+  return results.map((r, index) => {
+    const listing = normalizedResults[index];
+    return listing.type === "FS"
+      ? { ...r, listing, priceSignal: computePriceSignal(listing, comparablePool) ?? undefined }
+      : { ...r, listing };
+  });
 }
 
 /**

@@ -188,8 +188,17 @@ export function referencesMatch(a: string, b: string): boolean {
 export function normalizeText(text: string): NormalizedFields {
   const lower = text.toLowerCase();
   const brand = BRAND_LIST.find((b) => lower.includes(b)) ?? "";
-  const namedCurrency = text.match(/\b(USD|CAD|HKD|EUR|GBP|AED|JPY|CNY|RMB|CHF)\b/i)?.[1].toUpperCase();
-  const currency = namedCurrency === "RMB" ? "CNY" : namedCurrency ?? (/€/.test(text) ? "EUR" : /£/.test(text) ? "GBP" : /¥/.test(text) ? "JPY" : "USD");
+  const namedCurrency = text.match(/\b(USD|CAD|HKD|EUR|GBP|AED|SGD|JPY|CNY|RMB|CHF)\b/i)?.[1].toUpperCase();
+  const currency = namedCurrency === "RMB"
+    ? "CNY"
+    : namedCurrency ?? (/HK\$/i.test(text) ? "HKD"
+      : /C\$/i.test(text) ? "CAD"
+      : /S\$/i.test(text) ? "SGD"
+      : /CN¥/i.test(text) ? "CNY"
+      : /€/.test(text) ? "EUR"
+      : /£/.test(text) ? "GBP"
+      : /¥/.test(text) ? "JPY"
+      : "USD");
   return {
     brand,
     reference: extractReference(text) ?? "",

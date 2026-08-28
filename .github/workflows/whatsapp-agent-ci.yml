@@ -68,6 +68,9 @@ jobs:
           src/ai/queryInterpreter.test.ts
           src/matching/currency.test.ts
           src/matching/engine.currencyConversion.test.ts
+          src/matching/priceSignal.test.ts
+          src/matching/engine.priceSignal.test.ts
+          src/postings/normalize.test.ts
           src/server.webhookMatching.test.ts
 
       - name: Run complete test suite

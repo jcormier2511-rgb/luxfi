@@ -107,3 +107,27 @@ test("toSearchPreferences leaves a field unset (never guesses) when the model di
   });
   assert.deepEqual(prefs, {});
 });
+
+test("reference-only requests never turn the watch reference into a price ceiling", () => {
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G"), {
+    intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMax: null, currency: null,
+  });
+});
+
+test("a shorthand budget is never promoted to the watch reference", () => {
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek Nautilus under $110k"), {
+    intent: "buy", brand: "Patek Philippe", reference: null, priceMax: 110000, currency: "USD",
+  });
+});
+
+test("reference and shorthand price remain distinct when both are present", () => {
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("I need a Daytona 116500 under 25k"), {
+    intent: "buy", brand: null, reference: "116500", priceMax: 25000, currency: "USD",
+  });
+});
+
+test("confirmed SGD budgets retain their currency and maximum", () => {
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G under SGD 110,000"), {
+    intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMax: 110000, currency: "SGD",
+  });
+});

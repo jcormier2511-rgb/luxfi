@@ -8,6 +8,7 @@ test("recognizes every required currency and preserves grouped amounts", () => {
   const examples = [
     ["$110,000", "USD"], ["HKD 110,000", "HKD"], ["€110,000", "EUR"], ["£110,000", "GBP"],
     ["AED 110,000", "AED"], ["CHF 110,000", "CHF"], ["CAD 110,000", "CAD"],
+    ["SGD 110,000", "SGD"], ["S$110,000", "SGD"],
     ["JPY 110,000", "JPY"], ["CNY 110,000", "CNY"], ["RMB 110,000", "CNY"],
   ] as const;
   for (const [raw, currency] of examples) {
@@ -35,4 +36,5 @@ test("an unavailable conversion returns null rather than equating unlike currenc
 test("displays original and converted amounts with symbols and grouping", () => {
   assert.equal(formatOriginalAndUsd({ amount: 820000, currency: "HKD" }, 104960), "HK$820,000 (USD $104,960)");
   assert.equal(formatOriginalAndUsd({ amount: 105000, currency: "USD" }, 105000), "$105,000 (USD $105,000)");
+  assert.equal(formatOriginalAndUsd({ amount: 110000, currency: "SGD" }, 82500), "S$110,000 (USD $82,500)");
 });

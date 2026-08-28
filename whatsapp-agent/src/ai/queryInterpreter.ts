@@ -3,6 +3,7 @@ import { InterpretedQuery } from "./types";
 import { SearchPreferences } from "../types";
 import { parsePriceRange } from "../conversation/preferences";
 import { detectCurrency } from "../matching/currency";
+import { extractReference } from "../postings/normalize";
 
 export interface ConfirmedNaturalLanguageIntent {
   intent: "buy" | "sell" | null;
@@ -10,6 +11,29 @@ export interface ConfirmedNaturalLanguageIntent {
   reference: string | null;
   priceMax: number | null;
   currency: string | null;
+}
+
+const CURRENCY_MARKER = String.raw`(?:HK\$|C\$|S\$|CN¥|[$€£¥]|\b(?:USD|HKD|EUR|GBP|AED|CHF|CAD|SGD|JPY|CNY|RMB)\b)`;
+const PRICE_NUMBER = String.raw`[\d][\d.,]*(?:\s*[kK]\b)?`;
+const PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|over|at least|min(?:imum)?|above|more than|budget(?:\s+of)?|around|about)\b`;
+
+function containsExplicitPriceExpression(text: string): boolean {
+  return new RegExp(CURRENCY_MARKER, "i").test(text)
+    || new RegExp(`${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i").test(text)
+    || /\b\d{1,3}(?:[.,]\d+)?\s*k\b/i.test(text)
+    || /\d[\d.,]*\s*(?:-|to|–)\s*\d/i.test(text);
+}
+
+function removeExplicitPriceExpressions(text: string): string {
+  const currencyFirst = new RegExp(`${CURRENCY_MARKER}\\s*${PRICE_NUMBER}(?![A-Z0-9])`, "gi");
+  const currencyLast = new RegExp(`${PRICE_NUMBER}(?![A-Z0-9])\\s*${CURRENCY_MARKER}`, "gi");
+  const compared = new RegExp(`${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "gi");
+  return text
+    .replace(currencyFirst, " ")
+    .replace(currencyLast, " ")
+    .replace(compared, " ")
+    .replace(/\b\d{1,3}(?:[.,]\d+)?\s*k\b/gi, " ")
+    .replace(/\b\d[\d.,]*\s*(?:-|to|–)\s*\d[\d.,]*(?:\s*k\b)?/gi, " ");
 }
 
 /**
@@ -24,8 +48,8 @@ export function extractConfirmedNaturalLanguageIntent(text: string): ConfirmedNa
       ? "buy"
       : null;
   const brand = /\bpatek(?:\s+philippe)?\b/i.test(text) ? "Patek Philippe" : null;
-  const reference = text.match(/\b\d{3,}[A-Z][A-Z0-9-]*\b/i)?.[0].toUpperCase() ?? null;
-  const priceMax = parsePriceRange(text)?.max ?? null;
+  const reference = extractReference(removeExplicitPriceExpressions(text));
+  const priceMax = containsExplicitPriceExpression(text) ? parsePriceRange(text)?.max ?? null : null;
   const currency = priceMax === null ? null : detectCurrency(text);
   return { intent, brand, reference, priceMax, currency };
 }
