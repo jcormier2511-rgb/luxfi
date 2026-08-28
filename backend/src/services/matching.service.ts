@@ -228,17 +228,46 @@ export async function runMatchingForPosting(
   }
 }
 
+export interface ReconciliationStatus {
+  lastRunAt: Date | null;
+  lastRunError: string | null;
+  lastPostingsScanned: number | null;
+}
+
+// In-memory, reset on restart -- this is operational/observability state for
+// the admin status endpoint (spec section 14: "Last matching/reconciliation
+// run and error"), not data that needs to survive a redeploy.
+let reconciliationStatus: ReconciliationStatus = {
+  lastRunAt: null,
+  lastRunError: null,
+  lastPostingsScanned: null,
+};
+
+export function getReconciliationStatus(): ReconciliationStatus {
+  return reconciliationStatus;
+}
+
 /**
  * Recovers matches/notifications missed due to a webhook, API, or process
  * failure (spec section 4.3, acceptance test 16). Safe to run repeatedly:
  * matching and notification creation are both idempotent.
  */
 export async function reconcileMatches(pool: Pool): Promise<{ postingsScanned: number }> {
-  const { rows } = await pool.query(
-    `SELECT id FROM postings WHERE status = 'active' AND expires_at > now()`
-  );
-  for (const row of rows) {
-    await runMatchingForPosting(pool, row.id, false);
+  try {
+    const { rows } = await pool.query(
+      `SELECT id FROM postings WHERE status = 'active' AND expires_at > now()`
+    );
+    for (const row of rows) {
+      await runMatchingForPosting(pool, row.id, false);
+    }
+    reconciliationStatus = { lastRunAt: new Date(), lastRunError: null, lastPostingsScanned: rows.length };
+    return { postingsScanned: rows.length };
+  } catch (err) {
+    reconciliationStatus = {
+      lastRunAt: new Date(),
+      lastRunError: (err as Error).message,
+      lastPostingsScanned: reconciliationStatus.lastPostingsScanned,
+    };
+    throw err;
   }
-  return { postingsScanned: rows.length };
 }

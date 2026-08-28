@@ -41,6 +41,31 @@ export async function runMigrations(pool: Pool): Promise<string[]> {
   return newlyApplied;
 }
 
+export interface MigrationStatus {
+  appliedCount: number;
+  pendingCount: number;
+  lastAppliedId: string | null;
+  lastAppliedAt: Date | null;
+}
+
+/**
+ * Migration status for the admin visibility endpoint (spec section 14:
+ * "Database connectivity/migration status without exposing secrets").
+ * Never includes connection strings or credentials -- only counts/ids.
+ */
+export async function getMigrationStatus(pool: Pool): Promise<MigrationStatus> {
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql'));
+  const { rows } = await pool.query<{ id: string; applied_at: Date }>(
+    'SELECT id, applied_at FROM schema_migrations ORDER BY applied_at DESC'
+  );
+  return {
+    appliedCount: rows.length,
+    pendingCount: Math.max(0, files.length - rows.length),
+    lastAppliedId: rows[0]?.id ?? null,
+    lastAppliedAt: rows[0]?.applied_at ?? null,
+  };
+}
+
 if (require.main === module) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   require('dotenv').config();

@@ -1,5 +1,7 @@
 import { Pool } from 'pg';
 import { getSyncStatus } from './sync.service';
+import { getReconciliationStatus } from './matching.service';
+import { getMigrationStatus, MigrationStatus } from '../db/migrate';
 
 export interface AdminStatus {
   sync: Record<string, unknown>[];
@@ -10,7 +12,9 @@ export interface AdminStatus {
   notificationsSent: number;
   notificationsFailed: number;
   lastReconciliationRunAt: string | null;
+  lastReconciliationError: string | null;
   databaseOk: boolean;
+  migrations: MigrationStatus | null;
 }
 
 /**
@@ -19,7 +23,7 @@ export interface AdminStatus {
  * timestamps.
  */
 export async function getAdminStatus(pool: Pool): Promise<AdminStatus> {
-  const [sync, chatFs, chatWtb, monitors, matches, notifOk, notifFail, dbCheck] = await Promise.all([
+  const [sync, chatFs, chatWtb, monitors, matches, notifOk, notifFail, dbCheck, migrations] = await Promise.all([
     getSyncStatus(pool),
     pool.query(
       `SELECT COUNT(*)::int AS c FROM postings WHERE source_type = 'chat' AND posting_type = 'FS' AND status = 'active'`
@@ -32,7 +36,10 @@ export async function getAdminStatus(pool: Pool): Promise<AdminStatus> {
     pool.query(`SELECT COUNT(*)::int AS c FROM notifications WHERE status = 'sent'`),
     pool.query(`SELECT COUNT(*)::int AS c FROM notifications WHERE status = 'failed'`),
     pool.query('SELECT 1').then(() => true).catch(() => false),
+    getMigrationStatus(pool).catch(() => null),
   ]);
+
+  const reconciliation = getReconciliationStatus();
 
   return {
     sync,
@@ -42,7 +49,9 @@ export async function getAdminStatus(pool: Pool): Promise<AdminStatus> {
     totalActiveMatches: matches.rows[0].c,
     notificationsSent: notifOk.rows[0].c,
     notificationsFailed: notifFail.rows[0].c,
-    lastReconciliationRunAt: null,
+    lastReconciliationRunAt: reconciliation.lastRunAt ? reconciliation.lastRunAt.toISOString() : null,
+    lastReconciliationError: reconciliation.lastRunError,
     databaseOk: dbCheck,
+    migrations,
   };
 }
