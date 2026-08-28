@@ -1,6 +1,7 @@
 import { config, isAiMatchingEnabledForPhone } from "../config";
 import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences } from "../types";
-import { findMatchesHybrid, formatMatchCard, formatMatchApproved } from "../matching/engine";
+import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals } from "../matching/engine";
+import { PriceSignal } from "../matching/priceSignal";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
@@ -85,18 +86,26 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
     return;
   }
 
+  // Comps-based price signal (Attractive/Fair/High vs. other active listings for the same
+  // reference) — see matching/priceSignal.ts. FS results only; a no-op fetch when there's
+  // nothing to signal.
+  const signaled = await attachPriceSignals(results);
+
   // Confirms each listing's detailUrl actually resolves before it's ever sent in a card —
   // a constructed WatchFacts URL isn't guaranteed to be a valid live page (wrong id, expired
   // listing, site-side error). An unreachable URL is dropped rather than sent broken; matching
   // itself (and the listing's own contactPhone) is completely unaffected either way.
-  const validated: { listing: InventoryListing; explanation?: string }[] = await Promise.all(
-    results.map(async ({ listing, explanation }) => ({
+  const validated: { listing: InventoryListing; explanation?: string; priceSignal?: PriceSignal }[] = await Promise.all(
+    signaled.map(async ({ listing, explanation, priceSignal }) => ({
       listing: { ...listing, detailUrl: await getValidatedListingUrl(listing.detailUrl) },
       explanation,
+      priceSignal,
     }))
   );
 
-  validated.forEach(({ listing, explanation }, i) => messages.push(formatMatchCard(listing, i, request.action, explanation)));
+  validated.forEach(({ listing, explanation, priceSignal }, i) =>
+    messages.push(formatMatchCard(listing, i, request.action, explanation, priceSignal))
+  );
   messages.push('Reply "approve <number>" to connect, or "pass <number>" to skip one.');
   state.pendingMatches = { request, matches: validated.map((r) => r.listing), decisions: validated.map(() => "pending") };
 }

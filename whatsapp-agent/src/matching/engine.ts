@@ -4,6 +4,7 @@ import { normalizeReference, extractReference, referencesMatch, normalizePriceSh
 import { isAiMatchingEnabledForPhone } from "../config";
 import { interpretQuery } from "../ai/queryInterpreter";
 import { rerankCandidates } from "../ai/rerank";
+import { computePriceSignal, PriceSignal } from "./priceSignal";
 
 // Shares extractReference/REFERENCE_PATTERN with postings/normalize.ts (v4) — one reference-
 // extraction rule for both, not two hand-synced copies. A reference number in the free-text
@@ -214,6 +215,22 @@ export interface MatchResult {
   listing: InventoryListing;
   /** Set only on a hybrid/AI-assisted pick — an explanation grounded in that listing's own text. */
   explanation?: string;
+  /** Set by attachPriceSignals (called from flow.ts) — see priceSignal.ts. FS results only. */
+  priceSignal?: PriceSignal;
+}
+
+/**
+ * Attaches a comps-based price signal (see priceSignal.ts) to each FS result. Fetches the
+ * active-FS-listings comp pool once per call (not once per result) — a no-op, no extra query,
+ * when there's no FS result to signal. WTB results are left unsignaled: comps here are other
+ * dealers' asking prices, which isn't the right comparison for a buyer's stated max bid.
+ */
+export async function attachPriceSignals(results: MatchResult[]): Promise<MatchResult[]> {
+  if (!results.some((r) => r.listing.type === "FS")) return results;
+  const comparablePool = await getActiveListings("FS");
+  return results.map((r) =>
+    r.listing.type === "FS" ? { ...r, priceSignal: computePriceSignal(r.listing, comparablePool) ?? undefined } : r
+  );
 }
 
 /**
@@ -325,15 +342,23 @@ function watchName(listing: InventoryListing): string {
  * Fi Conversation Flow Spec (v3) §2 Match Card — counterparty name and watch details are
  * shown up front (no separate anonymized/reveal step); "approve"/"pass" is what's metered
  * against the trial, and approving is what additionally surfaces the phone number.
- * "Fi Intelligence" (dealer reputation, price trend, market range, authenticity) is omitted
- * — no data source for any of that exists in the pipeline yet.
+ * "Fi Intelligence" (dealer reputation, market range, authenticity) is still omitted — no
+ * data source for those exists in the pipeline yet. The price signal (Attractive/Fair/High,
+ * see priceSignal.ts) is the one piece that now does: comps come from other active WatchFacts
+ * FS listings for the same reference already in this app's own inventory, no external source.
  */
 function sourceLabel(listing: InventoryListing): string {
   if (listing.source === "WF") return "WatchFacts";
   return listing.source || "Unknown";
 }
 
-export function formatMatchCard(listing: InventoryListing, index: number, action: ItemRequest["action"], explanation?: string): string {
+export function formatMatchCard(
+  listing: InventoryListing,
+  index: number,
+  action: ItemRequest["action"],
+  explanation?: string,
+  priceSignal?: PriceSignal
+): string {
   const roleLabel = action === "buy" ? "Seller" : "Buyer";
   const priceLabel = action === "buy" ? "Asking" : "Bid";
   const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
@@ -342,7 +367,7 @@ export function formatMatchCard(listing: InventoryListing, index: number, action
     `Potential Match #${index + 1}`,
     `${roleLabel}: ${listing.contactName || "Unnamed"}`,
     `Watch: ${watchLine}`,
-    `${priceLabel}: ${priceText}`,
+    `${priceLabel}: ${priceText}${priceSignal ? ` (${priceSignal} vs. comps)` : ""}`,
     `Location: ${listing.location || "Not specified"}`,
     `Source: ${sourceLabel(listing)}`,
     // Always present, distinct from the normalized "Watch:" title above — the verbatim
