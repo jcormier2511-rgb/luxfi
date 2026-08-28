@@ -17,11 +17,20 @@ const CURRENCY_MARKER = String.raw`(?:HK\$|C\$|S\$|CN¥|[$€£¥]|\b(?:USD|HKD|
 const PRICE_NUMBER = String.raw`[\d][\d.,]*(?:\s*[kK]\b)?`;
 const PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|over|at least|min(?:imum)?|above|more than|budget(?:\s+of)?|around|about)\b`;
 
-function containsExplicitPriceExpression(text: string): boolean {
-  return new RegExp(CURRENCY_MARKER, "i").test(text)
-    || new RegExp(`${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i").test(text)
-    || /\b\d{1,3}(?:[.,]\d+)?\s*k\b/i.test(text)
-    || /\d[\d.,]*\s*(?:-|to|–)\s*\d/i.test(text);
+/** Returns only the explicit price-bearing substring, never an earlier watch reference. */
+function extractExplicitPriceExpression(text: string): string | null {
+  const patterns = [
+    new RegExp(`${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
+    new RegExp(`(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])\\s*(?:-|to|–)\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
+    new RegExp(`${CURRENCY_MARKER}\\s*${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
+    new RegExp(`${PRICE_NUMBER}(?![A-Z0-9])\\s*${CURRENCY_MARKER}`, "i"),
+    /\b\d{1,3}(?:[.,]\d+)?\s*k\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[0];
+  }
+  return null;
 }
 
 function removeExplicitPriceExpressions(text: string): string {
@@ -42,14 +51,17 @@ function removeExplicitPriceExpressions(text: string): string {
  * to $110). This also provides one inspectable representation of the fields the webhook uses.
  */
 export function extractConfirmedNaturalLanguageIntent(text: string): ConfirmedNaturalLanguageIntent {
-  const intent = /\b(sell|selling|fs|for sale|wts)\b/i.test(text)
-    ? "sell"
-    : /\b(buy|buying|looking for|want|need|wtb|iso)\b/i.test(text)
-      ? "buy"
+  // Explicit buyer language wins when seller-oriented words merely describe the desired item
+  // ("looking to buy ... that's for sale"), matching the deterministic posting classifier.
+  const intent = /\b(buy|buying|looking for|want|need|wtb|iso)\b/i.test(text)
+    ? "buy"
+    : /\b(sell|selling|fs|for sale|wts)\b/i.test(text)
+      ? "sell"
       : null;
   const brand = /\bpatek(?:\s+philippe)?\b/i.test(text) ? "Patek Philippe" : null;
   const reference = extractReference(removeExplicitPriceExpressions(text));
-  const priceMax = containsExplicitPriceExpression(text) ? parsePriceRange(text)?.max ?? null : null;
+  const priceExpression = extractExplicitPriceExpression(text);
+  const priceMax = priceExpression ? parsePriceRange(priceExpression)?.max ?? null : null;
   const currency = priceMax === null ? null : detectCurrency(text);
   return { intent, brand, reference, priceMax, currency };
 }

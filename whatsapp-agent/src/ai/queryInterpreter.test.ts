@@ -148,3 +148,20 @@ test("interpretQuery corrects an AI-inflated maximum to the explicit ceiling", a
   const result = await interpretQuery("WTB Patek 5712G maximum 100k");
   assert.equal(result!.maxPrice, 100000);
 });
+
+test("a marked price is parsed instead of the earlier watch reference", () => {
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G HKD 900,000"), {
+    intent: "buy",
+    brand: "Patek Philippe",
+    reference: "5712G",
+    priceMax: Math.round(900000 * 1.15),
+    currency: "HKD",
+  });
+});
+
+test("explicit buyer language wins when 'for sale' only describes the desired watch", () => {
+  assert.equal(
+    extractConfirmedNaturalLanguageIntent("Looking to buy a Patek 5712G that's for sale").intent,
+    "buy"
+  );
+});
