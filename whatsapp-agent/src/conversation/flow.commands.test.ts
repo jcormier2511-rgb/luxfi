@@ -93,3 +93,47 @@ test('"cancel" with nothing pending says so rather than pretending something was
   const result = await handleIncomingMessage("19991110005", "cancel");
   assert.match(result.messages[0], /nothing pending to cancel/i);
 });
+
+test('required (live-reported bug): after the only match is already approved, "hi" gets a personalized greeting, not the stale approve/pass reminder', async () => {
+  const phone = "19991110006";
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("hi-1")], new Date().toISOString());
+
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  const approve = await handleIncomingMessage(phone, "approve 1");
+  assert.match(approve.messages.join("\n"), /^Approved #1/);
+
+  const hiResult = await handleIncomingMessage(phone, "hi", { phone, name: "John Smith", tier: "A" });
+  assert.match(hiResult.messages[0], /^Hi John, how can I help you today\?$/);
+  assert.doesNotMatch(hiResult.messages[0], /approve <number>/i, "must never show the stale reminder once nothing is left to decide");
+});
+
+test('required (live-reported bug): "Photos2" and "approve1" (no space before the number) are recognized the same as with a space', async () => {
+  const phone = "19991110007";
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings(
+    [fsRow("nospace-1", { contactPhone: "10000000001" }), fsRow("nospace-2", { contactPhone: "10000000002" })],
+    new Date().toISOString()
+  );
+
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  const search = await handleIncomingMessage(phone, "any");
+  assert.equal(search.state.pendingMatches!.matches.length, 2, "setup: two candidates must be shown");
+
+  const photosNoSpace = await handleIncomingMessage(phone, "Photos2");
+  assert.match(photosNoSpace.messages.join("\n"), /Photo request sent for #2/, '"Photos2" must resolve to match #2, not fall through to general chat');
+
+  const approveNoSpace = await handleIncomingMessage(phone, "approve1");
+  assert.match(approveNoSpace.messages.join("\n"), /^Approved #1/, '"approve1" must resolve to match #1');
+});

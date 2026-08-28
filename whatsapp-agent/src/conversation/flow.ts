@@ -125,15 +125,21 @@ interface DecisionCommand {
   index: number | null;
 }
 
+// `(?:\b|(?=\d))` instead of a plain `\b` — a real reported miss: "Photos2" (no space before
+// the number) has NO word boundary between "s" and "2" (both are word characters), so a plain
+// `\b` never matches it at all and the whole message silently fell through to general chat.
+// The lookahead alternative accepts a digit run immediately after the word with no boundary
+// needed, while still requiring an actual boundary (not just any following text) otherwise —
+// "approve1"/"pass1"/"photos2" now all work the same as "approve 1"/"pass 1"/"photos 2".
 function parseDecisionCommand(text: string): DecisionCommand | null {
-  const m = text.trim().match(/^(approve|pass)\b\s*#?(\d+)?/i);
+  const m = text.trim().match(/^(approve|pass)(?:\b|(?=\d))\s*#?(\d+)?/i);
   if (!m) return null;
   return { action: m[1].toLowerCase() as "approve" | "pass", index: m[2] ? parseInt(m[2], 10) : null };
 }
 
 /** Matches "photos <n>", "photo <n>", and "request photos <n>" (spec's three accepted forms). */
 function parsePhotoRequestCommand(text: string): number | null {
-  const m = text.trim().match(/^(?:request\s+)?photos?\b\s*#?(\d+)?/i);
+  const m = text.trim().match(/^(?:request\s+)?photos?(?:\b|(?=\d))\s*#?(\d+)?/i);
   if (!m) return null;
   return m[1] ? parseInt(m[1], 10) : 1;
 }
@@ -675,12 +681,20 @@ export async function handleIncomingMessage(phone: string, text: string, contact
       // ever supplies the reply TEXT (see ai/chatReply.ts); it cannot search, approve, or touch
       // any state, so the canned fallback is a fully safe default whenever AI is off/unavailable
       // — and it's the ONLY thing every non-test-phone contact ever sees, unchanged.
-      const canned = state.pendingMatches
-        ? 'Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.'
-        : 'Try "buy: Rolex Daytona" or "selling: Hermes Birkin".';
-      const aiReply = isAiMatchingEnabledForPhone(phone)
-        ? await generateGeneralChatReply(text, state.pendingMatches?.matches.length ?? 0)
-        : null;
+      //
+      // Real reported bug: state.pendingMatches stays set even after every entry in it has
+      // already been approved/passed (it's only ever replaced by a new search, see startSearch),
+      // so checking for its mere existence kept showing the "approve/pass" reminder forever —
+      // e.g. saying "hi" well after the only match shown was already approved. The reminder now
+      // only fires while something in the set is still actually undecided.
+      const unresolvedCount = state.pendingMatches?.decisions.filter((d) => d === "pending").length ?? 0;
+      const canned =
+        unresolvedCount > 0
+          ? 'Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.'
+          : GREETING.test(text.trim())
+            ? `Hi ${firstName}, how can I help you today?`
+            : 'Try "buy: Rolex Daytona" or "selling: Hermes Birkin".';
+      const aiReply = isAiMatchingEnabledForPhone(phone) ? await generateGeneralChatReply(text, unresolvedCount) : null;
       messages.push(aiReply ?? canned);
     }
     saveState(state);
