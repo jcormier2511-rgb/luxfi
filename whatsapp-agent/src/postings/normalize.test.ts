@@ -28,9 +28,32 @@ test("classifyText returns null for plain chatter", () => {
   assert.equal(classifyText("thanks!"), null);
 });
 
-test("FS keywords take priority when a message somehow matches both", () => {
-  // "for sale" wins over an incidental "lf" substring match, matching the FS-checked-first order.
-  assert.equal(classifyText("FS Rolex, looking for a quick sale"), "FS");
+test("required regression: explicit buying language wins even when stock/for-sale language also appears in the same message", () => {
+  // Reverses the earlier FS-checked-first tie-break: a buyer's own explicit signal (WTB/
+  // wanted/looking for/need/buying/ISO) describes what they want more reliably than an
+  // incidental "for sale"/"FS" elsewhere in the same messy dealer-group post.
+  assert.equal(classifyText("FS Rolex, looking for a quick sale"), "WTB");
+  assert.equal(classifyText("READY STOCK available, but WTB a green dial Sub too"), "WTB");
+});
+
+test("required regression: stock/availability language classifies as FS, the same as an explicit for-sale keyword", () => {
+  assert.equal(classifyText("READY STOCK: Daytona 116500LN $63,000"), "FS");
+  assert.equal(classifyText("In stock now: Nautilus 5711 $105,000"), "FS");
+  assert.equal(classifyText("Available: GMT-Master 126710BLRO"), "FS");
+});
+
+test("required regression: a dealer inventory list with no explicit FS/WTB keyword still classifies as FS, never left unclassified", () => {
+  // Real reported case: a Hong Kong dealer's whole price sheet, no "for sale"/"FS"/"ready
+  // stock" spelled out anywhere, but clearly a listing (has prices and references) — dropping
+  // this silently would mean real inventory never gets ingested at all.
+  const dump = "116500ln white 2011 hkd210k\n116520 black 2010 hkd167k\n116523g white panda 2012 hkd145k";
+  assert.equal(classifyText(dump), "FS");
+});
+
+test("classifyText still returns null for plain chatter even though it now has a price/reference fallback", () => {
+  assert.equal(classifyText("hey how's it going"), null);
+  assert.equal(classifyText("thanks!"), null);
+  assert.equal(classifyText("good morning everyone"), null);
 });
 
 test("normalizeText extracts brand, reference, and price", () => {

@@ -65,8 +65,12 @@ jobs:
       - name: Run targeted price and webhook regressions
         run: >-
           node --require ts-node/register --test --test-concurrency=1
+          src/ai/intentExtractor.test.ts
           src/ai/queryInterpreter.test.ts
+          src/fx/currency.test.ts
+          src/fx/convert.test.ts
           src/matching/currency.test.ts
+          src/matching/engine.currency.test.ts
           src/matching/engine.currencyConversion.test.ts
           src/matching/priceSignal.test.ts
           src/matching/engine.priceSignal.test.ts

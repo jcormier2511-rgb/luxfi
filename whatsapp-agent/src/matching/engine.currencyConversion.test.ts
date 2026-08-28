@@ -1,7 +1,7 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { InventoryListing } from "../types";
-import { setExchangeRateProviderForTests } from "./currency";
+import { _resetRatesForTests, _setRatesForTests } from "../fx/rates";
 
 process.env.NODE_ENV = "test";
 process.env.WEBHOOK_TOKEN = "test";
@@ -13,9 +13,9 @@ require.cache[inventoryPath] = {
   exports: { getActiveListings: async () => active },
   children: [], paths: [], parent: null,
 } as unknown as NodeModule;
-const { findMatches, formatMatchCard } = require("./engine") as typeof import("./engine");
+const { findMatches, attachCurrencyDisplay, formatMatchCard } = require("./engine") as typeof import("./engine");
 
-afterEach(() => setExchangeRateProviderForTests());
+afterEach(() => _resetRatesForTests());
 after(() => { delete require.cache[inventoryPath]; });
 
 function listing(id: string, price: string): InventoryListing {
@@ -27,15 +27,17 @@ function listing(id: string, price: string): InventoryListing {
 }
 
 test("matches only listings whose converted USD price is within the USD buyer budget", async () => {
-  setExchangeRateProviderForTests(async (currency) => currency === "HKD" ? 0.128 : null);
+  _setRatesForTests({ base: "USD", rates: { HKD: 7.8125 }, fetchedAt: new Date() });
   active = [listing("qualifies", "HKD 820,000"), listing("too-high", "HKD 900,000")];
   const matches = await findMatches({ action: "buy", query: "Patek 5712G" }, 5, { priceMax: 110000, priceCurrency: "USD" });
   assert.deepEqual(matches.map(({ id }) => id), ["qualifies"]);
-  assert.match(formatMatchCard(matches[0], 0, "buy"), /HK\$820,000 \(USD \$104,960\)/);
+  const [withCurrency] = await attachCurrencyDisplay([{ listing: matches[0] }]);
+  assert.match(formatMatchCard(matches[0], 0, "buy", undefined, undefined, withCurrency.currencyDisplay), /Asking: HK\$820,000 HKD/);
+  assert.match(formatMatchCard(matches[0], 0, "buy", undefined, undefined, withCurrency.currencyDisplay), /Approximately: \$104,960 USD/);
 });
 
 test("a missing rate excludes a foreign-currency listing instead of comparing nominal amounts", async () => {
-  setExchangeRateProviderForTests(async () => null);
+  _setRatesForTests({ base: "USD", rates: {}, fetchedAt: new Date() });
   active = [listing("unknown-conversion", "AED 100,000")];
   const matches = await findMatches({ action: "buy", query: "Patek 5712G" }, 5, { priceMax: 110000, priceCurrency: "USD" });
   assert.deepEqual(matches, []);

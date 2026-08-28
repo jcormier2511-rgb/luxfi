@@ -1,12 +1,13 @@
 import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
-import { normalizeReference, extractReference, referencesMatch, hasMultipleDistinctPrices } from "../postings/normalize";
-import { isAiMatchingEnabledForPhone } from "../config";
+import { normalizeReference, extractReference, referencesMatch, normalizePriceShorthand, hasMultipleDistinctPrices } from "../postings/normalize";
+import { config, isAiMatchingEnabledForPhone } from "../config";
 import { interpretQuery } from "../ai/queryInterpreter";
 import { rerankCandidates } from "../ai/rerank";
 import { computePriceSignal, PriceSignal } from "./priceSignal";
 import { isPartsOrAccessoryListing } from "./partsFilter";
-import { CurrencyCode, convertMoneyToUsd, formatOriginalAndUsd, parseMoney, SUPPORTED_CURRENCIES } from "./currency";
+import { convertAmount } from "../fx/convert";
+import { extractNativePrice, formatCurrency } from "../fx/currency";
 
 // Shares extractReference/REFERENCE_PATTERN with postings/normalize.ts (v4) — one reference-
 // extraction rule for both, not two hand-synced copies. A reference number in the free-text
@@ -35,36 +36,61 @@ function score(listing: InventoryListing, tokens: string[]): number {
   return matches;
 }
 
-function asCurrency(raw?: string): CurrencyCode {
-  const normalized = raw?.toUpperCase() === "RMB" ? "CNY" : raw?.toUpperCase();
-  return SUPPORTED_CURRENCIES.includes(normalized as CurrencyCode) ? normalized as CurrencyCode : "USD";
+/** Use the shared shorthand parser for stored prices such as "$110,000" or "$110k". */
+function parseListingPrice(raw: string): number | undefined {
+  const parsed = normalizePriceShorthand(raw);
+  return parsed === null ? undefined : parsed;
 }
 
-async function normalizePrices(
-  listings: InventoryListing[], preferences?: SearchPreferences
-): Promise<{ listings: InventoryListing[]; preferences?: SearchPreferences; conversionAvailable: boolean }> {
-  const normalizedListings = await Promise.all(listings.map(async (listing) => {
-    const money = parseMoney(listing.price);
-    if (!money) return listing;
-    const priceUsd = await convertMoneyToUsd(money);
-    return { ...listing, priceAmount: money.amount, priceCurrency: money.currency, priceUsd: priceUsd ?? undefined };
-  }));
-  if (!preferences || (preferences.priceMin === undefined && preferences.priceMax === undefined)) {
-    return { listings: normalizedListings, preferences, conversionAvailable: true };
-  }
-  const currency = asCurrency(preferences.priceCurrency);
-  const rate = await convertMoneyToUsd({ amount: 1, currency });
-  if (rate === null) return { listings: normalizedListings, preferences, conversionAvailable: false };
+async function normalizeBudgetPreferences(preferences?: SearchPreferences): Promise<SearchPreferences | null | undefined> {
+  if (!preferences || (preferences.priceMin === undefined && preferences.priceMax === undefined)) return preferences;
+  const fromCurrency = (preferences.priceCurrency || config.fx.baseCurrency).toUpperCase() === "RMB"
+    ? "CNY"
+    : (preferences.priceCurrency || config.fx.baseCurrency).toUpperCase();
+  if (fromCurrency === config.fx.baseCurrency) return { ...preferences, priceCurrency: config.fx.baseCurrency };
+  const [min, max] = await Promise.all([
+    preferences.priceMin === undefined ? null : convertAmount(preferences.priceMin, fromCurrency, config.fx.baseCurrency),
+    preferences.priceMax === undefined ? null : convertAmount(preferences.priceMax, fromCurrency, config.fx.baseCurrency),
+  ]);
+  if ((preferences.priceMin !== undefined && !min) || (preferences.priceMax !== undefined && !max)) return null;
   return {
-    listings: normalizedListings,
-    preferences: {
-      ...preferences,
-      priceMin: preferences.priceMin === undefined ? undefined : preferences.priceMin * rate,
-      priceMax: preferences.priceMax === undefined ? undefined : preferences.priceMax * rate,
-      priceCurrency: "USD",
-    },
-    conversionAvailable: true,
+    ...preferences,
+    priceMin: min?.amount,
+    priceMax: max?.amount,
+    priceCurrency: config.fx.baseCurrency,
   };
+}
+
+/**
+ * The amount to compare a listing's price against a stated budget (always assumed USD/
+ * config.fx.baseCurrency by long-standing convention — preferences.priceMax/priceMin carry no
+ * currency of their own). Prefers the listing's own native currency+amount, converted via
+ * fx/convert.ts, over the plain `price` field (which this codebase has always implicitly
+ * treated as already being in the base currency). Returns undefined — never a guessed number —
+ * when a conversion is actually needed but unavailable (stale rates, unknown currency), same
+ * "can't verify, don't assume it matches" rule as an unparseable price everywhere else.
+ */
+async function resolveComparablePrice(listing: InventoryListing): Promise<number | undefined> {
+  const parsedNative = listing.nativeCurrency && listing.nativePriceAmount !== undefined
+    ? { amount: listing.nativePriceAmount, currency: listing.nativeCurrency }
+    : extractNativePrice(listing.price);
+  if (parsedNative) {
+    if (parsedNative.currency === config.fx.baseCurrency) return parsedNative.amount;
+    const converted = await convertAmount(parsedNative.amount, parsedNative.currency, config.fx.baseCurrency);
+    return converted?.amount;
+  }
+  return parseListingPrice(listing.price);
+}
+
+/**
+ * Precomputes every candidate's comparable price ONCE per search — a currency conversion is an
+ * async, cached-rate lookup, not something Array.prototype.filter/sort can await per item — so
+ * the rest of the ranking pipeline below can stay synchronous, just reading from this map
+ * instead of re-parsing/re-converting a price on every comparison.
+ */
+async function buildComparablePriceMap(listings: InventoryListing[]): Promise<Map<string, number | undefined>> {
+  const entries = await Promise.all(listings.map(async (l) => [l.id, await resolveComparablePrice(l)] as const));
+  return new Map(entries);
 }
 
 /**
@@ -87,20 +113,21 @@ function isCompleteWatchListing(listing: InventoryListing): boolean {
   return !isPartsOrAccessoryListing(listing);
 }
 
-/** True if a listing's price falls inside the preference range, or no range was set. */
-function inPriceRange(listing: InventoryListing, preferences?: SearchPreferences): boolean {
+/** True if a listing's price falls inside the preference range, or no range was set. `priceMap`
+ *  is the precomputed currency-aware comparable price (see buildComparablePriceMap). */
+function inPriceRange(listing: InventoryListing, preferences: SearchPreferences | undefined, priceMap: Map<string, number | undefined>): boolean {
   if (!preferences || (preferences.priceMin === undefined && preferences.priceMax === undefined)) return true;
-  const price = listing.priceUsd;
-  if (price === undefined) return false; // "ASK"/unknown price can't be judged against a range
+  const price = priceMap.get(listing.id);
+  if (price === undefined) return false; // "ASK"/unknown/unconvertible price can't be judged against a range
   if (preferences.priceMin !== undefined && price < preferences.priceMin) return false;
   if (preferences.priceMax !== undefined && price > preferences.priceMax) return false;
   return true;
 }
 
 /** How far outside the preferred range a listing's price sits — used to sort the fallback pool. */
-function priceDistance(listing: InventoryListing, preferences?: SearchPreferences): number {
+function priceDistance(listing: InventoryListing, preferences: SearchPreferences | undefined, priceMap: Map<string, number | undefined>): number {
   if (!preferences || (preferences.priceMin === undefined && preferences.priceMax === undefined)) return 0;
-  const price = listing.priceUsd;
+  const price = priceMap.get(listing.id);
   if (price === undefined) return Infinity;
   if (preferences.priceMin !== undefined && price < preferences.priceMin) return preferences.priceMin - price;
   if (preferences.priceMax !== undefined && price > preferences.priceMax) return price - preferences.priceMax;
@@ -193,11 +220,12 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   const wantType = request.action === "buy" ? "FS" : "WTB";
   // Excludes multi-item price-list dumps and standalone part/accessory listings before they
   // ever reach the reference/token branches below — see isUnambiguousListing/isCompleteWatchListing.
-  const rawCandidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
-  const normalized = await normalizePrices(rawCandidates, preferences);
-  if (!normalized.conversionAvailable) return [];
-  const candidates = normalized.listings;
-  preferences = normalized.preferences;
+  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
+  const normalizedPreferences = await normalizeBudgetPreferences(preferences);
+  if (normalizedPreferences === null) return [];
+  preferences = normalizedPreferences;
+  // Currency-aware, precomputed once for the whole candidate pool — see buildComparablePriceMap.
+  const priceMap = await buildComparablePriceMap(candidates);
   const requestedRef = extractRequestedReference(request.query);
 
   if (requestedRef) {
@@ -205,12 +233,12 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
     // No price/location-ignoring fallback: a listing over budget or outside the stated location
     // is excluded, period — showing it anyway "so there's something to display" is worse than
     // truthfully showing nothing.
-    const pool = exact.filter((l) => inPriceRange(l, preferences) && matchesLocation(l, preferences));
+    const pool = exact.filter((l) => inPriceRange(l, preferences, priceMap) && matchesLocation(l, preferences));
     const ranked = pool
       .map((listing) => ({
         listing,
         prefScore: softPreferenceScore(listing, preferences),
-        priceDist: priceDistance(listing, preferences),
+        priceDist: priceDistance(listing, preferences, priceMap),
       }))
       .sort(
         (a, b) =>
@@ -222,14 +250,14 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   const tokens = tokenize(request.query);
   // Same mandatory price/location pre-filter as the reference branch above — a hard budget or
   // location is never relaxed just because nothing else in the broader pool happens to fit it.
-  const pool = candidates.filter((l) => inPriceRange(l, preferences) && matchesLocation(l, preferences));
+  const pool = candidates.filter((l) => inPriceRange(l, preferences, priceMap) && matchesLocation(l, preferences));
 
   const ranked = pool
     .map((listing) => ({
       listing,
       tokenScore: score(listing, tokens),
       prefScore: softPreferenceScore(listing, preferences),
-      priceDist: priceDistance(listing, preferences),
+      priceDist: priceDistance(listing, preferences, priceMap),
     }))
     .sort(
       (a, b) =>
@@ -247,12 +275,25 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   return finalPool.slice(0, limit).map((r) => r.listing);
 }
 
+/** Native + (optionally) converted display strings for one listing's price — see fx/. */
+export interface CurrencyDisplay {
+  /** e.g. "HK$850,000 HKD" — the listing's own stated price, always shown as-is, never overwritten. */
+  native: string;
+  /** e.g. "$109,100 USD" — present only when conversion to the base/display currency succeeded. */
+  converted?: string;
+  /** True when conversion was needed (native currency differs from the base currency) but
+   *  couldn't be confirmed (stale rates, unknown currency) — shows a caveat instead of a number. */
+  unavailable?: boolean;
+}
+
 export interface MatchResult {
   listing: InventoryListing;
   /** Set only on a hybrid/AI-assisted pick — an explanation grounded in that listing's own text. */
   explanation?: string;
   /** Set by attachPriceSignals (called from flow.ts) — see priceSignal.ts. FS results only. */
   priceSignal?: PriceSignal;
+  /** Set by attachCurrencyDisplay (called from flow.ts) — see fx/. Undefined for a listing with no known native currency (falls back to the plain price line, exactly as before this feature). */
+  currencyDisplay?: CurrencyDisplay;
 }
 
 /**
@@ -263,14 +304,51 @@ export interface MatchResult {
  */
 export async function attachPriceSignals(results: MatchResult[]): Promise<MatchResult[]> {
   if (!results.some((r) => r.listing.type === "FS")) return results;
-  const normalizedResults = (await normalizePrices(results.map((r) => r.listing))).listings;
-  const comparablePool = (await normalizePrices(await getActiveListings("FS"))).listings;
+  const normalizedResults = await Promise.all(results.map(async (r) => ({
+    ...r.listing,
+    priceUsd: await resolveComparablePrice(r.listing),
+  })));
+  const comparablePool = await Promise.all((await getActiveListings("FS")).map(async (listing) => ({
+    ...listing,
+    priceUsd: await resolveComparablePrice(listing),
+  })));
   return results.map((r, index) => {
     const listing = normalizedResults[index];
     return listing.type === "FS"
       ? { ...r, listing, priceSignal: computePriceSignal(listing, comparablePool) ?? undefined }
       : { ...r, listing };
   });
+}
+
+/** Undefined when the listing has no known native currency at all (falls back to the plain
+ *  price line, exactly as before this feature existed). `displayCurrency` defaults to the
+ *  config-wide DEFAULT_DISPLAY_CURRENCY, but a contact's own "Show prices in EUR" preference
+ *  (conversation/flow.ts) overrides it — this only affects the DISPLAYED estimate, never the
+ *  USD-budget comparison in resolveComparablePrice above, which always targets FX_BASE_CURRENCY
+ *  by the same long-standing convention priceMax/priceMin already rely on. */
+async function buildCurrencyDisplay(
+  listing: InventoryListing,
+  displayCurrency: string = config.fx.defaultDisplayCurrency
+): Promise<CurrencyDisplay | undefined> {
+  const parsedNative = listing.nativeCurrency && listing.nativePriceAmount !== undefined
+    ? { amount: listing.nativePriceAmount, currency: listing.nativeCurrency }
+    : extractNativePrice(listing.price);
+  if (!parsedNative) return undefined;
+  const native = formatCurrency(parsedNative.amount, parsedNative.currency);
+  if (parsedNative.currency === displayCurrency) return { native };
+  const converted = await convertAmount(parsedNative.amount, parsedNative.currency, displayCurrency);
+  if (!converted) return { native, unavailable: true };
+  return { native, converted: formatCurrency(converted.amount, converted.currency) };
+}
+
+/**
+ * Attaches currency display info (native + converted, or an "unavailable" flag when conversion
+ * couldn't be confirmed) to every result — see fx/. A no-op (undefined) for a listing with no
+ * known native currency, so a listing this feature has no data for renders exactly as it always
+ * has (formatMatchCard's plain `$${listing.price}` line).
+ */
+export async function attachCurrencyDisplay(results: MatchResult[], displayCurrency?: string): Promise<MatchResult[]> {
+  return Promise.all(results.map(async (r) => ({ ...r, currencyDisplay: await buildCurrencyDisplay(r.listing, displayCurrency) })));
 }
 
 /**
@@ -314,10 +392,9 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
     priceMax: interpreted.maxPrice ?? preferences?.priceMax,
     priceCurrency: interpreted.currency ?? preferences?.priceCurrency,
   };
-  const normalized = await normalizePrices(rawCandidates, rawPreferences);
-  if (!normalized.conversionAvailable) return [];
-  const candidates = normalized.listings;
-  const normalizedPreferences = normalized.preferences;
+  const normalizedPreferences = await normalizeBudgetPreferences(rawPreferences);
+  if (normalizedPreferences === null) return [];
+  const candidates = rawCandidates;
   const requestedFamily = interpreted.referenceFamily
     ? normalizeReference(interpreted.referenceFamily)
     : extractRequestedReference(request.query);
@@ -335,9 +412,11 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   // Same mandatory-location principle as findMatches (see matchesLocation) — a stated "US only"
   // is never relaxed just because the AI's own pool happens to be thin without it.
   const requestedLocation = interpreted.location ?? preferences?.location;
+  // Currency-aware, precomputed once for the eligible pool — see buildComparablePriceMap.
+  const priceMap = await buildComparablePriceMap(eligible);
   const withinBudget = eligible.filter((l) => {
     if (priceCeiling !== undefined && priceCeiling !== null) {
-      const price = l.priceUsd;
+      const price = priceMap.get(l.id);
       if (price === undefined || price > priceCeiling) return false;
     }
     if (requestedLocation && !matchesLocation(l, { location: requestedLocation })) return false;
@@ -365,8 +444,8 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
     if (!listing) continue; // re-verified against the safety-gated pool, not just what was sent to AI
     if (requestedFamily && listing.ref && !referencesMatch(listing.ref, requestedFamily)) continue; // belt & suspenders
     if (priceCeiling !== undefined && priceCeiling !== null) {
-      const price = listing.priceUsd;
-      if (price === undefined || price > priceCeiling) continue; // belt & suspenders — never surface an over-budget or unverifiable price under a stated ceiling
+      const price = priceMap.get(listing.id);
+      if (price === undefined || price > priceCeiling) continue; // belt & suspenders — never surface an over-budget or unverifiable/unconvertible price under a stated ceiling
     }
     if (requestedLocation && !matchesLocation(listing, { location: requestedLocation })) continue; // belt & suspenders — never surface a listing outside a stated location requirement
     results.push({ listing, explanation: pick.explanation });
@@ -402,40 +481,57 @@ function sourceLabel(listing: InventoryListing): string {
   return listing.source || "Unknown";
 }
 
+/** "105000" -> "$105,000" — a stored price is a plain digit string with no thousands grouping
+ *  (see normalizePriceShorthand's own output), so display formatting happens here, once, rather
+ *  than at every call site. Falls back to the raw string for a non-numeric value rather than
+ *  showing "$NaN" — that should never happen for a real stored price, but this is a display
+ *  function, not a validator. */
+function formatPrice(price: string): string {
+  const n = Number(price);
+  return Number.isFinite(n) ? `$${n.toLocaleString("en-US")}` : `$${price}`;
+}
+
 export function formatMatchCard(
   listing: InventoryListing,
   index: number,
   action: ItemRequest["action"],
   explanation?: string,
-  priceSignal?: PriceSignal
+  priceSignal?: PriceSignal,
+  currencyDisplay?: CurrencyDisplay
 ): string {
   const roleLabel = action === "buy" ? "Seller" : "Buyer";
   const priceLabel = action === "buy" ? "Asking" : "Bid";
-  const parsedMoney = listing.priceAmount !== undefined && listing.priceCurrency
-    ? { amount: listing.priceAmount, currency: listing.priceCurrency as CurrencyCode }
-    : parseMoney(listing.price);
-  const displayUsd = listing.priceUsd ?? (parsedMoney?.currency === "USD" ? parsedMoney.amount : undefined);
-  const priceText = listing.price === "ASK"
-    ? "price on ask"
-    : parsedMoney && displayUsd !== undefined
-      ? formatOriginalAndUsd(parsedMoney, displayUsd)
-      : parsedMoney
-        ? `${parsedMoney.currency} ${Math.round(parsedMoney.amount).toLocaleString("en-US")} (USD conversion unavailable)`
-        : listing.price;
+  // The listing's own native price string ("HK$850,000 HKD") when currency info is known —
+  // never overwritten by a converted value; falls back to the plain price field exactly as
+  // before this feature existed when there's no currency info to work with at all.
+  const priceText = currencyDisplay ? currencyDisplay.native : listing.price === "ASK" ? "price on ask" : formatPrice(listing.price);
   const watchLine = listing.ref ? `${watchName(listing)} (Ref. ${listing.ref})` : watchName(listing);
   const lines = [
     `Potential Match #${index + 1}`,
     `${roleLabel}: ${listing.contactName || "Unnamed"}`,
     `Watch: ${watchLine}`,
     `${priceLabel}: ${priceText}${priceSignal ? ` (${priceSignal} vs. comps)` : ""}`,
+  ];
+  // A converted estimate is always labeled as such — it excludes shipping/fees/duties/taxes,
+  // and is never presented as a confirmed budget match on its own (the actual budget-ceiling
+  // enforcement already happened upstream in findMatchesHybrid/findMatches using this same
+  // converted figure — this line is purely informational). When conversion was needed but
+  // couldn't be confirmed (stale rates, unknown currency), the caveat replaces the estimate
+  // rather than showing a stale/guessed number.
+  if (currencyDisplay?.converted) {
+    lines.push(`Approximately: ${currencyDisplay.converted} (estimate — excludes shipping, fees, duties, and taxes)`);
+  } else if (currencyDisplay?.unavailable) {
+    lines.push("Currency conversion temporarily unavailable.");
+  }
+  lines.push(
     `Location: ${listing.location || "Not specified"}`,
     `Source: ${sourceLabel(listing)}`,
     // Always present, distinct from the normalized "Watch:" title above — the verbatim
     // stored source text (the dealer's own message, or the WatchFacts listing's own
     // description), so a reader can see exactly what the seller/buyer actually wrote.
     `Description: ${listing.description || "Not provided"}`,
-    listing.imageUrl ? `Photo: ${listing.imageUrl}` : "Photos: Not provided.",
-  ];
+    listing.imageUrl ? `Photo: ${listing.imageUrl}` : "Photos: Not provided."
+  );
   if (listing.detailUrl) lines.push(`Listing: ${listing.detailUrl}`);
   if (explanation) lines.push(`Why: ${explanation}`);
   // "photos <n>" is only meaningful on an FS/seller card — there's a seller on the other end to

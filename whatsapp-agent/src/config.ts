@@ -176,6 +176,22 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean),
   },
+  // Automatic currency conversion (src/fx/) — Open Exchange Rates for the MVP, deliberately
+  // never the LLM: a wrong AI-estimated exchange rate could misrepresent whether a listing is
+  // actually within a buyer's stated budget, exactly the kind of confidently-wrong-price bug
+  // this whole matching pipeline has spent this session removing.
+  fx: {
+    provider: process.env.FX_PROVIDER ?? "openexchangerates",
+    appId: process.env.OPEN_EXCHANGE_RATES_APP_ID ?? "",
+    baseCurrency: (process.env.FX_BASE_CURRENCY ?? "USD").toUpperCase(),
+    // How often the cached rates table is allowed to be refreshed — a fetch is only ever
+    // made once this many minutes have passed since the last one, never per-listing/per-match.
+    refreshMinutes: Number(process.env.FX_REFRESH_MINUTES ?? 60),
+    // Past this age, a conversion is no longer trusted to confidently confirm a listing is
+    // within budget — see fx/convert.ts.
+    maxStalenessHours: Number(process.env.FX_MAX_STALENESS_HOURS ?? 24),
+    defaultDisplayCurrency: (process.env.DEFAULT_DISPLAY_CURRENCY ?? "USD").toUpperCase(),
+  },
 };
 
 /**

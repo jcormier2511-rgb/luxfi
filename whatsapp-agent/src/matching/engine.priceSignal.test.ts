@@ -13,10 +13,9 @@ process.env.WEBHOOK_TOKEN = "test";
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const engine = require("./engine") as typeof import("./engine");
-const currency = require("./currency") as typeof import("./currency");
+const rates = require("../fx/rates") as typeof import("../fx/rates");
 const { upsertListings, _resetDbForTests, _closePoolForTests } = inventoryDb;
 const { attachPriceSignals, formatMatchCard } = engine;
-const { setExchangeRateProviderForTests } = currency;
 
 after(async () => {
   await _closePoolForTests();
@@ -71,15 +70,15 @@ test("attachPriceSignals is a no-op (no query) when there are no FS results to s
 test("formatMatchCard appends the price signal inline on the price line when present, and omits it when absent", () => {
   const listing = { ...row("card-1", { price: "2500" }), source: "WF" };
   const withSignal = formatMatchCard(listing, 0, "buy", undefined, "Attractive");
-  assert.match(withSignal, /\$2,500 \(USD \$2,500\) \(Attractive vs\. comps\)/);
+  assert.match(withSignal, /\$2,500 \(Attractive vs\. comps\)/);
 
   const withoutSignal = formatMatchCard(listing, 0, "buy");
   assert.doesNotMatch(withoutSignal, /vs\. comps/);
 });
 
 test("attachPriceSignals converts foreign results and DB comps before comparison", async (t) => {
-  t.after(() => setExchangeRateProviderForTests());
-  setExchangeRateProviderForTests(async (code) => code === "HKD" ? 0.128 : null);
+  t.after(() => rates._resetRatesForTests());
+  rates._setRatesForTests({ base: "USD", rates: { HKD: 7.8125 }, fetchedAt: new Date() });
   await _resetDbForTests();
   await upsertListings(
     [

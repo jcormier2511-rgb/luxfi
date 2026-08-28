@@ -1,3 +1,5 @@
+import { normalizePriceShorthand } from "../postings/normalize";
+
 const SKIP_WORDS = ["any", "none", "no preference", "n/a", "na", "skip", "whatever", "either"];
 
 /** Treats "any"/"skip"/etc as "no preference" — returns undefined instead of storing the word. */
@@ -7,15 +9,16 @@ function skipToUndefined(text: string): string | undefined {
   return t;
 }
 
+/**
+ * Delegates to postings/normalize.ts's normalizePriceShorthand — the SAME thousands-vs-decimal
+ * disambiguation used for WatchFacts listing prices, so "105.000"/"105,000" both correctly mean
+ * 105000 here too. This module used to have its own naive reimplementation (plain `Number()`
+ * after stripping "$"/","), which silently read "105.000" as 105 — a real reported bug (see
+ * ai/intentExtractor.ts's identical concern for natural-language price extraction).
+ */
 function toNumber(raw: string): number | undefined {
-  let s = raw.replace(/[$,]/g, "").trim().toLowerCase();
-  let multiplier = 1;
-  if (s.endsWith("k")) {
-    multiplier = 1000;
-    s = s.slice(0, -1);
-  }
-  const n = Number(s);
-  return Number.isFinite(n) ? n * multiplier : undefined;
+  const n = normalizePriceShorthand(raw);
+  return n === null ? undefined : n;
 }
 
 export interface PriceRange {
@@ -32,7 +35,10 @@ export function parsePriceRange(text: string): PriceRange | undefined {
   const normalized = skipToUndefined(text);
   if (!normalized) return undefined;
 
-  const rangeMatch = normalized.match(/([\d.,]+k?)\s*(?:-|to|–)\s*([\d.,]+k?)/);
+  // `\$?\s*` before EACH number — a range is often written with the currency symbol repeated
+  // on both ends ("$5,000-$8,000"), which the original single-leading-`$` version missed on
+  // the second number entirely (falling through to the single-target approximation instead).
+  const rangeMatch = normalized.match(/\$?\s*([\d.,]+k?)\s*(?:-|to|–)\s*\$?\s*([\d.,]+k?)/i);
   if (rangeMatch) {
     const min = toNumber(rangeMatch[1]);
     const max = toNumber(rangeMatch[2]);

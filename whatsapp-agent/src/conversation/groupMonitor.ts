@@ -3,19 +3,8 @@ import path from "path";
 import { config, isV4ChatEnabled } from "../config";
 import { InventoryListing, ListingType } from "../types";
 import { ingestAndMatch } from "../postings/ingest";
-import { normalizeText } from "../postings/normalize";
+import { normalizeText, classifyText } from "../postings/normalize";
 import { enrichListingText } from "../ai/enrichment";
-
-// Dealer-group shorthand, distinct from the 1:1 flow's classify() (which expects
-// first-person phrasing like "buy: X"). Groups post in trading-floor jargon instead.
-const WTB_KEYWORDS = /\b(wtb|iso|lf|looking\s+for|in\s+search\s+of)\b/i;
-const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling)\b/i;
-
-function classifyGroupPost(text: string): ListingType | null {
-  if (FS_KEYWORDS.test(text)) return "FS";
-  if (WTB_KEYWORDS.test(text)) return "WTB";
-  return null;
-}
 
 const GROUP_LISTINGS_HEADER =
   "id,type,category,item,brand,ref,condition,price,location,contact_name,contact_phone,source,rating,description\n";
@@ -141,7 +130,11 @@ export async function handleGroupMessage(
   text: string,
   imageUrl?: string
 ): Promise<void> {
-  const type = classifyGroupPost(text);
+  // Dealer-group jargon, distinct from the 1:1 flow's classify() (which expects first-person
+  // phrasing like "buy: X"). Shares the same rule as v4's structured ingestion (postings/
+  // normalize.ts) so a group post is never classified one way for the legacy CSV capture below
+  // and a different way for the v4 dual-write path — one rule, not two hand-synced copies.
+  const type: ListingType | null = classifyText(text);
   if (!type) return;
 
   const rows = await buildGroupRows(groupId, senderPhone, senderName, type, text);
