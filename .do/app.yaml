@@ -1,0 +1,75 @@
+name: fi-backend
+region: nyc
+services:
+  - name: fi-backend
+    github:
+      repo: jcormier2511-rgb/luxfi
+      branch: claude/fi-build-spec-v4-dsxv9k
+      deploy_on_push: true
+    source_dir: backend
+    build_command: npm ci && npm run build
+    run_command: npm start
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    http_port: 8080
+    health_check:
+      http_path: /health
+    envs:
+      - key: NODE_ENV
+        value: production
+        scope: RUN_AND_BUILD_TIME
+      - key: DATABASE_URL
+        value: ${fi-postgres.DATABASE_URL}
+        scope: RUN_TIME
+      - key: ENABLE_WTB_SYNC
+        value: "false"
+        scope: RUN_TIME
+      - key: FS_SYNC_INTERVAL_MS
+        value: "90000"
+        scope: RUN_TIME
+      - key: MONITOR_EXTENSION_REMINDER_DAYS
+        value: "3"
+        scope: RUN_TIME
+      # DigitalOcean App Platform has no equivalent to Render's generateValue --
+      # set real values for every SECRET-typed var below after the app is
+      # created (App settings > Environment Variables), e.g.
+      # `openssl rand -hex 32` for the two tokens. Admin routes stay
+      # unreachable (503) and the WhatsApp webhook stays fail-closed (503)
+      # until these are set -- see src/routes/admin.routes.ts and
+      # src/routes/whatsapp.routes.ts.
+      - key: ADMIN_API_TOKEN
+        type: SECRET
+        scope: RUN_TIME
+      - key: WATCHFACTS_API_BASE_URL
+        value: ""
+        scope: RUN_TIME
+      - key: WATCHFACTS_API_USERNAME
+        value: ""
+        scope: RUN_TIME
+      - key: WATCHFACTS_API_PASSWORD
+        type: SECRET
+        scope: RUN_TIME
+      # From the Meta App dashboard for your WhatsApp Cloud API app. The
+      # webhook URL to register there is https://<this-app>.ondigitalocean.app/webhook/whatsapp,
+      # using the same value you set for WHATSAPP_WEBHOOK_VERIFY_TOKEN.
+      - key: WHATSAPP_ACCESS_TOKEN
+        type: SECRET
+        scope: RUN_TIME
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        value: ""
+        scope: RUN_TIME
+      - key: WHATSAPP_APP_SECRET
+        type: SECRET
+        scope: RUN_TIME
+      - key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+        type: SECRET
+        scope: RUN_TIME
+      - key: WHATSAPP_GRAPH_API_VERSION
+        value: v20.0
+        scope: RUN_TIME
+
+databases:
+  - name: fi-postgres
+    engine: PG
+    version: "16"
+    production: false
