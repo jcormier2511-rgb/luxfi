@@ -35,6 +35,9 @@ test("confirmed buyer budgets retain their stated non-USD currency", () => {
   assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G under HKD 900,000"), {
     intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMin: null, priceMax: 900000, currency: "HKD",
   });
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G under 100k HKD"), {
+    intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMin: null, priceMax: 100000, currency: "HKD",
+  });
 });
 
 test("confirmed currency comes from the price expression, not unrelated payment text", () => {

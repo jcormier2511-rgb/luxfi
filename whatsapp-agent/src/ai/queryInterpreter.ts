@@ -38,7 +38,10 @@ function extractExplicitPriceExpression(text: string): string | null {
   }
 
   const patterns = [
-    new RegExp(`${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
+    new RegExp(
+      `${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])(?:\\s*${CURRENCY_MARKER})?`,
+      "i"
+    ),
     new RegExp(`${CURRENCY_MARKER}\\s*${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
     new RegExp(`${PRICE_NUMBER}(?![A-Z0-9])\\s*${CURRENCY_MARKER}`, "i"),
     /\b\d{1,3}(?:[.,]\d+)?\s*k\b/i,
