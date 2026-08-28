@@ -157,6 +157,45 @@ test('required regression: "under $20000" is never treated as a requested refere
   assert.equal(matches.length, 1, "20000 must be recognized as a price, not force an exact-reference-only search");
 });
 
+test("required regression: a stated location is a mandatory pre-filter — a listing outside it is excluded outright, not just ranked lower", async () => {
+  await _resetDbForTests();
+  await upsertListings(
+    [
+      row("us-listing", { brand: "Rolex", ref: "116500LN", location: "North America", description: "Rolex Daytona 116500LN" }),
+      row("hk-listing", { brand: "Rolex", ref: "116500LN", location: "Asia", description: "Rolex Daytona 116500LN" }),
+    ],
+    new Date().toISOString()
+  );
+
+  const matches = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5, { location: "USA" });
+  assert.equal(matches.length, 1, "the Asia listing must be excluded outright for a stated USA requirement");
+  assert.equal(matches[0].id, "us-listing");
+});
+
+test("required regression: 'USA' matches the stored 'North America' region (WatchFacts only gives continent-level location)", async () => {
+  await _resetDbForTests();
+  await upsertListings([row("a", { brand: "Rolex", ref: "116500LN", location: "North America", description: "Rolex Daytona 116500LN" })], new Date().toISOString());
+
+  const matches = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5, { location: "US" });
+  assert.equal(matches.length, 1, "'US' must resolve to the same region bucket as the stored 'North America'");
+});
+
+test("a listing with no location on file is excluded when a location is explicitly required — never assumed to match", async () => {
+  await _resetDbForTests();
+  await upsertListings([row("a", { brand: "Rolex", ref: "116500LN", location: "", description: "Rolex Daytona 116500LN" })], new Date().toISOString());
+
+  const matches = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5, { location: "USA" });
+  assert.equal(matches.length, 0, "an unverifiable location can't be presented as satisfying a stated requirement");
+});
+
+test("without a stated location preference, matching is unaffected regardless of the listing's location", async () => {
+  await _resetDbForTests();
+  await upsertListings([row("a", { brand: "Rolex", ref: "116500LN", location: "Asia", description: "Rolex Daytona 116500LN" })], new Date().toISOString());
+
+  const matches = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5);
+  assert.equal(matches.length, 1, "no location constraint was stated, so nothing should be excluded on location grounds");
+});
+
 test("required regression: a bundle of several watches returns only the one matching structured watch", async () => {
   await _resetDbForTests();
   // Same shape as a real WatchFacts bundle sale — mapToInventoryListings (api.ts) maps each

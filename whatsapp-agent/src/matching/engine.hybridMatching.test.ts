@@ -180,6 +180,24 @@ test("required regression: a reference named in the raw message still gates elig
   assert.equal(results.length, 0, "the deterministic reference in the raw message must still exclude an unrelated model, even if the AI's own extraction missed it");
 });
 
+test("required regression: a stated location from the AI's interpretation is a mandatory pre-filter in the hybrid path too", async (t) => {
+  await _resetDbForTests();
+  await upsertListings(
+    [
+      row("us-listing", { brand: "Rolex", ref: "116500LN", location: "North America", description: "Rolex Daytona 116500LN" }),
+      row("hk-listing", { brand: "Rolex", ref: "116500LN", location: "Asia", description: "Rolex Daytona 116500LN" }),
+    ],
+    new Date().toISOString()
+  );
+  t.mock.method(queryInterpreterModule, "interpretQuery", async () => interpreted({ referenceFamily: "116500", location: "USA" }));
+  t.mock.method(rerankModule, "rerankCandidates", async (_q: unknown, candidates: { id: string }[]) =>
+    candidates.map((c) => ({ id: c.id, explanation: "matches request", evidence: "Rolex Daytona 116500LN" }))
+  );
+  const results = await findMatchesHybrid(TEST_PHONE, { action: "buy", query: "buy Rolex Daytona 116500 USA only" }, 5);
+  assert.equal(results.length, 1, "the Asia listing must never be sent to AI or surfaced when USA was explicitly stated");
+  assert.equal(results[0].listing.id, "us-listing");
+});
+
 test("required acceptance: no arbitrary fallback inventory — an AI outage falls back to deterministic matching, not to an unrelated pool", async (t) => {
   await _resetDbForTests();
   await upsertListings([row("a", { brand: "Rolex", ref: "116500LN", description: "Rolex Daytona 116500LN" })], new Date().toISOString());

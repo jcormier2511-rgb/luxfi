@@ -74,12 +74,67 @@ function priceDistance(listing: InventoryListing, preferences?: SearchPreference
   return 0;
 }
 
-/** Location/dial/condition are freeform text, so they nudge sort order rather than hard-exclude. */
+// WatchFacts only gives continent-level granularity (sale.region -> "North America"/"Asia"/
+// "Europe", see watchfacts/api.ts) — there is no country field to check "US" against directly.
+// A buyer who says "USA"/"US"/"United States" means that broad region, so those all normalize
+// to the same bucket as the stored "North America" value. This is a real limitation of the
+// data, not a design choice: a stated "US only" can only be enforced at the North America vs.
+// rest-of-world level — it cannot distinguish a US listing from a Canadian one, since WatchFacts
+// doesn't expose that distinction. Getting the real API contract (see ongoing discussion) could
+// resolve this if a finer-grained field actually exists.
+const REGION_ALIASES: Record<string, string> = {
+  usa: "north america",
+  us: "north america",
+  "u.s.": "north america",
+  "u.s.a.": "north america",
+  "united states": "north america",
+  america: "north america",
+  canada: "north america",
+  uk: "europe",
+  "united kingdom": "europe",
+  england: "europe",
+  eu: "europe",
+  "hong kong": "asia",
+  hk: "asia",
+  singapore: "asia",
+};
+
+function canonicalRegion(raw: string): string {
+  const normalized = raw.trim().toLowerCase();
+  return REGION_ALIASES[normalized] ?? normalized;
+}
+
+/**
+ * True when a stated location and a listing's own location field refer to the same place —
+ * either literally (a substring match either direction, so a precise value like a city still
+ * matches) or via the region-alias bucket above, for the broad-region case ("USA" vs. the
+ * stored "North America").
+ */
+function locationsMatch(requested: string, actual: string): boolean {
+  const r = requested.trim().toLowerCase();
+  const a = actual.trim().toLowerCase();
+  if (!r || !a) return false;
+  if (a.includes(r) || r.includes(a)) return true;
+  return canonicalRegion(r) === canonicalRegion(a);
+}
+
+/**
+ * A stated location is a MANDATORY pre-filter, same principle as price: "US only" must exclude
+ * a Hong Kong listing outright, not just rank it lower. A listing with no location on file
+ * can't be verified against a stated requirement, so it's excluded too — never assumed to match.
+ */
+function matchesLocation(listing: InventoryListing, preferences?: SearchPreferences): boolean {
+  if (!preferences?.location) return true; // no stated requirement — nothing to exclude on
+  if (!listing.location) return false; // can't verify an unstated location against a stated one
+  return locationsMatch(preferences.location, listing.location);
+}
+
+/** Dial/condition are freeform text, so they nudge sort order rather than hard-exclude — unlike
+ *  location (see matchesLocation above), which is now a mandatory pre-filter. */
 function softPreferenceScore(listing: InventoryListing, preferences?: SearchPreferences): number {
   if (!preferences) return 0;
   let s = 0;
   const haystack = `${listing.description} ${listing.item}`.toLowerCase();
-  if (preferences.location && listing.location.toLowerCase().includes(preferences.location)) s += 1;
   if (preferences.dialColor && haystack.includes(preferences.dialColor)) s += 1;
   if (preferences.condition && listing.condition.toLowerCase().includes(preferences.condition)) s += 1;
   return s;
@@ -88,11 +143,11 @@ function softPreferenceScore(listing: InventoryListing, preferences?: SearchPref
 /**
  * A buyer's request ("buy") matches against FS (for sale) listings;
  * a seller's request ("sell") matches against WTB (want to buy) listings.
- * `preferences` (price/location/dial/condition, collected once per contact) applies price as a
- * MANDATORY pre-filter, before any ranking — a listing outside the stated range is excluded
- * outright, never shown anyway just to have something to display. Location/dial/condition nudge
- * sort order for the freeform fields instead of hard-excluding, since those are much fuzzier to
- * match on exact text.
+ * `preferences` (price/location/dial/condition, collected once per contact) applies price AND
+ * location as MANDATORY pre-filters, before any ranking — a listing outside the stated budget
+ * or outside the stated location is excluded outright, never shown anyway just to have something
+ * to display. Dial/condition nudge sort order for the freeform fields instead of hard-excluding,
+ * since those are much fuzzier to match on exact text.
  *
  * When the query names a specific reference number, that's a hard filter: only listings whose
  * own `ref` normalizes to an exact match are ever returned — never falling back to keyword
@@ -110,9 +165,10 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
 
   if (requestedRef) {
     const exact = candidates.filter((l) => l.ref && referencesMatch(l.ref, requestedRef));
-    // No price-ignoring fallback: a listing over budget is excluded, period — showing it anyway
-    // "so there's something to display" is worse than truthfully showing nothing.
-    const pool = exact.filter((l) => inPriceRange(l, preferences));
+    // No price/location-ignoring fallback: a listing over budget or outside the stated location
+    // is excluded, period — showing it anyway "so there's something to display" is worse than
+    // truthfully showing nothing.
+    const pool = exact.filter((l) => inPriceRange(l, preferences) && matchesLocation(l, preferences));
     const ranked = pool
       .map((listing) => ({
         listing,
@@ -127,9 +183,9 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   }
 
   const tokens = tokenize(request.query);
-  // Same mandatory price pre-filter as the reference branch above — a hard budget is never
-  // relaxed just because nothing else in the broader pool happens to fit it.
-  const pool = candidates.filter((l) => inPriceRange(l, preferences));
+  // Same mandatory price/location pre-filter as the reference branch above — a hard budget or
+  // location is never relaxed just because nothing else in the broader pool happens to fit it.
+  const pool = candidates.filter((l) => inPriceRange(l, preferences) && matchesLocation(l, preferences));
 
   const ranked = pool
     .map((listing) => ({
@@ -171,9 +227,9 @@ export interface MatchResult {
  * side only, never an inactive row); any candidate whose OWN reference explicitly conflicts
  * with the requested one is excluded BEFORE AI ever sees the pool (referencesMatch) and
  * re-checked again AFTER AI ranks it — this is the one rule AI is never allowed to override,
- * so a wrong AI pick still can't surface a 116508 for a 116500 request. A hard price ceiling is
- * applied the same way, both before and after. Nothing about approval/trial/entitlement/
- * billing/ledger state is touched here — this function only decides which listings to show;
+ * so a wrong AI pick still can't surface a 116508 for a 116500 request. A hard price ceiling and
+ * a stated location requirement are applied the same way, both before and after. Nothing about
+ * approval/trial/entitlement/billing/ledger state is touched here — this function only decides which listings to show;
  * flow.ts's existing approve/pass handling is completely unaffected either way.
  */
 export async function findMatchesHybrid(phone: string, request: ItemRequest, limit: number, preferences?: SearchPreferences): Promise<MatchResult[]> {
@@ -209,10 +265,16 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   // missing/ambiguous (ASK, or unparseable) is excluded when a ceiling is stated, rather than
   // presented as a confirmed match with an unverified price.
   const priceCeiling = interpreted.maxPrice ?? preferences?.priceMax;
+  // Same mandatory-location principle as findMatches (see matchesLocation) — a stated "US only"
+  // is never relaxed just because the AI's own pool happens to be thin without it.
+  const requestedLocation = interpreted.location ?? preferences?.location;
   const withinBudget = eligible.filter((l) => {
-    if (priceCeiling === undefined || priceCeiling === null) return true;
-    const price = parseListingPrice(l.price);
-    return price !== undefined && price <= priceCeiling;
+    if (priceCeiling !== undefined && priceCeiling !== null) {
+      const price = parseListingPrice(l.price);
+      if (price === undefined || price > priceCeiling) return false;
+    }
+    if (requestedLocation && !matchesLocation(l, { location: requestedLocation })) return false;
+    return true;
   });
 
   // No arbitrary fallback pool here: a listing over budget, or one AI can't verify against the
@@ -239,6 +301,7 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
       const price = parseListingPrice(listing.price);
       if (price === undefined || price > priceCeiling) continue; // belt & suspenders — never surface an over-budget or unverifiable price under a stated ceiling
     }
+    if (requestedLocation && !matchesLocation(listing, { location: requestedLocation })) continue; // belt & suspenders — never surface a listing outside a stated location requirement
     results.push({ listing, explanation: pick.explanation });
     if (results.length >= limit) break;
   }
