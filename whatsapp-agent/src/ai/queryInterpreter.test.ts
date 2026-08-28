@@ -147,7 +147,11 @@ test("confirmed SGD budgets retain their currency and maximum", () => {
 });
 
 test("explicit maximum and budget phrases remain exact ceilings", () => {
-  for (const text of ["WTB Patek 5712G maximum 100k", "WTB Patek 5712G budget of $100,000"]) {
+  for (const text of [
+    "WTB Patek 5712G maximum 100k",
+    "WTB Patek 5712G budget of $100,000",
+    "WTB Patek 5712G, my budget is $100k",
+  ]) {
     assert.deepEqual(extractConfirmedNaturalLanguageIntent(text), {
       intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMin: null, priceMax: 100000, currency: "USD",
     });

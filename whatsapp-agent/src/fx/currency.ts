@@ -16,11 +16,13 @@ export const CURRENCY_SYMBOLS: Record<string, string> = {
   SGD: "S$",
   CAD: "C$",
   AUD: "A$",
+  JPY: "¥",
+  CNY: "CN¥",
 };
 
 /**
- * Symbols tried longest-first so "HK$"/"S$"/"C$"/"A$" are recognized before the bare "$" they
- * contain. Bare "$" is deliberately excluded here and handled separately in
+ * Symbols tried longest-first so "HK$"/"S$"/"C$"/"A$"/"CN¥" are recognized before the
+ * bare "$"/"¥" they contain. Bare "$" is deliberately excluded here and handled separately in
  * parseNativePriceToken below, resolving to config.fx.baseCurrency rather than a hardcoded
  * "USD" — it's a config-driven default assumption, not a confirmed currency read from the text.
  */

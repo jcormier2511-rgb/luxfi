@@ -16,7 +16,7 @@ export interface ConfirmedNaturalLanguageIntent {
 
 const CURRENCY_MARKER = String.raw`(?:HK\$|C\$|S\$|A\$|CN¥|[$€£¥]|\b(?:USD|HKD|EUR|GBP|AED|CHF|CAD|SGD|AUD|JPY|CNY|RMB)\b)`;
 const PRICE_NUMBER = String.raw`[\d][\d.,]*(?:\s*[kK]\b)?`;
-const PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|over|at least|min(?:imum)?|above|more than|budget(?:\s+of)?|around|about)\b`;
+const PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|over|at least|min(?:imum)?|above|more than|budget(?:\s+(?:of|is))?|around|about)\b`;
 
 /** Returns only the explicit price-bearing substring, never an earlier watch reference. */
 function extractExplicitPriceExpression(text: string): string | null {

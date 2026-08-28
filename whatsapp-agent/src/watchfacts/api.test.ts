@@ -122,6 +122,17 @@ function saleWithListingTitle(title: string, overrides: Partial<RawFlashSale> = 
   return { ...base, title, listings: base.listings.map((l) => ({ ...l, title })) };
 }
 
+test("WatchFacts ingestion preserves a yen title price and its JPY currency together", () => {
+  const [listing] = mapToInventoryListings(
+    saleWithListingTitle("Patek 5712G ¥15,000,000", { price: 2 }),
+    "FS"
+  );
+  assert.equal(listing.price, "15000000");
+  assert.equal(listing.nativePriceAmount, 15000000);
+  assert.equal(listing.nativeCurrency, "JPY");
+  assert.equal(listing.originalPriceText, "¥15,000,000");
+});
+
 test("mapToInventoryListings still uses the structured sale.price when the title has no price of its own to check against", () => {
   const [listing] = mapToInventoryListings(saleWithListingTitle("Rolex Daytona 116500LN, box and papers", { price: 28500 }), "FS");
   assert.equal(listing.price, "28500");

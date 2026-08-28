@@ -23,6 +23,15 @@ test("extractNativePrice reads EUR and GBP", () => {
   assert.deepEqual(extractNativePrice("Submariner, GBP 8,000"), { amount: 8000, currency: "GBP", originalText: "GBP 8,000" });
 });
 
+test("extractNativePrice distinguishes JPY and CNY symbols", () => {
+  assert.deepEqual(extractNativePrice("Patek 5712G ¥15,000,000"), {
+    amount: 15000000, currency: "JPY", originalText: "¥15,000,000",
+  });
+  assert.deepEqual(extractNativePrice("Patek 5712G CN¥700,000"), {
+    amount: 700000, currency: "CNY", originalText: "CN¥700,000",
+  });
+});
+
 test("required regression: a bare $ with no other currency signal resolves to the configured base currency (USD)", () => {
   const result = extractNativePrice("Rolex Daytona 116500LN $28,500");
   assert.deepEqual(result, { amount: 28500, currency: "USD", originalText: "$28,500" });
@@ -62,6 +71,11 @@ test("required regression: formatCurrency matches the exact required display for
   assert.equal(formatCurrency(170000, "AUD"), "A$170,000 AUD");
 });
 
+test("yen currencies format with their distinct symbols", () => {
+  assert.equal(formatCurrency(1000000, "JPY"), "¥1,000,000 JPY");
+  assert.equal(formatCurrency(700000, "CNY"), "CN¥700,000 CNY");
+});
+
 test("required regression: an unknown/unmapped currency still formats with its ISO code, never a wrong symbol", () => {
-  assert.equal(formatCurrency(1000000, "JPY"), "1,000,000 JPY");
+  assert.equal(formatCurrency(1000000, "CHF"), "1,000,000 CHF");
 });

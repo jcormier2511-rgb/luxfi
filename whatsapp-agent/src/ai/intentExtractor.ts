@@ -95,7 +95,7 @@ reference is the reference number exactly as written (e.g. "5712", "5712G", "116
 dial and condition are read directly off the message — null if not mentioned, never guessed.
 year is a 4-digit model/production year if explicitly mentioned as a year (not a reference) — else null.
 boxPapers is true only if box and/or papers are explicitly mentioned as included, false only if explicitly mentioned as NOT included/missing, else null.
-priceMin/priceMax are numbers in the given currency, extracted ONLY from a number clearly adjacent to a supported currency marker (USD/HKD/EUR/GBP/AED/CHF/CAD/SGD/JPY/CNY/RMB, including $/HK$/€/£/C$/S$/¥/CN¥) or a "k"/"K" shorthand suffix — NEVER from a bare reference number or a bare 4-digit year. "105.000 USD" and "105,000 USD" and "$105,000" all mean 105000. "26.2k" means 26200. A single stated ceiling ("under 25k") sets priceMax only; a single stated floor sets priceMin only; a range sets both. Leave both null if no reliable price is stated — never guess a number.
+priceMin/priceMax are numbers in the given currency, extracted ONLY from a number clearly adjacent to a supported currency marker (USD/HKD/EUR/GBP/AED/CHF/CAD/SGD/AUD/JPY/CNY/RMB, including $/HK$/€/£/C$/S$/A$/¥/CN¥) or a "k"/"K" shorthand suffix — NEVER from a bare reference number or a bare 4-digit year. "105.000 USD" and "105,000 USD" and "$105,000" all mean 105000. "26.2k" means 26200. A single stated ceiling ("under 25k") sets priceMax only; a single stated floor sets priceMin only; a range sets both. Leave both null if no reliable price is stated — never guess a number.
 currency is the 3-letter code (default "USD" if a $ sign or no currency is given but a price was found).
 location is a stated country/region/city — null if not mentioned.
 searchText is brand + model + reference, cleanly joined (e.g. "Patek Philippe 5712G") — never the raw sentence, never a leftover fragment like "to buy a patek 5712g".
@@ -125,12 +125,15 @@ function isValidIntent(value: unknown): value is Intent {
 const CURRENCY_CODE = `(?:${[...SUPPORTED_CURRENCIES, "RMB"].join("|")})`;
 const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[$€£¥])";
 const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)";
-const NL_PRICE_PATTERN = new RegExp(
-  `${CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b` + // $105,000 / $25k / €5000
+const NL_PRICE_TOKEN =
+  `(?:${CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b` + // $105,000 / $25k / €5000
     `|\\b${CURRENCY_CODE}\\s?${NUM}\\s?[kK]?\\b` + // USD 105000
     `|\\b${NUM}\\s?[kK]?\\s?${CURRENCY_CODE}\\b` + // 105.000 USD / 105k USD
-    `|\\b${NUM}\\s?[kK]\\b`, // bare 25k / 26.2k -- no currency marker at all
-  "gi"
+    `|\\b${NUM}\\s?[kK]\\b)`; // bare 25k / 26.2k -- no currency marker at all
+const NL_PRICE_PATTERN = new RegExp(NL_PRICE_TOKEN, "gi");
+const NL_PRICE_RANGE_PATTERN = new RegExp(
+  `(${NL_PRICE_TOKEN})\\s*(?:-|to|–)\\s*(${NL_PRICE_TOKEN})`,
+  "i"
 );
 const GOLD_PURITY_WORD = /^\s*(gold|karat|kt\b|white\s+gold|yellow\s+gold|rose\s+gold)/i;
 
@@ -153,6 +156,15 @@ function nlPriceMentions(text: string): { value: number; currency: string }[] {
 
 function nlPriceValues(text: string): Set<number> {
   return new Set(nlPriceMentions(text).map((mention) => mention.value));
+}
+
+/** Ordered endpoints from one explicit price range; null for unrelated multiple amounts. */
+function nlPriceRange(text: string): { min: number; max: number } | null {
+  const match = text.match(NL_PRICE_RANGE_PATTERN);
+  if (!match) return null;
+  const min = normalizePriceShorthand(match[1]);
+  const max = normalizePriceShorthand(match[2]);
+  return min === null || max === null ? null : { min, max };
 }
 
 /** Canonical currency from the same verified price token(s), never the model or unrelated text. */
@@ -181,10 +193,7 @@ export function extractVerifiedPriceCurrency(text: string): string | null {
 function verifiedPrice(claimed: number | null, rawText: string): number | null | "unreliable" {
   if (claimed === null) return null;
   const found = nlPriceValues(rawText);
-  if (found.size === 1) return [...found][0];
-  // A real range contains two values. Trust each claimed endpoint only when it exactly appears
-  // in that verified set; a third/invented value remains unreliable.
-  return found.has(claimed) ? claimed : "unreliable";
+  return found.size === 1 ? [...found][0] : "unreliable";
 }
 
 export interface IntentExtractionResult {
@@ -216,8 +225,15 @@ export async function extractIntent(text: string): Promise<IntentExtractionResul
   const reference = result.reference?.trim() || null;
   const searchText = [brand, model, reference].filter(Boolean).join(" ").trim() || result.searchText?.trim() || null;
 
-  const minCheck = verifiedPrice(result.priceMin ?? null, trimmed);
-  const maxCheck = verifiedPrice(result.priceMax ?? null, trimmed);
+  const range = nlPriceRange(trimmed);
+  const rangeRolesUnreliable =
+    range !== null && (result.priceMin !== range.min || result.priceMax !== range.max);
+  const minCheck = range
+    ? rangeRolesUnreliable ? "unreliable" : range.min
+    : verifiedPrice(result.priceMin ?? null, trimmed);
+  const maxCheck = range
+    ? rangeRolesUnreliable ? "unreliable" : range.max
+    : verifiedPrice(result.priceMax ?? null, trimmed);
   const checkedPriceMin = minCheck === "unreliable" ? null : minCheck;
   const checkedPriceMax = maxCheck === "unreliable" ? null : maxCheck;
   const verifiedCurrency = extractVerifiedPriceCurrency(trimmed);
