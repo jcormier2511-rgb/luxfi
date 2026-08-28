@@ -139,3 +139,30 @@ test('sync/fs, sync/wtb, and reconcile admin routes return their service results
   expect(reconcile.status).toBe(200);
   expect(typeof reconcile.body.postingsScanned).toBe('number');
 });
+
+test('merge-into route links a provisional identity into a target account', async () => {
+  const app = createApp(pool);
+  idCounter += 1;
+  const from = await resolveCanonicalUserForPlatformIdentity(pool, {
+    platform: 'whatsapp',
+    platformUserId: `merge-route-from-${idCounter}`,
+  });
+  const to = await resolveCanonicalUserForPlatformIdentity(pool, {
+    platform: 'whatsapp',
+    platformUserId: `merge-route-to-${idCounter}`,
+  });
+
+  const sameId = await request(app)
+    .post(`/admin/users/${from.canonicalUserId}/merge-into/${from.canonicalUserId}`)
+    .set('x-admin-token', ADMIN_TOKEN);
+  expect(sameId.status).toBe(400);
+
+  const ok = await request(app)
+    .post(`/admin/users/${from.canonicalUserId}/merge-into/${to.canonicalUserId}`)
+    .set('x-admin-token', ADMIN_TOKEN);
+  expect(ok.status).toBe(200);
+  expect(ok.body).toEqual({ status: 'merged', from: from.canonicalUserId, into: to.canonicalUserId });
+
+  const { rows } = await pool.query('SELECT merged_into_id FROM canonical_users WHERE id = $1', [from.canonicalUserId]);
+  expect(rows[0].merged_into_id).toBe(to.canonicalUserId);
+});
