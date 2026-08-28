@@ -133,6 +133,28 @@ test("WatchFacts ingestion preserves a yen title price and its JPY currency toge
   assert.equal(listing.originalPriceText, "¥15,000,000");
 });
 
+test("WatchFacts ingestion canonicalizes RMB native prices to CNY", () => {
+  const [listing] = mapToInventoryListings(
+    saleWithListingTitle("Patek 5712G RMB 900000", { price: 2 }),
+    "FS"
+  );
+  assert.equal(listing.price, "900000");
+  assert.equal(listing.nativePriceAmount, 900000);
+  assert.equal(listing.nativeCurrency, "CNY");
+  assert.equal(listing.originalPriceText, "RMB 900000");
+});
+
+test("WatchFacts ingestion keeps dot-grouped legacy and native amounts consistent", () => {
+  const [listing] = mapToInventoryListings(
+    saleWithListingTitle("Patek 5712G €1.250.000", { price: 2 }),
+    "FS"
+  );
+  assert.equal(listing.price, "1250000");
+  assert.equal(listing.nativePriceAmount, 1250000);
+  assert.equal(listing.nativeCurrency, "EUR");
+  assert.equal(listing.originalPriceText, "€1.250.000");
+});
+
 test("mapToInventoryListings still uses the structured sale.price when the title has no price of its own to check against", () => {
   const [listing] = mapToInventoryListings(saleWithListingTitle("Rolex Daytona 116500LN, box and papers", { price: 28500 }), "FS");
   assert.equal(listing.price, "28500");

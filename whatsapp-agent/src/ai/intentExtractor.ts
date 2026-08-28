@@ -2,6 +2,7 @@ import { callAiJson } from "./client";
 import { config } from "../config";
 import { normalizePriceShorthand } from "../postings/normalize";
 import { detectCurrency, SUPPORTED_CURRENCIES } from "../matching/currency";
+import { parsePriceRange } from "../conversation/preferences";
 
 /**
  * The single structured shape every private WhatsApp message is converted into (Fi routing
@@ -131,8 +132,13 @@ const NL_PRICE_TOKEN =
     `|\\b${NUM}\\s?[kK]?\\s?${CURRENCY_CODE}\\b` + // 105.000 USD / 105k USD
     `|\\b${NUM}\\s?[kK]\\b)`; // bare 25k / 26.2k -- no currency marker at all
 const NL_PRICE_PATTERN = new RegExp(NL_PRICE_TOKEN, "gi");
+// Range detection accepts compact shared-unit notation such as 80-100k USD. The overall
+// expression must still carry a currency marker or k suffix, so bare year ranges are rejected.
 const NL_PRICE_RANGE_PATTERN = new RegExp(
-  `(${NL_PRICE_TOKEN})\\s*(?:-|to|–)\\s*(${NL_PRICE_TOKEN})`,
+  `(?:${CURRENCY_SYMBOL}\\s*|\\b${CURRENCY_CODE}\\b\\s*)?` +
+    `\\b(${NUM}\\s?[kK]?)\\s*(?:-|to|–)\\s*` +
+    `(?:${CURRENCY_SYMBOL}\\s*)?\\b(${NUM}\\s?[kK]?)` +
+    `(?:\\s*(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b))?`,
   "i"
 );
 const GOLD_PURITY_WORD = /^\s*(gold|karat|kt\b|white\s+gold|yellow\s+gold|rose\s+gold)/i;
@@ -162,9 +168,15 @@ function nlPriceValues(text: string): Set<number> {
 function nlPriceRange(text: string): { min: number; max: number } | null {
   const match = text.match(NL_PRICE_RANGE_PATTERN);
   if (!match) return null;
-  const min = normalizePriceShorthand(match[1]);
-  const max = normalizePriceShorthand(match[2]);
-  return min === null || max === null ? null : { min, max };
+  const expression = match[0];
+  const hasPriceSignal = new RegExp(`(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b|\\d[\\d.,]*\\s*k\\b)`, "i")
+    .test(expression);
+  if (!hasPriceSignal) return null;
+
+  const parsed = parsePriceRange(expression);
+  return parsed?.min === undefined || parsed.max === undefined
+    ? null
+    : { min: parsed.min, max: parsed.max };
 }
 
 /** Canonical currency from the same verified price token(s), never the model or unrelated text. */

@@ -32,6 +32,18 @@ test("extractNativePrice distinguishes JPY and CNY symbols", () => {
   });
 });
 
+test("extractNativePrice canonicalizes RMB to CNY", () => {
+  assert.deepEqual(extractNativePrice("Patek 5712G RMB 900000"), {
+    amount: 900000, currency: "CNY", originalText: "RMB 900000",
+  });
+});
+
+test("extractNativePrice consumes repeated dot thousands groups", () => {
+  assert.deepEqual(extractNativePrice("Patek 5712G €1.250.000"), {
+    amount: 1250000, currency: "EUR", originalText: "€1.250.000",
+  });
+});
+
 test("required regression: a bare $ with no other currency signal resolves to the configured base currency (USD)", () => {
   const result = extractNativePrice("Rolex Daytona 116500LN $28,500");
   assert.deepEqual(result, { amount: 28500, currency: "USD", originalText: "$28,500" });

@@ -47,6 +47,12 @@ test("a k-shorthand range like 5k-8k still parses both ends correctly", () => {
   assert.equal(range!.max, 8000);
 });
 
+test("a single k suffix applies to both compact range endpoints", () => {
+  assert.deepEqual(parsePriceRange("80-100k USD"), { min: 80000, max: 100000 });
+  assert.deepEqual(parsePriceRange("80k-100 USD"), { min: 80000, max: 100000 });
+  assert.deepEqual(parsePriceRange("80000-100k USD"), { min: 80000, max: 100000 });
+});
+
 test("'under 25k' still sets only a max", () => {
   const range = parsePriceRange("under 25k");
   assert.equal(range!.min, undefined);

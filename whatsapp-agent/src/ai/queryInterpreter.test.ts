@@ -207,6 +207,17 @@ test("a suffix currency applies to both endpoints of a budget range", () => {
   });
 });
 
+test("a single k suffix applies to both compact budget endpoints", () => {
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G budget 80-100k USD"), {
+    intent: "buy",
+    brand: "Patek Philippe",
+    reference: "5712G",
+    priceMin: 80000,
+    priceMax: 100000,
+    currency: "USD",
+  });
+});
+
 test("a bare year range is never treated as a USD budget", async (t) => {
   const text = "WTB Patek 5712G from 2020-2022";
   assert.deepEqual(extractConfirmedNaturalLanguageIntent(text), {

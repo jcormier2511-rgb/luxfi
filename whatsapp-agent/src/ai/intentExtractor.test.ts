@@ -199,6 +199,17 @@ test("the primary intent verifier preserves both endpoints of a same-currency ra
   assert.equal(result!.priceUnreliable, false);
 });
 
+test("the primary intent verifier inherits one k suffix across a compact range", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 80000, priceMax: 100000, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G budget 80-100k USD");
+  assert.equal(result!.intent.priceMin, 80000);
+  assert.equal(result!.intent.priceMax, 100000);
+  assert.equal(result!.intent.currency, "USD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
 test("the primary intent verifier rejects incomplete or swapped range endpoints", async (t) => {
   let current = { priceMin: 80000 as number | null, priceMax: null as number | null };
   t.mock.method(client, "callAiJson", async () =>

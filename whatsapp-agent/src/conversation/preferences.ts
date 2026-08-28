@@ -40,8 +40,16 @@ export function parsePriceRange(text: string): PriceRange | undefined {
   // the second number entirely (falling through to the single-target approximation instead).
   const rangeMatch = normalized.match(/\$?\s*([\d.,]+k?)\s*(?:-|to|–)\s*\$?\s*([\d.,]+k?)/i);
   if (rangeMatch) {
-    const min = toNumber(rangeMatch[1]);
-    const max = toNumber(rangeMatch[2]);
+    let min = toNumber(rangeMatch[1]);
+    let max = toNumber(rangeMatch[2]);
+    const minHasThousandsSuffix = /k$/i.test(rangeMatch[1]);
+    const maxHasThousandsSuffix = /k$/i.test(rangeMatch[2]);
+
+    // In compact dealer notation the one written "k" applies to both small endpoints:
+    // 80-100k means 80,000-100,000. Already-expanded values such as 80000-100k stay intact.
+    if (maxHasThousandsSuffix && !minHasThousandsSuffix && min !== undefined && min < 1000) min *= 1000;
+    if (minHasThousandsSuffix && !maxHasThousandsSuffix && max !== undefined && max < 1000) max *= 1000;
+
     if (min !== undefined || max !== undefined) return { min, max };
   }
 
