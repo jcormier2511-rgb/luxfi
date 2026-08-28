@@ -5,6 +5,12 @@ on:
     paths:
       - "whatsapp-agent/**"
       - ".github/workflows/whatsapp-agent-ci.yml"
+  push:
+    branches:
+      - codex/fix-live-webhook-bug-and-add-tests
+    paths:
+      - "whatsapp-agent/**"
+      - ".github/workflows/whatsapp-agent-ci.yml"
   workflow_dispatch:
 
 permissions:
@@ -40,7 +46,7 @@ jobs:
       WEBHOOK_TOKEN: test
       DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/luxfi_test
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      PERSIST_DIR: ${{ runner.temp }}/luxfi-persist
+      PERSIST_DIR: /tmp/luxfi-persist
 
     steps:
       - name: Check out pull request
