@@ -1,6 +1,6 @@
 import { Page } from "playwright";
 import { InventoryListing, ListingType } from "../types";
-import { extractReference } from "../postings/normalize";
+import { extractReference, extractUnambiguousPrice } from "../postings/normalize";
 
 /**
  * Real WatchFacts Trading Floor API, found by capturing network traffic from a logged-in
@@ -95,12 +95,12 @@ export function resolveListingDetails(sale: RawFlashSale): (RawListingDetail | u
  *
  * A bundle's `sale.price` is a single total for the whole lot — attributing that figure to
  * each individual sub-listing would misrepresent its actual price, so a multi-listing sale
- * uses "ASK" per item instead; a single-listing sale keeps the confirmed top-level price.
+ * uses "ASK" per item instead; a single-listing sale keeps the confirmed top-level price,
+ * unless the listing's own title names a different, unambiguous price of its own (see below).
  */
 export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): InventoryListing[] {
   const details = resolveListingDetails(sale);
   const isBundleOfMultiple = details.length > 1;
-  const price = !isBundleOfMultiple && sale.price > 0 ? String(sale.price) : "ASK";
 
   return details.map((detail, i) => {
     // Prefer the individual sub-listing's own title over the parent sale's — the sale title is
@@ -111,6 +111,15 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
     // missing, extract one from THAT sub-listing's own title only, never from the parent sale's
     // (bundle-wide) text, which could contain several other watches' reference numbers.
     const ref = detail?.reference || detail?.normalizedReference || extractReference(title) || "";
+    // Real reported bug: a single-listing sale's structured sale.price field disagreed wildly
+    // with the price the dealer actually typed into the title ("$2" vs. the title's own
+    // "105.000 USD"). When the title itself names one unambiguous price, that specific,
+    // human-typed figure for THIS watch is trusted over the structured field — the structured
+    // field is used only as a fallback when the title has no price of its own to check against.
+    // Never attempted for a bundle item — sale.price there is the whole lot's total, and a
+    // sub-listing's own title price (if any) isn't cross-checked against anything reliable.
+    const textPrice = !isBundleOfMultiple ? extractUnambiguousPrice(title) : null;
+    const price = isBundleOfMultiple ? "ASK" : textPrice !== null ? String(textPrice) : sale.price > 0 ? String(sale.price) : "ASK";
     return {
       id: isBundleOfMultiple ? `${sale.id}-${detail?.id ?? i}` : sale.id,
       type,

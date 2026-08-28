@@ -76,6 +76,88 @@ test("mapToInventoryListings treats a 0 top-level price as ASK for a single-list
   assert.equal(listing.price, "ASK");
 });
 
+test("required regression: a single-listing sale's own title price is trusted over a structured sale.price that disagrees with it", () => {
+  // Exact reported live bug: sale.price = 2 while the listing's own title clearly states
+  // "105.000 USD" — the structured field was garbage, the title was correct.
+  const [listing] = mapToInventoryListings(
+    sale({
+      price: 2,
+      title: "Patek 5712G FullSet 2024 105.000 USD (Ref. 5712G)",
+      listings: [
+        {
+          id: "sale-1",
+          brand: "Patek Philippe",
+          model: null,
+          reference: "5712G",
+          normalizedReference: null,
+          title: "Patek 5712G FullSet 2024 105.000 USD (Ref. 5712G)",
+          condition: "New",
+          frontImage: null,
+          box: "Yes",
+          papers: "Yes",
+          dialColor: null,
+        },
+      ],
+    }),
+    "FS"
+  );
+  assert.equal(listing.price, "105000", "the title's own unambiguous price must win over a disagreeing structured field");
+});
+
+function saleWithListingTitle(title: string, overrides: Partial<RawFlashSale> = {}): RawFlashSale {
+  const base = sale(overrides);
+  return { ...base, title, listings: base.listings.map((l) => ({ ...l, title })) };
+}
+
+test("mapToInventoryListings still uses the structured sale.price when the title has no price of its own to check against", () => {
+  const [listing] = mapToInventoryListings(saleWithListingTitle("Rolex Daytona 116500LN, box and papers", { price: 28500 }), "FS");
+  assert.equal(listing.price, "28500");
+});
+
+test("mapToInventoryListings falls back to the title's own price when the structured field is 0/missing", () => {
+  const [listing] = mapToInventoryListings(saleWithListingTitle("Rolex Daytona 116500LN asking $28,500", { price: 0 }), "FS");
+  assert.equal(listing.price, "28500");
+});
+
+test("a bundle sub-listing's own title price is still never trusted — sale.price there is the whole lot's total, not a per-item signal", () => {
+  const bundleSale = sale({
+    price: 500000,
+    listings: [
+      {
+        id: "d1",
+        brand: "Rolex",
+        model: null,
+        reference: "116500LN",
+        normalizedReference: null,
+        title: "Rolex Daytona 116500LN asking $63,000",
+        condition: "New",
+        frontImage: null,
+        box: null,
+        papers: null,
+        dialColor: null,
+      },
+      {
+        id: "d2",
+        brand: "Patek Philippe",
+        model: null,
+        reference: "5711",
+        normalizedReference: null,
+        title: "Nautilus 5711",
+        condition: "Used",
+        frontImage: null,
+        box: null,
+        papers: null,
+        dialColor: null,
+      },
+    ],
+  });
+  const listings = mapToInventoryListings(bundleSale, "FS");
+  assert.ok(
+    listings.every((l) => l.price === "ASK"),
+    "a bundle item's price must stay ASK even when its own title happens to name a price"
+  );
+});
+
 test("mapToInventoryListings tags WTB the same way as FS, just with a different type", () => {
   const [listing] = mapToInventoryListings(sale(), "WTB");
   assert.equal(listing.type, "WTB");

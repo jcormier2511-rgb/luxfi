@@ -137,8 +137,11 @@ function distinctPriceValues(text: string): Set<number> {
  * A single, unambiguous $-amount in the text. Multiple distinct price mentions (e.g. a
  * multi-item dealer price list dumped as one message) make it impossible to know which price
  * belongs to which item, so this returns null rather than guessing by picking the first one.
+ * Exported so watchfacts/api.ts can cross-check a WatchFacts "single" listing's own structured
+ * `sale.price` field against what the listing's own title/description actually says — see
+ * mapToInventoryListings for why the structured field alone isn't always trustworthy.
  */
-function extractUnambiguousPrice(text: string): number | null {
+export function extractUnambiguousPrice(text: string): number | null {
   const distinct = distinctPriceValues(text);
   if (distinct.size !== 1) return null;
   const [only] = distinct;
