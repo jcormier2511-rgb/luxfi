@@ -200,6 +200,28 @@ test("a suffix currency applies to both endpoints of a budget range", () => {
   });
 });
 
+test("a bare year range is never treated as a USD budget", async (t) => {
+  const text = "WTB Patek 5712G from 2020-2022";
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent(text), {
+    intent: "buy",
+    brand: "Patek Philippe",
+    reference: "5712G",
+    priceMin: null,
+    priceMax: null,
+    currency: null,
+  });
+
+  t.mock.method(client, "callAiJson", async () => ({
+    action: "buy", brand: "Patek", referenceFamily: "5712", minPrice: 2020, maxPrice: 2022,
+    currency: "USD", location: null, dialColor: null, condition: null,
+    hardRequirements: [], preferences: [],
+  }));
+  const interpreted = await interpretQuery(text);
+  assert.equal(interpreted?.minPrice, null);
+  assert.equal(interpreted?.maxPrice, null);
+  assert.equal(interpreted?.currency, null);
+});
+
 test("AUD budgets are never defaulted to USD", () => {
   for (const text of ["WTB Patek 5712G under AUD 100,000", "WTB Patek 5712G under A$100,000"]) {
     assert.equal(extractConfirmedNaturalLanguageIntent(text).currency, "AUD", text);

@@ -20,10 +20,24 @@ const PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less tha
 
 /** Returns only the explicit price-bearing substring, never an earlier watch reference. */
 function extractExplicitPriceExpression(text: string): string | null {
+  // A bare numeric range is not necessarily money (for example a production-year range).
+  // Accept it only when the range itself carries a currency/k marker or immediately follows
+  // explicit price language such as "budget". Iterate past unrelated ranges so a later real
+  // budget in the same message can still be found.
+  const rangePattern = new RegExp(
+    `(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])\\s*(?:-|to|–)\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])(?:\\s*${CURRENCY_MARKER})?`,
+    "gi"
+  );
+  for (const match of text.matchAll(rangePattern)) {
+    const expression = match[0];
+    const precedingText = text.slice(0, match.index);
+    const hasCurrency = new RegExp(CURRENCY_MARKER, "i").test(expression);
+    const hasThousandsShorthand = /\d[\d.,]*\s*k\b/i.test(expression);
+    const hasPriceLanguage = new RegExp(`${PRICE_COMPARATOR}\\s*$`, "i").test(precedingText);
+    if (hasCurrency || hasThousandsShorthand || hasPriceLanguage) return expression;
+  }
+
   const patterns = [
-    // A range must win before a leading comparator such as "budget" can truncate it to the
-    // first endpoint ("budget $80k-$100k" must mean 80k-100k, never a max of 80k).
-    new RegExp(`(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])\\s*(?:-|to|–)\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])(?:\\s*${CURRENCY_MARKER})?`, "i"),
     new RegExp(`${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
     new RegExp(`${CURRENCY_MARKER}\\s*${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
     new RegExp(`${PRICE_NUMBER}(?![A-Z0-9])\\s*${CURRENCY_MARKER}`, "i"),
@@ -95,6 +109,12 @@ export async function interpretQuery(text: string): Promise<InterpretedQuery | n
     // likewise prevents an explicit ceiling from retaining an invented minimum).
     result.minPrice = confirmed.priceMin;
     result.maxPrice = confirmed.priceMax;
+  } else {
+    // Price constraints are safety-critical: an AI-supplied number that cannot be confirmed
+    // from an explicit price expression must not become a budget (notably 2020-2022 years).
+    result.minPrice = null;
+    result.maxPrice = null;
+    result.currency = null;
   }
   if (confirmed.currency) result.currency = confirmed.currency;
   return result;
