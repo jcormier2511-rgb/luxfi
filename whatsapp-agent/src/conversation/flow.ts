@@ -289,15 +289,19 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   if (parsed.length === 0) {
     if (decision) {
       messages.push("I don't have any open matches to decide on right now — search for an item first.");
-    } else if (state.pendingMatches) {
-      messages.push('Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.');
     } else {
-      // Genuine small talk / a question / a greeting outside the "new contact" intro — nothing
-      // else about this message matched anything. AI here only ever supplies the reply TEXT
-      // (see ai/chatReply.ts); it cannot search, approve, or touch any state, so the canned
-      // fallback below is a fully safe default whenever AI is off/unavailable.
-      const aiReply = isAiMatchingEnabledForPhone(phone) ? await generateGeneralChatReply(text) : null;
-      messages.push(aiReply ?? 'Try "buy: Rolex Daytona" or "selling: Hermes Birkin".');
+      // Genuine small talk / a question / a greeting — nothing else about this message matched
+      // anything (already ruled out as a decision above, if matches were pending). AI here only
+      // ever supplies the reply TEXT (see ai/chatReply.ts); it cannot search, approve, or touch
+      // any state, so the canned fallback is a fully safe default whenever AI is off/unavailable
+      // — and it's the ONLY thing every non-test-phone contact ever sees, unchanged.
+      const canned = state.pendingMatches
+        ? 'Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.'
+        : 'Try "buy: Rolex Daytona" or "selling: Hermes Birkin".';
+      const aiReply = isAiMatchingEnabledForPhone(phone)
+        ? await generateGeneralChatReply(text, state.pendingMatches?.matches.length ?? 0)
+        : null;
+      messages.push(aiReply ?? canned);
     }
     saveState(state);
     return { state, messages };

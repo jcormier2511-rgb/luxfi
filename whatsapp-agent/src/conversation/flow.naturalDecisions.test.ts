@@ -30,6 +30,8 @@ const queryInterpreterModule = require("../ai/queryInterpreter") as typeof impor
 const rerankModule = require("../ai/rerank") as typeof import("../ai/rerank");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const decisionModule = require("../ai/decisionInterpreter") as typeof import("../ai/decisionInterpreter");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const chatReplyModule = require("../ai/chatReply") as typeof import("../ai/chatReply");
 
 after(async () => {
   await inventoryDb._closePoolForTests();
@@ -111,11 +113,27 @@ test("a null index defaults to the first match, same as the deterministic 'appro
 test("required regression: when the AI interpretation isn't actually a decision, it falls through to the ordinary 'nothing matched' handling", async (t) => {
   await setUpOnePendingMatch(t);
   t.mock.method(decisionModule, "interpretDecision", async () => ({ action: null, index: null }));
+  t.mock.method(chatReplyModule, "generateGeneralChatReply", async () => null); // simulate AI unavailable for the chat-reply step too
 
   const result = await handleIncomingMessage(TEST_PHONE, "what's the weather like");
   assert.ok(
     result.messages.some((m) => /Reply "approve <number>" or "pass <number>"/.test(m)),
     "a non-decision message must never be forced into an approve/pass action"
+  );
+});
+
+test("required regression: a non-decision message while matches are pending can still get a natural assistant reply, not just the robotic reminder", async (t) => {
+  await setUpOnePendingMatch(t);
+  t.mock.method(decisionModule, "interpretDecision", async () => ({ action: null, index: null }));
+  t.mock.method(chatReplyModule, "generateGeneralChatReply", async (_text: string, pendingCount: number) => {
+    assert.equal(pendingCount, 1, "the pending match count must be passed through as context");
+    return "Hey! Still got that match waiting on your reply above whenever you're ready.";
+  });
+
+  const result = await handleIncomingMessage(TEST_PHONE, "hi");
+  assert.ok(
+    result.messages.includes("Hey! Still got that match waiting on your reply above whenever you're ready."),
+    "a friendly message with pending matches must get a natural reply instead of the canned reminder"
   );
 });
 

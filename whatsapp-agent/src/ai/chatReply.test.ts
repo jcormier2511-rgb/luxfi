@@ -32,3 +32,21 @@ test("generateGeneralChatReply returns null for an empty or missing reply field 
   t.mock.method(client, "callAiJson", async () => ({ reply: "   " }));
   assert.equal(await generateGeneralChatReply("hi"), null);
 });
+
+test("required regression: a nonzero pending-match count is passed through as context to the model", async (t) => {
+  const spy = t.mock.method(client, "callAiJson", async (req: { user: string }) => {
+    assert.match(req.user, /2 match\(es\)/, "the pending match count must be included in what the model sees");
+    return { reply: "Hey! You've still got a couple matches waiting on your reply above." };
+  });
+  const result = await generateGeneralChatReply("hi", 2);
+  assert.equal(result, "Hey! You've still got a couple matches waiting on your reply above.");
+  assert.equal(spy.mock.callCount(), 1);
+});
+
+test("no pending-match context is added when the count is zero", async (t) => {
+  t.mock.method(client, "callAiJson", async (req: { user: string }) => {
+    assert.equal(req.user, "hi", "the raw message must be sent unmodified when there's nothing pending");
+    return { reply: "Hey there!" };
+  });
+  await generateGeneralChatReply("hi", 0);
+});
