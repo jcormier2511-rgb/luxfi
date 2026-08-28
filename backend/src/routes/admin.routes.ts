@@ -4,6 +4,7 @@ import { getAdminStatus } from '../services/admin.service';
 import { setManualEntitlementOverride, setWatchFactsMembershipManual } from '../services/entitlement.service';
 import { runFsSync, runWtbSync } from '../services/sync.service';
 import { reconcileMatches } from '../services/matching.service';
+import { mergeCanonicalUsers } from '../services/canonicalUser.service';
 
 function requireAdminToken(req: Request, res: Response, next: NextFunction): void {
   const token = process.env.ADMIN_API_TOKEN;
@@ -55,6 +56,27 @@ export function adminRoutes(pool: Pool): Router {
     }
     const entitlement = await setWatchFactsMembershipManual(pool, req.params.canonicalUserId, verified, adminActor);
     res.status(200).json(entitlement);
+  });
+
+  /**
+   * Links a provisional identity (an unknown chat participant Fi created
+   * automatically) into a registered account -- e.g. once support confirms a
+   * WhatsApp number belongs to an existing WatchFacts member (spec 5.2). Trial
+   * usage and billing are recomputed from the merged history, never summed,
+   * so this can never manufacture a second complimentary trial.
+   */
+  router.post('/users/:fromCanonicalUserId/merge-into/:toCanonicalUserId', async (req, res) => {
+    const { fromCanonicalUserId, toCanonicalUserId } = req.params;
+    if (fromCanonicalUserId === toCanonicalUserId) {
+      res.status(400).json({ error: 'fromCanonicalUserId and toCanonicalUserId must differ' });
+      return;
+    }
+    try {
+      await mergeCanonicalUsers(pool, fromCanonicalUserId, toCanonicalUserId);
+      res.status(200).json({ status: 'merged', from: fromCanonicalUserId, into: toCanonicalUserId });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
   });
 
   router.post('/sync/fs', async (_req, res) => {
