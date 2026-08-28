@@ -12,12 +12,15 @@ process.env.WEBHOOK_TOKEN = "test";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const postingsDb = require("../postings/db") as typeof import("../postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { resetState } = require("./stateStore") as typeof import("./stateStore");
 
 after(async () => {
   await inventoryDb._closePoolForTests();
+  await postingsDb._closePoolForTests();
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
 
@@ -41,6 +44,7 @@ test("required regression: a completed sell-intake is persisted as a live FS lis
   resetState(SELLER_PHONE);
   resetState(BUYER_PHONE);
   await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
 
   // A specific request (has a reference) skips straight to price — see flow.sellIntake.test.ts —
   // so this is: sell request -> price -> photo.
@@ -49,7 +53,10 @@ test("required regression: a completed sell-intake is persisted as a live FS lis
 
   await handleIncomingMessage(SELLER_PHONE, "28500");
   const finished = await handleIncomingMessage(SELLER_PHONE, "", undefined, "https://example.com/daytona.jpg");
-  assert.match(finished.messages.join("\n"), /added this to the network/i);
+  // No live WTB postings exist for this item in the v4 automatic-matching system (see
+  // conversation/flow.ts's ingestDirectSellPosting call and flow.sellIntake.test.ts's own
+  // coverage of that path), so the honest acknowledgment is "still looking," not a found match.
+  assert.match(finished.messages.join("\n"), /let you know automatically as soon as I find a qualifying buyer/i);
 
   const active = await inventoryDb.getActiveListings("FS");
   const found = active.find((l) => l.item.includes("persistence-findable-listing"));
@@ -69,6 +76,7 @@ test("required regression: a completed sell-intake is persisted as a live FS lis
 test("a sell-intake finished with no photo is still persisted (whatever was collected, not nothing)", async () => {
   resetState(SELLER_PHONE_NO_PHOTO);
   await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
 
   await freshRequest(SELLER_PHONE_NO_PHOTO, "sell: Omega Speedmaster 311.30.42.30.01.005 no-photo-listing");
   await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "12000");
