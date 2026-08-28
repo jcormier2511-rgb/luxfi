@@ -7,9 +7,21 @@
 
 const WTB_KEYWORDS = /\b(wtb|iso|lf|looking\s+for|in\s+search\s+of|ntq)\b/i;
 const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling)\b/i;
+// A price isn't always $-prefixed — overseas dealer price lists (the real-world bug this
+// pattern was extended for: a Hong Kong dealer's "116500ln white 2011 hkd210k" bundle blast)
+// write the currency code directly against the number instead, either before ("hkd210k") or
+// after ("25,5usd", already handled by normalizePriceShorthand's "first currency wins" rule —
+// see below). Recognizing these here (not just $-amounts) is what lets hasMultipleDistinctPrices
+// actually detect that kind of listing as the multi-item dump it is.
+const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|jpy|cny|chf)";
 // Trailing `\s?[kK]?` captures dealer shorthand like "$25.5k" — see normalizePriceShorthand,
 // which does the actual k-multiplication; this pattern just needs to not truncate it away.
-const PRICE_PATTERN = /\$\s?[\d,]+(?:\.\d+)?\s?[kK]?\b/g;
+const PRICE_PATTERN = new RegExp(
+  `\\$\\s?[\\d,]+(?:\\.\\d+)?\\s?[kK]?\\b` +
+    `|\\b${CURRENCY_CODE}\\s?[\\d,]+(?:\\.\\d+)?\\s?[kK]?\\b` +
+    `|\\b[\\d,]+(?:\\.\\d+)?\\s?[kK]?\\s?${CURRENCY_CODE}\\b`,
+  "gi"
+);
 // `(?<!\$\s?)` excludes a digit run directly preceded by a $ sign (with or without a space) —
 // "$20000"/"$ 20000" is unambiguously a price, never a reference, even though bare "20000"
 // alone would otherwise fit the same shape. This is the ONE disambiguation that's actually

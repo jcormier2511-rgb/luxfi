@@ -211,6 +211,28 @@ test("required regression: a WatchFacts 'single' listing whose own description i
   assert.equal(matches.length, 0, "a listing whose description names many distinct prices must never be surfaced as a single match");
 });
 
+test("required regression: an overseas dealer price sheet with no $ signs (currency codes like hkd instead) is also excluded as a bundle blast", async () => {
+  await _resetDbForTests();
+  // The actual reported live bug: a Hong Kong dealer's whole price list, written as
+  // "hkd210k" rather than "$210k" — must still be recognized as a multi-item dump.
+  await upsertListings(
+    [
+      row("hk-dump", {
+        brand: "Rolex",
+        ref: "116500LN",
+        price: "24000",
+        item: "cinly rolex",
+        description:
+          "116500ln white 2011 hkd210k\n116500ln white 2018 hkd233k\n116520 black 2010 hkd167k\n116523g white panda 2012 hkd145k",
+      }),
+    ],
+    new Date().toISOString()
+  );
+
+  const matches = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5, { priceMax: 27000 });
+  assert.equal(matches.length, 0, "a currency-code (non-$) price dump must be excluded exactly like a $-denominated one");
+});
+
 test("required regression: a WatchFacts match card names the exact reference, price/ASK, location, source, and listing URL", () => {
   const listing = {
     id: "sale-1",

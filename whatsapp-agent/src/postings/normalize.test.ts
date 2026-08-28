@@ -150,3 +150,17 @@ test("hasMultipleDistinctPrices returns false for text with no price at all", ()
   assert.equal(hasMultipleDistinctPrices("WTB looking for a nice watch, any brand"), false);
   assert.equal(hasMultipleDistinctPrices(""), false);
 });
+
+test("required regression: hasMultipleDistinctPrices catches a currency-code price dump with no $ sign at all (the reported live bug)", () => {
+  // Real reported case: an overseas dealer's whole price sheet, prices written as "hkd210k"
+  // rather than "$210k" — the original $-only pattern never even saw these as prices.
+  const dump =
+    "116500ln white 2011 hkd210k\n116500ln white 2018 hkd233k\n116520 black 2010 hkd167k\n116523g white panda 2012 hkd145k";
+  assert.equal(hasMultipleDistinctPrices(dump), true);
+});
+
+test("normalizePriceShorthand handles a currency-code-prefixed amount with no $ sign", () => {
+  assert.equal(normalizePriceShorthand("hkd210k"), 210000);
+  assert.equal(normalizePriceShorthand("HKD 233k"), 233000);
+  assert.equal(normalizePriceShorthand("usd25000"), 25000);
+});
