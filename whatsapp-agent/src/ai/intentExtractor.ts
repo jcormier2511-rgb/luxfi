@@ -142,6 +142,8 @@ const NL_PRICE_RANGE_PATTERN = new RegExp(
   "i"
 );
 const GOLD_PURITY_WORD = /^\s*(gold|karat|kt\b|white\s+gold|yellow\s+gold|rose\s+gold)/i;
+const MAX_PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|budget(?:\s+(?:of|is))?)\b`;
+const MIN_PRICE_COMPARATOR = String.raw`\b(?:over|at least|min(?:imum)?|above|more than)\b`;
 
 /** Every distinct normalized price value the raw text unambiguously names, excluding a
  *  k-suffixed number immediately followed by a gold/karat word (a material, not a price). */
@@ -177,6 +179,23 @@ function nlPriceRange(text: string): { min: number; max: number } | null {
   return parsed?.min === undefined || parsed.max === undefined
     ? null
     : { min: parsed.min, max: parsed.max };
+}
+
+/** Deterministic role for one comparator-bound amount, so an AI ceiling can never become a
+ * floor (or vice versa) merely because the numeric value itself appeared in the message. */
+function nlComparatorPriceBounds(text: string): { min: number | null; max: number | null } | null {
+  const maxMatch = text.match(new RegExp(`${MAX_PRICE_COMPARATOR}\\s*(${NL_PRICE_TOKEN})`, "i"));
+  if (maxMatch) {
+    const max = normalizePriceShorthand(maxMatch[1]);
+    return max === null ? null : { min: null, max };
+  }
+
+  const minMatch = text.match(new RegExp(`${MIN_PRICE_COMPARATOR}\\s*(${NL_PRICE_TOKEN})`, "i"));
+  if (minMatch) {
+    const min = normalizePriceShorthand(minMatch[1]);
+    return min === null ? null : { min, max: null };
+  }
+  return null;
 }
 
 /** Canonical currency from the same verified price token(s), never the model or unrelated text. */
@@ -237,14 +256,15 @@ export async function extractIntent(text: string): Promise<IntentExtractionResul
   const reference = result.reference?.trim() || null;
   const searchText = [brand, model, reference].filter(Boolean).join(" ").trim() || result.searchText?.trim() || null;
 
-  const range = nlPriceRange(trimmed);
-  const rangeRolesUnreliable =
-    range !== null && (result.priceMin !== range.min || result.priceMax !== range.max);
-  const minCheck = range
-    ? rangeRolesUnreliable ? "unreliable" : range.min
+  const deterministicBounds = nlPriceRange(trimmed) ?? nlComparatorPriceBounds(trimmed);
+  const boundRolesUnreliable =
+    deterministicBounds !== null &&
+    (result.priceMin !== deterministicBounds.min || result.priceMax !== deterministicBounds.max);
+  const minCheck = deterministicBounds
+    ? boundRolesUnreliable ? "unreliable" : deterministicBounds.min
     : verifiedPrice(result.priceMin ?? null, trimmed);
-  const maxCheck = range
-    ? rangeRolesUnreliable ? "unreliable" : range.max
+  const maxCheck = deterministicBounds
+    ? boundRolesUnreliable ? "unreliable" : deterministicBounds.max
     : verifiedPrice(result.priceMax ?? null, trimmed);
   const checkedPriceMin = minCheck === "unreliable" ? null : minCheck;
   const checkedPriceMax = maxCheck === "unreliable" ? null : maxCheck;

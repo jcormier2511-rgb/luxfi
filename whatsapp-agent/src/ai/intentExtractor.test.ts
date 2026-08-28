@@ -229,6 +229,34 @@ test("the primary intent verifier rejects incomplete or swapped range endpoints"
   }
 });
 
+test("the primary intent verifier rejects a comparator amount placed in the wrong bound", async (t) => {
+  let current = { priceMin: 100000 as number | null, priceMax: null as number | null };
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: current.priceMin, priceMax: current.priceMax, currency: "USD" })
+  );
+
+  for (const [text, claims] of [
+    ["WTB Patek 5712G under $100k", { priceMin: 100000, priceMax: null }],
+    ["WTB Patek 5712G over $100k", { priceMin: null, priceMax: 100000 }],
+  ] as const) {
+    current = claims;
+    const result = await extractIntent(text);
+    assert.equal(result!.intent.priceMin, null, text);
+    assert.equal(result!.intent.priceMax, null, text);
+    assert.equal(result!.priceUnreliable, true, text);
+  }
+});
+
+test("the primary intent verifier preserves a correctly directed floor", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 100000, priceMax: null, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G over $100k");
+  assert.equal(result!.intent.priceMin, 100000);
+  assert.equal(result!.intent.priceMax, null);
+  assert.equal(result!.priceUnreliable, false);
+});
+
 test("the primary intent verifier applies a suffix currency to the full range", async (t) => {
   t.mock.method(client, "callAiJson", async () =>
     aiResult({ intent: "buy", priceMin: 800000, priceMax: 900000, currency: "USD" })
