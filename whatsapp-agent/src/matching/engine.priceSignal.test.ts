@@ -69,7 +69,7 @@ test("attachPriceSignals is a no-op (no query) when there are no FS results to s
 test("formatMatchCard appends the price signal inline on the price line when present, and omits it when absent", () => {
   const listing = { ...row("card-1", { price: "2500" }), source: "WF" };
   const withSignal = formatMatchCard(listing, 0, "buy", undefined, "Attractive");
-  assert.match(withSignal, /\$2500 \(Attractive vs\. comps\)/);
+  assert.match(withSignal, /\$2,500 \(USD \$2,500\) \(Attractive vs\. comps\)/);
 
   const withoutSignal = formatMatchCard(listing, 0, "buy");
   assert.doesNotMatch(withoutSignal, /vs\. comps/);
