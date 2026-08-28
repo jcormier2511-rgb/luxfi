@@ -6,6 +6,8 @@ import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
 import { getEntitlement, recordBillingRequested } from "../billing/entitlementStore";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
+import { interpretDecision } from "../ai/decisionInterpreter";
+import { generateGeneralChatReply } from "../ai/chatReply";
 
 const OPT_OUT_WORDS = ["stop", "unsubscribe", "cancel", "opt out", "optout"];
 
@@ -253,6 +255,26 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     return { state, messages };
   }
 
+  // Fi Concierge Stage 3: people rarely type the literal "approve <n>"/"pass <n>" format they
+  // were shown — "I'll take the first one", "pass on that", "yeah let's do #2" all mean the
+  // same thing. Only tried when the deterministic parser above found nothing AND there's
+  // actually something pending to decide on, and only for the AI matching test phone — see
+  // ai/decisionInterpreter.ts for why this can never approve/reveal/charge anything beyond
+  // what handleDecision (the SAME function the deterministic path uses) already allows.
+  if (state.pendingMatches && isAiMatchingEnabledForPhone(phone)) {
+    const interpretedDecision = await interpretDecision(text, state.pendingMatches.matches.length);
+    if (interpretedDecision?.action) {
+      await handleDecision(
+        state,
+        { action: interpretedDecision.action, index: interpretedDecision.index ?? 1 },
+        messages,
+        firstName
+      );
+      saveState(state);
+      return { state, messages };
+    }
+  }
+
   const parsed = parseItemRequests(text);
 
   if (state.stage === "new") {
@@ -270,7 +292,12 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     } else if (state.pendingMatches) {
       messages.push('Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.');
     } else {
-      messages.push('Try "buy: Rolex Daytona" or "selling: Hermes Birkin".');
+      // Genuine small talk / a question / a greeting outside the "new contact" intro — nothing
+      // else about this message matched anything. AI here only ever supplies the reply TEXT
+      // (see ai/chatReply.ts); it cannot search, approve, or touch any state, so the canned
+      // fallback below is a fully safe default whenever AI is off/unavailable.
+      const aiReply = isAiMatchingEnabledForPhone(phone) ? await generateGeneralChatReply(text) : null;
+      messages.push(aiReply ?? 'Try "buy: Rolex Daytona" or "selling: Hermes Birkin".');
     }
     saveState(state);
     return { state, messages };
