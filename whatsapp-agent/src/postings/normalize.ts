@@ -5,8 +5,11 @@
  * that risk entirely for the MVP rather than needing to firewall an AI call's output.
  */
 
-const WTB_KEYWORDS = /\b(wtb|iso|lf|looking\s+for|in\s+search\s+of|ntq)\b/i;
-const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling)\b/i;
+const WTB_KEYWORDS = /\b(wtb|iso|lf|looking\s+for|in\s+search\s+of|ntq|wanted|need|buying)\b/i;
+// "ready stock"/"in stock"/"available" are dealer-inventory shorthand — a group post announcing
+// what's on hand is a FS signal exactly like "for sale" is, just phrased as availability rather
+// than an offer to sell.
+const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling|ready\s+stock|in\s+stock|available)\b/i;
 // A price isn't always $-prefixed — overseas dealer price lists (the real-world bug this
 // pattern was extended for: a Hong Kong dealer's "116500ln white 2011 hkd210k" bundle blast)
 // write the currency code directly against the number instead, either before ("hkd210k") or
@@ -52,9 +55,20 @@ const BRAND_LIST = [
 
 export type PostingType = "FS" | "WTB";
 
+/**
+ * Explicit buying language ALWAYS wins, checked before FS — a post naming WTB/wanted/looking
+ * for/need/buying/ISO is a buyer's request even if stock/for-sale language also appears
+ * somewhere in the same message (dealer-group chatter is messy; the buyer's own signal is what
+ * actually describes what they want). Absent any explicit keyword either way, a message that
+ * names an actual price or reference number still classifies as FS rather than being silently
+ * dropped — most unstructured trading-group chatter IS exactly this (a dealer's stock/price
+ * list with no "for sale" spelled out), and genuine non-listing chatter ("hey how's it going",
+ * "thanks!") never has a price or reference to trigger this fallback on.
+ */
 export function classifyText(text: string): PostingType | null {
-  if (FS_KEYWORDS.test(text)) return "FS";
   if (WTB_KEYWORDS.test(text)) return "WTB";
+  if (FS_KEYWORDS.test(text)) return "FS";
+  if (distinctPriceValues(text).size > 0 || extractReference(text) !== null) return "FS";
   return null;
 }
 
