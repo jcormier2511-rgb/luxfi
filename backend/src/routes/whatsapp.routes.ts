@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { Pool } from 'pg';
 import { verifyWhatsAppSignature } from '../adapters/whatsapp.client';
 import { getMessagingAdapter } from '../adapters/messaging.adapter';
-import { parseFreeTextPosting } from '../services/messageParsing.service';
+import { getMessageExtractor } from '../adapters/aiExtraction.client';
 import { ingestAndProcessChatPosting } from '../services/chatIngestion.service';
 import { resolveCanonicalUserForPlatformIdentity } from '../services/canonicalUser.service';
 import { approveMatch, passMatch, confirmCounterparty } from '../services/approval.service';
@@ -77,7 +77,7 @@ async function handleTextMessage(
     return;
   }
 
-  const parsed = parseFreeTextPosting(body);
+  const parsed = await getMessageExtractor().extract(body);
   if (!parsed) return; // not recognizable as a command or an FS/WTB post -- leave it alone
 
   await ingestAndProcessChatPosting(pool, {
@@ -89,10 +89,19 @@ async function handleTextMessage(
     originalMessage: body,
     senderPlatformUserId: message.from,
     senderDisplayName,
+    brand: parsed.brand,
+    model: parsed.model,
     referenceNumber: parsed.referenceNumber,
+    dial: parsed.dial,
+    material: parsed.material,
+    year: parsed.year,
+    condition: parsed.condition,
+    boxPapers: parsed.boxPapers,
     askingPrice: parsed.askingPrice,
     maxBid: parsed.maxBid,
     currency: parsed.currency,
+    location: parsed.location,
+    country: parsed.country,
   });
 }
 
