@@ -18,6 +18,13 @@ const HIGH_RATIO = 1.15;
 
 function comparisonPrice(listing: InventoryListing): number | undefined {
   if (listing.priceUsd !== undefined && Number.isFinite(listing.priceUsd)) return listing.priceUsd;
+
+  // WatchFacts keeps its legacy `price` field numeric-only while preserving the actual
+  // denomination in nativeCurrency/nativePriceAmount. If FX conversion was unavailable,
+  // never reinterpret that bare number as USD for a market signal.
+  const nativeCurrency = listing.nativeCurrency?.toUpperCase();
+  if (nativeCurrency && nativeCurrency !== "USD") return undefined;
+
   const money = parseMoney(listing.price);
   return money?.currency === "USD" ? money.amount : undefined;
 }
