@@ -292,7 +292,7 @@ test("required regression: a WatchFacts match card names the exact reference, pr
   };
   const card = formatMatchCard(listing, 0, "buy");
   assert.match(card, /116500LN/, "the exact reference must appear on the card");
-  assert.match(card, /\$28500/, "the price must appear on the card");
+  assert.match(card, /\$28,500/, "the price must appear on the card, comma-formatted");
   assert.match(card, /North America/);
   assert.match(card, /Source: WatchFacts/);
   assert.match(card, /https:\/\/watchfacts\.com\/flash-sales\/sale-1/);

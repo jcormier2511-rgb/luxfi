@@ -359,6 +359,16 @@ function sourceLabel(listing: InventoryListing): string {
   return listing.source || "Unknown";
 }
 
+/** "105000" -> "$105,000" — a stored price is a plain digit string with no thousands grouping
+ *  (see normalizePriceShorthand's own output), so display formatting happens here, once, rather
+ *  than at every call site. Falls back to the raw string for a non-numeric value rather than
+ *  showing "$NaN" — that should never happen for a real stored price, but this is a display
+ *  function, not a validator. */
+function formatPrice(price: string): string {
+  const n = Number(price);
+  return Number.isFinite(n) ? `$${n.toLocaleString("en-US")}` : `$${price}`;
+}
+
 export function formatMatchCard(
   listing: InventoryListing,
   index: number,
@@ -368,7 +378,7 @@ export function formatMatchCard(
 ): string {
   const roleLabel = action === "buy" ? "Seller" : "Buyer";
   const priceLabel = action === "buy" ? "Asking" : "Bid";
-  const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
+  const priceText = listing.price === "ASK" ? "price on ask" : formatPrice(listing.price);
   const watchLine = listing.ref ? `${watchName(listing)} (Ref. ${listing.ref})` : watchName(listing);
   const lines = [
     `Potential Match #${index + 1}`,

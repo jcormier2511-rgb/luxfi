@@ -1,5 +1,5 @@
 import { config, isAiMatchingEnabledForPhone } from "../config";
-import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences } from "../types";
+import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences, MatchDecision } from "../types";
 import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals } from "../matching/engine";
 import { PriceSignal } from "../matching/priceSignal";
 import { requestPhotosForMatch } from "../matching/photoRequests";
@@ -10,8 +10,13 @@ import { getEntitlement, recordBillingRequested } from "../billing/entitlementSt
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
+import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 
-const OPT_OUT_WORDS = ["stop", "unsubscribe", "cancel", "opt out", "optout"];
+// "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
+// current pending match/interview without unsubscribing, see handleCancelCommand below), per
+// the routing fix: approve/pass/photos/cancel/status/help must all be recognized, distinct
+// commands, checked before anything else ever runs.
+const OPT_OUT_WORDS = ["stop", "unsubscribe", "opt out", "optout"];
 
 function normalize(text: string): string {
   return text.trim().toLowerCase();
@@ -22,8 +27,62 @@ function isOptOut(text: string): boolean {
   return OPT_OUT_WORDS.some((w) => n === w || n.startsWith(`${w} `));
 }
 
-const BUY_KEYWORDS = /\b(buy|buying|wtb|looking for|want|need)\b/i;
-const SELL_KEYWORDS = /\b(sell|selling|fs|for sale)\b/i;
+const BUY_KEYWORDS = /\b(buy|buying|wtb|looking for|want|need|iso|find me|in search of)\b/i;
+const SELL_KEYWORDS = /\b(sell|selling|fs|for sale|i have|wts)\b/i;
+
+// Tried longest/most-specific first, in a loop, so a compound lead-in ("I want to buy a...")
+// gets fully consumed rather than just its first word — the real reported bug this fixes: the
+// old single-pass regex only ever stripped ONE leading keyword, so "want to buy a patek 5712G"
+// (leading "I" blocks the old anchor entirely, or leading "want to" leaves "to buy a..." behind
+// either way) ended up storing "to buy a patek 5712G" as the search text/reference instead of
+// "patek 5712G".
+const LEADING_PHRASES = [
+  "i would like to",
+  "i'm looking for",
+  "im looking for",
+  "i am looking for",
+  "in search of",
+  "looking for",
+  "i want to",
+  "want to",
+  "i need to",
+  "need to",
+  "i need",
+  "find me",
+  "i have",
+  "iso",
+  "wtb",
+  "wts",
+  "for sale",
+  "fs",
+  "buying",
+  "buy",
+  "selling",
+  "sell",
+  "want",
+  "need",
+];
+
+/** Strips a leading intent phrase (any combination/order of the above), then a leftover leading
+ *  filler word ("to"/"a"/"an"/"the") — never touches anything after the actual item description
+ *  starts. Exported for the legacy-parser regression tests. */
+export function stripLeadingIntent(text: string): string {
+  let s = text.trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const phrase of LEADING_PHRASES) {
+      const re = new RegExp(`^${phrase.replace(/\s+/g, "\\s+")}\\b[\\s:,-]*`, "i");
+      const stripped = s.replace(re, "");
+      if (stripped !== s) {
+        s = stripped.trim();
+        changed = true;
+        break;
+      }
+    }
+  }
+  return s.replace(/^(a|an|the)\s+/i, "").trim();
+}
 
 function classify(segment: string): ItemRequest | null {
   const text = segment.trim();
@@ -34,9 +93,7 @@ function classify(segment: string): ItemRequest | null {
   if (SELL_KEYWORDS.test(text)) action = "sell";
   else if (BUY_KEYWORDS.test(text)) action = "buy";
   else return null;
-  const query = text
-    .replace(/^(buy|buying|wtb|looking for|want|need|sell|selling|fs|for sale)\s*:?\s*/i, "")
-    .trim();
+  const query = stripLeadingIntent(text);
   if (!query) return null;
   return { action, query };
 }
@@ -61,13 +118,16 @@ export function parseItemRequests(text: string): ItemRequest[] {
 
 interface DecisionCommand {
   action: "approve" | "pass";
-  index: number; // 1-based
+  // 1-based, or null when not specified — spec: "approve/pass without a number applies to the
+  // latest unresolved match" (resolved by handleDecision, which has the pending set to search;
+  // this parser has no state to resolve it against).
+  index: number | null;
 }
 
 function parseDecisionCommand(text: string): DecisionCommand | null {
   const m = text.trim().match(/^(approve|pass)\b\s*#?(\d+)?/i);
   if (!m) return null;
-  return { action: m[1].toLowerCase() as "approve" | "pass", index: m[2] ? parseInt(m[2], 10) : 1 };
+  return { action: m[1].toLowerCase() as "approve" | "pass", index: m[2] ? parseInt(m[2], 10) : null };
 }
 
 /** Matches "photos <n>", "photo <n>", and "request photos <n>" (spec's three accepted forms). */
@@ -77,6 +137,59 @@ function parsePhotoRequestCommand(text: string): number | null {
   return m[1] ? parseInt(m[1], 10) : 1;
 }
 
+const MENU_COMMAND = /^(help|menu)\b/i;
+const CANCEL_COMMAND = /^cancel\b/i;
+const STATUS_COMMAND = /^status\b/i;
+// A bare greeting (spec: "'hi' should return the Fi menu, not force approve/pass") is NOT its
+// own deterministic command here — a brand-new contact's first "hi" must still get the normal
+// intro message (see state.stage === "new" below), and an existing contact's "hi" with matches
+// pending must still get the ordinary general-chat reply, not a menu dump. The one concrete risk
+// a greeting actually posed was being swallowed by AI decision-interpretation (interpretDecision,
+// below) — this is checked there directly, so a greeting always falls through to the normal
+// intro/general-chat path instead.
+const GREETING = /^(hi|hello|hey|hiya|yo|good\s+(morning|afternoon|evening))\b/i;
+
+const FI_MENU = [
+  "Hi, I'm Fi — here's what I can do:",
+  '"buy: <item>" or "sell: <item>" — search for a match (plain English works too, e.g. "looking for a black Daytona under 25k")',
+  '"approve <number>" — connect with a match',
+  '"photos <number>" — privately ask the seller for photos',
+  '"pass <number>" — skip a match',
+  '"cancel" — clear your current matches',
+  '"status" — check your account status',
+  '"help" — show this menu',
+].join("\n");
+
+/** "status" — a quick, honest snapshot of trial usage and anything still awaiting a decision. */
+async function handleStatusCommand(state: ConversationState, messages: string[]): Promise<void> {
+  const pendingCount = state.pendingMatches?.decisions.filter((d) => d === "pending").length ?? 0;
+  const entitlement = await getEntitlement(state.phone);
+  const approvalLine = entitlement.manualOverrideEnabled
+    ? `Approved matches: ${state.approvedCount} (unlimited — your account is unlocked)`
+    : `Approved matches: ${state.approvedCount}/${config.trial.maxApprovedMatches}`;
+  const pendingLine =
+    pendingCount > 0
+      ? `Pending decisions: ${pendingCount} match${pendingCount === 1 ? "" : "es"} awaiting approve/pass`
+      : "No matches currently awaiting a decision.";
+  messages.push([approvalLine, pendingLine].join("\n"));
+}
+
+/** "cancel" — clears the current pending match set (and any in-progress preference interview)
+ *  without unsubscribing. A deliberate, explicit user action, distinct from a new search
+ *  superseding an old one — see the "never delete a pending match merely because another search
+ *  starts" rule this does NOT apply to. */
+function handleCancelCommand(state: ConversationState, messages: string[]): void {
+  const hadSomethingToCancel = Boolean(state.pendingMatches || state.pendingPreferenceCollection || state.pendingNaturalFollowUp);
+  state.pendingMatches = undefined;
+  state.pendingPreferenceCollection = undefined;
+  state.pendingNaturalFollowUp = undefined;
+  messages.push(
+    hadSomethingToCancel
+      ? "Okay, I've cleared your current matches. Send a new buy/sell request anytime."
+      : "There's nothing pending to cancel right now."
+  );
+}
+
 export interface FlowResult {
   state: ConversationState;
   messages: string[];
@@ -84,13 +197,23 @@ export interface FlowResult {
 
 /** Runs a fresh search for `request`, showing Match Cards and arming them for approve/pass. */
 async function startSearch(state: ConversationState, request: ItemRequest, messages: string[]): Promise<void> {
+  const hadExistingPending = Boolean(state.pendingMatches);
   // findMatchesHybrid only ever activates AI-assisted matching for the configured test phone
   // (see config.isAiMatchingEnabledForPhone) — every other contact gets exactly the plain
   // deterministic engine, unchanged.
   const results = await findMatchesHybrid(state.phone, request, config.trial.maxOptionsPerItem, state.preferences);
   if (results.length === 0) {
-    messages.push(`No live matches yet for "${request.query}" — I'll keep watching the network.`);
-    state.pendingMatches = undefined;
+    // Required routing fix: "never delete a pending match merely because another search
+    // starts" — an empty new search used to unconditionally clear state.pendingMatches, wiping
+    // out an existing, still-undecided match set just because THIS search came back empty.
+    // state.pendingMatches is left untouched here; only a search that actually finds results
+    // replaces it (below).
+    const wtbFeedNote =
+      request.action === "sell" && !config.watchfacts.enableWtbSync
+        ? " (the external WTB feed is currently disabled, so I'm relying on monitored group chats for buyer matches)"
+        : "";
+    messages.push(`No live matches yet for "${request.query}"${wtbFeedNote} — I'll keep watching the network.`);
+    console.log(`[router] new_search=true pending_match_preserved=${hadExistingPending}`);
     return;
   }
 
@@ -117,7 +240,12 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
   validated.forEach(({ listing, explanation, priceSignal }, i) =>
     messages.push(formatMatchCard(listing, i, request.action, explanation, priceSignal))
   );
+  // A fresh search intentionally starts its own new monitor/numbering (spec: "a new buy/sell
+  // request starts a new monitor") — any prior pendingMatches is superseded here, but note that
+  // is only reached once THIS search actually has results; an empty one never reaches this line
+  // (see above), so an old undecided set is never destroyed by a search that found nothing.
   state.pendingMatches = { request, matches: validated.map((r) => r.listing), decisions: validated.map(() => "pending") };
+  console.log(`[router] new_search=true pending_match_preserved=${hadExistingPending}`);
 }
 
 /**
@@ -129,23 +257,44 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
  * unlock further approvals is an admin action (POST /admin/entitlement/override), never a
  * self-service command and never a live charge. Passing/monitoring stay unrestricted either way.
  */
+/** The highest-indexed still-"pending" entry — spec: "approve/pass without a number applies to
+ *  the latest unresolved match." Null when every entry has already been decided. */
+function findLatestPendingIndex(pending: { decisions: MatchDecision[] }): number | null {
+  for (let i = pending.decisions.length - 1; i >= 0; i--) {
+    if (pending.decisions[i] === "pending") return i;
+  }
+  return null;
+}
+
 async function handleDecision(state: ConversationState, decision: DecisionCommand, messages: string[], firstName: string): Promise<void> {
   const pending = state.pendingMatches!;
-  const idx = decision.index - 1;
-  const current = pending.decisions[idx];
 
-  if (idx < 0 || idx >= pending.matches.length) {
-    messages.push(`I don't have a match #${decision.index} — pick a number from the list above.`);
-    return;
+  let idx: number;
+  if (decision.index !== null) {
+    idx = decision.index - 1;
+    if (idx < 0 || idx >= pending.matches.length) {
+      messages.push(`I don't have a match #${decision.index} — pick a number from the list above.`);
+      return;
+    }
+  } else {
+    const latestPending = findLatestPendingIndex(pending);
+    if (latestPending === null) {
+      messages.push("You've already decided on all your current matches.");
+      return;
+    }
+    idx = latestPending;
   }
+
+  const displayIndex = idx + 1;
+  const current = pending.decisions[idx];
   if (current !== "pending") {
-    messages.push(`You already ${current} match #${decision.index}.`);
+    messages.push(`You already ${current} match #${displayIndex}.`);
     return;
   }
 
   if (decision.action === "pass") {
     pending.decisions[idx] = "passed";
-    messages.push(`Passing on #${decision.index}.`);
+    messages.push(`Passing on #${displayIndex}.`);
     return;
   }
 
@@ -315,6 +464,53 @@ async function handleNaturalFollowUpAnswer(state: ConversationState, text: strin
   await startSearch(state, request, messages);
 }
 
+interface ResolvedItems {
+  items: ItemRequest[];
+  /** Set only when `items` came from the AI intent extractor — its own price/location/dial/
+   *  condition fields, straight from the SAME call, so the legacy interview/tryNaturalLanguage-
+   *  Preferences path (a second, separate AI call) never has to re-derive them. */
+  aiPreferences?: SearchPreferences;
+  /** Set when the model claimed a price that couldn't be verified against the raw message's
+   *  own unambiguous price pattern (see ai/intentExtractor.ts) — the caller shows "Price: Not
+   *  reliably parsed" rather than silently searching with no budget filter and no explanation. */
+  priceUnreliable?: boolean;
+}
+
+/**
+ * Required routing order, items 2-3: every private message is sent through the AI intent
+ * extractor first (when AI matching is enabled for this phone — see
+ * config.isAiMatchingEnabledForPhone); the legacy regex classifier (classify/parseItemRequests)
+ * is used ONLY as a fallback — when AI is disabled for this phone, the call fails, or the model
+ * isn't confident it identified a genuine buy/sell intent. When AI succeeds, its own
+ * brand/model/reference/searchText fields are used directly — never re-derived from the raw
+ * sentence with a prefix-stripping regex (the actual cause of "to buy a patek 5712G" ending up
+ * as a stored search query).
+ */
+async function resolveItemRequests(phone: string, text: string): Promise<ResolvedItems> {
+  if (isAiMatchingEnabledForPhone(phone)) {
+    const extraction = await extractIntent(text);
+    if (extraction && isConfidentIntent(extraction) && (extraction.intent.intent === "buy" || extraction.intent.intent === "sell")) {
+      const it = extraction.intent;
+      const action: ItemRequest["action"] = it.intent === "buy" ? "buy" : "sell";
+      const query = it.searchText || text;
+      const aiPreferences: SearchPreferences = {};
+      if (it.priceMin !== null) aiPreferences.priceMin = it.priceMin;
+      if (it.priceMax !== null) aiPreferences.priceMax = it.priceMax;
+      if (it.location) aiPreferences.location = it.location;
+      if (it.dial) aiPreferences.dialColor = it.dial;
+      if (it.condition) aiPreferences.condition = it.condition;
+      return {
+        items: [{ action, query }],
+        aiPreferences,
+        priceUnreliable: extraction.priceUnreliable,
+      };
+    }
+    // AI unavailable/unconfident/not a buy-or-sell intent — legacy parser is the fallback, per
+    // routing order item 3, same as every non-AI-enabled phone gets unconditionally.
+  }
+  return { items: parseItemRequests(text) };
+}
+
 export async function handleIncomingMessage(phone: string, text: string, contact?: Contact): Promise<FlowResult> {
   const state = getState(phone);
   const messages: string[] = [];
@@ -349,6 +545,39 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     };
   }
 
+  // Required routing order (Fi NLU/routing fix): deterministic action commands — approve, pass,
+  // photos, cancel, status, help — are ALL checked before anything else, unconditionally, so
+  // none of them ever depends on AI, and none of them can be blocked by a mid-interview question
+  // or a pending match. "hi"/"hello"/"menu" are folded into "help" (spec: "'hi' should return
+  // the Fi menu, not force approve/pass").
+  if (MENU_COMMAND.test(text.trim())) {
+    messages.push(FI_MENU);
+    saveState(state);
+    return { state, messages };
+  }
+  if (CANCEL_COMMAND.test(text.trim())) {
+    handleCancelCommand(state, messages);
+    saveState(state);
+    return { state, messages };
+  }
+  if (STATUS_COMMAND.test(text.trim())) {
+    await handleStatusCommand(state, messages);
+    saveState(state);
+    return { state, messages };
+  }
+  const decision = parseDecisionCommand(text);
+  if (decision && state.pendingMatches) {
+    await handleDecision(state, decision, messages, firstName);
+    saveState(state);
+    return { state, messages };
+  }
+  const photoRequestIndex = parsePhotoRequestCommand(text);
+  if (photoRequestIndex !== null && state.pendingMatches) {
+    await handlePhotoRequest(state, photoRequestIndex, messages);
+    saveState(state);
+    return { state, messages };
+  }
+
   if (state.pendingPreferenceCollection) {
     await handlePreferenceAnswer(state, text, messages);
     saveState(state);
@@ -361,41 +590,32 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     return { state, messages };
   }
 
-  const decision = parseDecisionCommand(text);
-  if (decision && state.pendingMatches) {
-    await handleDecision(state, decision, messages, firstName);
-    saveState(state);
-    return { state, messages };
-  }
-
-  const photoRequestIndex = parsePhotoRequestCommand(text);
-  if (photoRequestIndex !== null && state.pendingMatches) {
-    await handlePhotoRequest(state, photoRequestIndex, messages);
-    saveState(state);
-    return { state, messages };
-  }
-
   // Fi Concierge Stage 3: people rarely type the literal "approve <n>"/"pass <n>" format they
   // were shown — "I'll take the first one", "pass on that", "yeah let's do #2" all mean the
   // same thing. Only tried when the deterministic parser above found nothing AND there's
   // actually something pending to decide on, and only for the AI matching test phone — see
   // ai/decisionInterpreter.ts for why this can never approve/reveal/charge anything beyond
   // what handleDecision (the SAME function the deterministic path uses) already allows.
-  if (state.pendingMatches && isAiMatchingEnabledForPhone(phone)) {
+  //
+  // Required routing fix, item 4: "a pending match must never block a new natural-language
+  // request." A message that itself looks like a fresh buy/sell request (BUY_KEYWORDS/
+  // SELL_KEYWORDS) skips decision-interpretation entirely rather than risking an AI
+  // misclassification swallowing it as approve/pass — this is exactly the reported failure
+  // mode ("pending-decision state intercepting natural-language messages").
+  const looksLikeFreshRequest = BUY_KEYWORDS.test(text) || SELL_KEYWORDS.test(text);
+  if (state.pendingMatches && isAiMatchingEnabledForPhone(phone) && !GREETING.test(text.trim()) && !looksLikeFreshRequest) {
     const interpretedDecision = await interpretDecision(text, state.pendingMatches.matches.length);
     if (interpretedDecision?.action) {
-      await handleDecision(
-        state,
-        { action: interpretedDecision.action, index: interpretedDecision.index ?? 1 },
-        messages,
-        firstName
-      );
+      // No number identified in the natural phrasing -> same "latest unresolved match" default
+      // as the deterministic bare "approve"/"pass" (see handleDecision), not always the first.
+      await handleDecision(state, { action: interpretedDecision.action, index: interpretedDecision.index }, messages, firstName);
       saveState(state);
       return { state, messages };
     }
   }
 
-  const parsed = parseItemRequests(text);
+  const resolved = await resolveItemRequests(phone, text);
+  const parsed = resolved.items;
 
   if (state.stage === "new") {
     messages.push(config.fiFlow.introMessage);
@@ -434,7 +654,10 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
 
   if (!state.preferencesCollected) {
-    const naturalLanguagePrefs = await tryNaturalLanguagePreferences(phone, text);
+    // Came straight from the intent extractor's own single AI call above — no separate
+    // interpretQuery call needed (that path is the fallback for when AI classification of the
+    // MESSAGE ITSELF didn't happen, e.g. AI is off for this phone or classification failed).
+    const naturalLanguagePrefs = resolved.aiPreferences ?? (await tryNaturalLanguagePreferences(phone, text));
     if (naturalLanguagePrefs) {
       // A request must always carry budget/location/dial color/condition — ask for exactly
       // what this one message didn't already cover, once, rather than proceeding with gaps.
@@ -453,6 +676,10 @@ export async function handleIncomingMessage(phone: string, text: string, contact
       saveState(state);
       return { state, messages };
     }
+  }
+
+  if (resolved.priceUnreliable) {
+    messages.push("Price: Not reliably parsed — searching without a budget filter for this one.");
   }
 
   await startSearch(state, parsed[0], messages);
