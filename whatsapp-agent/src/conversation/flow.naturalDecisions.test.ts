@@ -48,7 +48,11 @@ function fsRow(id: string, overrides: Partial<Parameters<typeof inventoryDb.upse
     ref: "116500LN",
     condition: "",
     price: "24500",
-    location: "",
+    // The default `interpreted()` fixture below now specifies location: "USA" (all four
+    // required fields present, so these decision-handling tests never trip the missing-fields
+    // follow-up) — the row needs a matching location or the new location hard-filter would
+    // exclude it before a match ever gets shown at all.
+    location: "North America",
     contactName: `seller-${id}`,
     contactPhone: "10000000000",
     rating: "",
@@ -62,11 +66,13 @@ function interpreted(overrides: Partial<Awaited<ReturnType<typeof queryInterpret
     action: "buy" as const,
     brand: "Rolex",
     referenceFamily: "116500",
-    maxPrice: null,
+    maxPrice: 27000,
     minPrice: null,
-    location: null,
-    dialColor: null,
-    condition: null,
+    // All four required fields present by default — these tests exercise decision handling,
+    // not the missing-fields follow-up (see flow.naturalFollowUp.test.ts for that).
+    location: "USA",
+    dialColor: "black",
+    condition: "pre-owned",
     hardRequirements: [],
     preferences: [],
     ...overrides,

@@ -208,6 +208,63 @@ async function tryNaturalLanguagePreferences(phone: string, text: string): Promi
   return toSearchPreferences(interpreted);
 }
 
+/**
+ * A request must always carry price, location, dial color, and condition — the same four
+ * things the old step-by-step interview always collected — even when the natural-language path
+ * above skipped straight to search. Returns the human-readable label for each one NOT found in
+ * `prefs`, so the caller can ask for exactly what's missing, once, instead of either silently
+ * proceeding with gaps or re-running the old one-question-at-a-time interview.
+ */
+function missingPreferenceFields(prefs: SearchPreferences): string[] {
+  const missing: string[] = [];
+  if (prefs.priceMin === undefined && prefs.priceMax === undefined) missing.push("budget");
+  if (!prefs.location) missing.push("location");
+  if (!prefs.dialColor) missing.push("dial color");
+  if (!prefs.condition) missing.push("condition");
+  return missing;
+}
+
+/** "What's your X?" / "What's your X and Y?" / "What's your X, Y, and Z?" */
+function missingFieldsQuestion(missing: string[]): string {
+  if (missing.length === 1) return `Just one more thing — what's your ${missing[0]}?`;
+  const last = missing[missing.length - 1];
+  const rest = missing.slice(0, -1).join(", ");
+  return `Just need a couple more details — what's your ${rest} and ${last}?`;
+}
+
+/**
+ * Merges whatever the follow-up reply's own AI interpretation found into `partial`, filling in
+ * ONLY the fields that were actually missing — a field the original message already supplied is
+ * never overwritten by a vaguer follow-up reply that didn't mention it at all.
+ */
+function mergeFollowUpPreferences(partial: SearchPreferences, fromReply: SearchPreferences): SearchPreferences {
+  return {
+    priceMin: partial.priceMin ?? fromReply.priceMin,
+    priceMax: partial.priceMax ?? fromReply.priceMax,
+    location: partial.location ?? fromReply.location,
+    dialColor: partial.dialColor ?? fromReply.dialColor,
+    condition: partial.condition ?? fromReply.condition,
+  };
+}
+
+/**
+ * Handles the single follow-up reply after tryNaturalLanguagePreferences found a request
+ * missing one or more of budget/location/dial color/condition. Only one round is ever asked —
+ * whatever's still missing after this reply stays "no preference," the same as answering "any"
+ * in the old interview, rather than looping indefinitely chasing a complete answer.
+ */
+async function handleNaturalFollowUpAnswer(state: ConversationState, text: string, messages: string[]): Promise<void> {
+  const pending = state.pendingNaturalFollowUp!;
+  const interpreted = await interpretQuery(text);
+  const merged = interpreted ? mergeFollowUpPreferences(pending.partial, toSearchPreferences(interpreted)) : pending.partial;
+
+  state.preferences = merged;
+  state.preferencesCollected = true;
+  const request = pending.request;
+  state.pendingNaturalFollowUp = undefined;
+  await startSearch(state, request, messages);
+}
+
 export async function handleIncomingMessage(phone: string, text: string, contact?: Contact): Promise<FlowResult> {
   const state = getState(phone);
   const messages: string[] = [];
@@ -244,6 +301,12 @@ export async function handleIncomingMessage(phone: string, text: string, contact
 
   if (state.pendingPreferenceCollection) {
     await handlePreferenceAnswer(state, text, messages);
+    saveState(state);
+    return { state, messages };
+  }
+
+  if (state.pendingNaturalFollowUp) {
+    await handleNaturalFollowUpAnswer(state, text, messages);
     saveState(state);
     return { state, messages };
   }
@@ -316,6 +379,15 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   if (!state.preferencesCollected) {
     const naturalLanguagePrefs = await tryNaturalLanguagePreferences(phone, text);
     if (naturalLanguagePrefs) {
+      // A request must always carry budget/location/dial color/condition — ask for exactly
+      // what this one message didn't already cover, once, rather than proceeding with gaps.
+      const missing = missingPreferenceFields(naturalLanguagePrefs);
+      if (missing.length > 0) {
+        state.pendingNaturalFollowUp = { request: parsed[0], partial: naturalLanguagePrefs, missing };
+        messages.push(missingFieldsQuestion(missing));
+        saveState(state);
+        return { state, messages };
+      }
       state.preferences = naturalLanguagePrefs;
       state.preferencesCollected = true;
     } else {

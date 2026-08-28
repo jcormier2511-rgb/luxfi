@@ -66,6 +66,21 @@ export interface PendingPreferenceCollection {
   request: ItemRequest;
 }
 
+/**
+ * Fi Concierge Stage 3: a single free-form message can skip the old step-by-step interview
+ * (see flow.ts's tryNaturalLanguagePreferences), but a request must still always carry price,
+ * location, dial color, and condition — those are asked for as one follow-up question naming
+ * only what's actually missing, never re-asked one-at-a-time. `missing` is the human-readable
+ * labels shown in that question (e.g. "budget", "location"); `partial` is whatever the AI
+ * already extracted from the original message, kept as-is and only ever filled in, never
+ * overwritten, by the follow-up reply.
+ */
+export interface PendingNaturalFollowUp {
+  request: ItemRequest;
+  partial: SearchPreferences;
+  missing: string[];
+}
+
 export interface ConversationState {
   phone: string;
   stage: ConversationStage;
@@ -77,5 +92,6 @@ export interface ConversationState {
   preferencesCollected: boolean;
   preferences?: SearchPreferences;
   pendingPreferenceCollection?: PendingPreferenceCollection;
+  pendingNaturalFollowUp?: PendingNaturalFollowUp;
   updatedAt: string;
 }
