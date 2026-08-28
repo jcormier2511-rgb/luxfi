@@ -117,3 +117,17 @@ test('the "Keep Fi working for me" button also triggers the acknowledgment', asy
   await new Promise((r) => setTimeout(r, 200));
   expect(stub.sent.some((m) => m.text.includes('admin will enable billing'))).toBe(true);
 });
+
+test('"reviews" with none yet gets a friendly no-op reply', async () => {
+  const app = createApp(pool);
+  await postSigned(app, textPayload('15551110005', 'reviews', 'wamid.r1'));
+  await new Promise((r) => setTimeout(r, 200));
+  expect(stub.sent.some((m) => m.text.includes("don't have any reviews"))).toBe(true);
+});
+
+test('"review" with no completed deal gets a friendly no-op reply', async () => {
+  const app = createApp(pool);
+  await postSigned(app, textPayload('15551110006', 'review', 'wamid.r2'));
+  await new Promise((r) => setTimeout(r, 200));
+  expect(stub.sent.some((m) => m.text.includes("don't see a completed deal"))).toBe(true);
+});

@@ -8,6 +8,7 @@ import { resolveCanonicalUserForPlatformIdentity } from '../services/canonicalUs
 import { approveMatch, passMatch, confirmCounterparty } from '../services/approval.service';
 import { acknowledgeKeepWorking } from '../services/conversation.service';
 import { extendPosting, findPostingsAwaitingExtensionForUser } from '../services/posting.service';
+import { findMostRecentApprovedMatchForUser, getVouchSummary, requestVouch, respondToVouch } from '../services/vouch.service';
 
 interface WhatsAppMessage {
   from: string;
@@ -30,6 +31,42 @@ interface WhatsAppWebhookBody {
 
 const JOIN_COMMAND = /^join$/i;
 const EXTEND_COMMAND = /^extend$/i;
+const REQUEST_REVIEW_COMMAND = /^(request review|review me|review)$/i;
+const CHECK_REVIEWS_COMMAND = /^(reviews|my reviews)$/i;
+
+async function handleRequestReviewCommand(pool: Pool, canonicalUserId: string): Promise<void> {
+  const matchId = await findMostRecentApprovedMatchForUser(pool, canonicalUserId);
+  if (!matchId) {
+    await getMessagingAdapter().send({
+      recipientCanonicalUserId: canonicalUserId,
+      text: "I don't see a completed deal to request a review for yet.",
+    });
+    return;
+  }
+  const result = await requestVouch(pool, matchId, canonicalUserId);
+  if (result.status === 'requested') {
+    await getMessagingAdapter().send({
+      recipientCanonicalUserId: canonicalUserId,
+      text: 'Found your recent deal -- vouch request sent.',
+    });
+  } else if (result.status === 'already_requested') {
+    await getMessagingAdapter().send({
+      recipientCanonicalUserId: canonicalUserId,
+      text: "I've already asked them for a review on that deal.",
+    });
+  }
+}
+
+async function handleCheckReviewsCommand(pool: Pool, canonicalUserId: string): Promise<void> {
+  const { positiveVouchCount } = await getVouchSummary(pool, canonicalUserId);
+  await getMessagingAdapter().send({
+    recipientCanonicalUserId: canonicalUserId,
+    text:
+      positiveVouchCount === 0
+        ? "You don't have any reviews yet."
+        : `You have ${positiveVouchCount} positive review${positiveVouchCount === 1 ? '' : 's'}.`,
+  });
+}
 
 async function handleExtendCommand(pool: Pool, canonicalUserId: string): Promise<void> {
   const pending = await findPostingsAwaitingExtensionForUser(pool, canonicalUserId);
@@ -57,23 +94,23 @@ async function handleTextMessage(
 ): Promise<void> {
   const body = (message.text?.body ?? '').trim();
 
-  if (JOIN_COMMAND.test(body)) {
+  const isCommand =
+    JOIN_COMMAND.test(body) || EXTEND_COMMAND.test(body) || REQUEST_REVIEW_COMMAND.test(body) || CHECK_REVIEWS_COMMAND.test(body);
+  if (isCommand) {
     const { canonicalUserId } = await resolveCanonicalUserForPlatformIdentity(pool, {
       platform: 'whatsapp',
       platformUserId: message.from,
       displayName: senderDisplayName,
     });
-    await acknowledgeKeepWorking(canonicalUserId);
-    return;
-  }
-
-  if (EXTEND_COMMAND.test(body)) {
-    const { canonicalUserId } = await resolveCanonicalUserForPlatformIdentity(pool, {
-      platform: 'whatsapp',
-      platformUserId: message.from,
-      displayName: senderDisplayName,
-    });
-    await handleExtendCommand(pool, canonicalUserId);
+    if (JOIN_COMMAND.test(body)) {
+      await acknowledgeKeepWorking(canonicalUserId);
+    } else if (EXTEND_COMMAND.test(body)) {
+      await handleExtendCommand(pool, canonicalUserId);
+    } else if (REQUEST_REVIEW_COMMAND.test(body)) {
+      await handleRequestReviewCommand(pool, canonicalUserId);
+    } else if (CHECK_REVIEWS_COMMAND.test(body)) {
+      await handleCheckReviewsCommand(pool, canonicalUserId);
+    }
     return;
   }
 
@@ -139,6 +176,11 @@ async function handleButtonReply(pool: Pool, message: WhatsAppMessage, senderDis
       recipientCanonicalUserId: canonicalUserId,
       text: 'No problem -- your contact details were not shared.',
     });
+  } else if (action === 'vouch-give') {
+    // For these two actions the second token is a vouch id, not a match id.
+    await respondToVouch(pool, matchId, true);
+  } else if (action === 'vouch-decline') {
+    await respondToVouch(pool, matchId, false);
   }
 }
 

@@ -2,6 +2,7 @@ import { Pool } from 'pg';
 import { getMessagingAdapter } from '../adapters/messaging.adapter';
 import { rowToPosting } from './posting.service';
 import { getPrimaryImage } from './image.service';
+import { getVouchSummary } from './vouch.service';
 import { Posting } from '../types/domain';
 
 function formatPriceSignal(fs: Posting): string | null {
@@ -16,8 +17,9 @@ function buildMessageText(params: {
   surfacedPosting: Posting;
   score: number;
   reasons: string[];
+  positiveVouchCount: number;
 }): string {
-  const { surfacedPosting: p, score, reasons } = params;
+  const { surfacedPosting: p, score, reasons, positiveVouchCount } = params;
   const priceLine = p.askingPrice != null
     ? `${p.askingPrice} ${p.currency ?? ''}`.trim()
     : p.maxBid != null
@@ -34,6 +36,10 @@ function buildMessageText(params: {
     'Fi Intelligence',
     `- Match score: ${score}`,
     ...reasons.map((r) => `- ${r}`),
+    // Dealer reputation/vouch, when available (spec 9.1) -- omitted entirely
+    // rather than shown as zero, since "no vouches yet" isn't a signal worth
+    // surfacing the way an actual positive count is.
+    ...(positiveVouchCount > 0 ? [`- ${positiveVouchCount} positive review${positiveVouchCount === 1 ? '' : 's'}`] : []),
     '',
     '[Approve match] [Pass]',
   ];
@@ -84,10 +90,12 @@ export async function createAndSendNotificationsForMatchRevision(
     if (insert.rows.length === 0) continue; // already notified for this revision
 
     const notificationId = insert.rows[0].id;
+    const { positiveVouchCount } = await getVouchSummary(pool, surfacedPosting.canonicalUserId);
     const text = buildMessageText({
       surfacedPosting,
       score: Number(match.score),
       reasons: (match.reasons as string[]) ?? [],
+      positiveVouchCount,
     });
     void formatPriceSignal(surfacedPosting); // reserved for a future live pricing feed
     const primaryImage = await getPrimaryImage(pool, surfacedPosting.id);
