@@ -64,6 +64,10 @@ test("'over 5000' still sets only a min", () => {
   assert.equal(range!.max, undefined);
 });
 
+test("'minimum HKD 100k' sets only the stated minimum", () => {
+  assert.deepEqual(parsePriceRange("minimum HKD 100k"), { min: 100000 });
+});
+
 test("'any' still means no preference", () => {
   assert.equal(parsePriceRange("any"), undefined);
 });

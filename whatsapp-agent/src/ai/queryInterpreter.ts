@@ -9,6 +9,7 @@ export interface ConfirmedNaturalLanguageIntent {
   intent: "buy" | "sell" | null;
   brand: string | null;
   reference: string | null;
+  priceMin: number | null;
   priceMax: number | null;
   currency: string | null;
 }
@@ -20,8 +21,10 @@ const PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less tha
 /** Returns only the explicit price-bearing substring, never an earlier watch reference. */
 function extractExplicitPriceExpression(text: string): string | null {
   const patterns = [
-    new RegExp(`${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
+    // A range must win before a leading comparator such as "budget" can truncate it to the
+    // first endpoint ("budget $80k-$100k" must mean 80k-100k, never a max of 80k).
     new RegExp(`(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])\\s*(?:-|to|–)\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
+    new RegExp(`${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
     new RegExp(`${CURRENCY_MARKER}\\s*${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
     new RegExp(`${PRICE_NUMBER}(?![A-Z0-9])\\s*${CURRENCY_MARKER}`, "i"),
     /\b\d{1,3}(?:[.,]\d+)?\s*k\b/i,
@@ -61,9 +64,11 @@ export function extractConfirmedNaturalLanguageIntent(text: string): ConfirmedNa
   const brand = /\bpatek(?:\s+philippe)?\b/i.test(text) ? "Patek Philippe" : null;
   const reference = extractReference(removeExplicitPriceExpressions(text));
   const priceExpression = extractExplicitPriceExpression(text);
-  const priceMax = priceExpression ? parsePriceRange(priceExpression)?.max ?? null : null;
-  const currency = priceMax === null ? null : detectCurrency(text);
-  return { intent, brand, reference, priceMax, currency };
+  const priceRange = priceExpression ? parsePriceRange(priceExpression) : undefined;
+  const priceMin = priceRange?.min ?? null;
+  const priceMax = priceRange?.max ?? null;
+  const currency = priceMin === null && priceMax === null ? null : detectCurrency(text);
+  return { intent, brand, reference, priceMin, priceMax, currency };
 }
 
 const INTERPRET_SYSTEM = `You convert a WhatsApp message into structured shopping intent for a luxury watch marketplace.
@@ -84,7 +89,13 @@ export async function interpretQuery(text: string): Promise<InterpretedQuery | n
   if (confirmed.intent) result.action = confirmed.intent;
   if (confirmed.brand) result.brand = confirmed.brand;
   if (confirmed.reference) result.referenceFamily = confirmed.reference;
-  if (confirmed.priceMax !== null) result.maxPrice = confirmed.priceMax;
+  if (confirmed.priceMin !== null || confirmed.priceMax !== null) {
+    // Once an explicit price expression has been verified deterministically, replace both AI
+    // bounds. This prevents an explicit minimum from retaining an invented AI maximum (and
+    // likewise prevents an explicit ceiling from retaining an invented minimum).
+    result.minPrice = confirmed.priceMin;
+    result.maxPrice = confirmed.priceMax;
+  }
   if (confirmed.currency) result.currency = confirmed.currency;
   return result;
 }

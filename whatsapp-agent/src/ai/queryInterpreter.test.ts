@@ -14,6 +14,7 @@ test("confirmed natural-language fields preserve a comma-formatted Patek budget"
     intent: "buy",
     brand: "Patek Philippe",
     reference: "5712G",
+    priceMin: null,
     priceMax: 110000,
     currency: "USD",
   });
@@ -32,7 +33,7 @@ test("explicit price text corrects an AI response that truncated $110,000 to $11
 
 test("confirmed buyer budgets retain their stated non-USD currency", () => {
   assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G under HKD 900,000"), {
-    intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMax: 900000, currency: "HKD",
+    intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMin: null, priceMax: 900000, currency: "HKD",
   });
 });
 
@@ -110,32 +111,32 @@ test("toSearchPreferences leaves a field unset (never guesses) when the model di
 
 test("reference-only requests never turn the watch reference into a price ceiling", () => {
   assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G"), {
-    intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMax: null, currency: null,
+    intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMin: null, priceMax: null, currency: null,
   });
 });
 
 test("a shorthand budget is never promoted to the watch reference", () => {
   assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek Nautilus under $110k"), {
-    intent: "buy", brand: "Patek Philippe", reference: null, priceMax: 110000, currency: "USD",
+    intent: "buy", brand: "Patek Philippe", reference: null, priceMin: null, priceMax: 110000, currency: "USD",
   });
 });
 
 test("reference and shorthand price remain distinct when both are present", () => {
   assert.deepEqual(extractConfirmedNaturalLanguageIntent("I need a Daytona 116500 under 25k"), {
-    intent: "buy", brand: null, reference: "116500", priceMax: 25000, currency: "USD",
+    intent: "buy", brand: null, reference: "116500", priceMin: null, priceMax: 25000, currency: "USD",
   });
 });
 
 test("confirmed SGD budgets retain their currency and maximum", () => {
   assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G under SGD 110,000"), {
-    intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMax: 110000, currency: "SGD",
+    intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMin: null, priceMax: 110000, currency: "SGD",
   });
 });
 
 test("explicit maximum and budget phrases remain exact ceilings", () => {
   for (const text of ["WTB Patek 5712G maximum 100k", "WTB Patek 5712G budget of $100,000"]) {
     assert.deepEqual(extractConfirmedNaturalLanguageIntent(text), {
-      intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMax: 100000, currency: "USD",
+      intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMin: null, priceMax: 100000, currency: "USD",
     });
   }
 });
@@ -154,6 +155,7 @@ test("a marked price is parsed instead of the earlier watch reference", () => {
     intent: "buy",
     brand: "Patek Philippe",
     reference: "5712G",
+    priceMin: Math.round(900000 * 0.85),
     priceMax: Math.round(900000 * 1.15),
     currency: "HKD",
   });
@@ -164,4 +166,36 @@ test("explicit buyer language wins when 'for sale' only describes the desired wa
     extractConfirmedNaturalLanguageIntent("Looking to buy a Patek 5712G that's for sale").intent,
     "buy"
   );
+});
+
+test("a budget range preserves both endpoints instead of truncating to the first", () => {
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G budget $80k-$100k"), {
+    intent: "buy",
+    brand: "Patek Philippe",
+    reference: "5712G",
+    priceMin: 80000,
+    priceMax: 100000,
+    currency: "USD",
+  });
+});
+
+test("an explicit minimum remains a floor without an invented ceiling", async (t) => {
+  t.mock.method(client, "callAiJson", async () => ({
+    action: "buy", brand: "Patek", referenceFamily: "5712", maxPrice: 115000, minPrice: null,
+    location: null, dialColor: null, condition: null, hardRequirements: [], preferences: [],
+  }));
+
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G minimum HKD 100k"), {
+    intent: "buy",
+    brand: "Patek Philippe",
+    reference: "5712G",
+    priceMin: 100000,
+    priceMax: null,
+    currency: "HKD",
+  });
+
+  const result = await interpretQuery("WTB Patek 5712G minimum HKD 100k");
+  assert.equal(result!.minPrice, 100000);
+  assert.equal(result!.maxPrice, null);
+  assert.equal(result!.currency, "HKD");
 });

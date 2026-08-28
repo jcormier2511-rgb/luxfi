@@ -67,6 +67,7 @@ jobs:
           node --require ts-node/register --test --test-concurrency=1
           src/ai/intentExtractor.test.ts
           src/ai/queryInterpreter.test.ts
+          src/conversation/groupMonitor.featureFlag.test.ts
           src/conversation/preferences.test.ts
           src/fx/currency.test.ts
           src/fx/convert.test.ts
