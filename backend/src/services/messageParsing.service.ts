@@ -1,25 +1,32 @@
 /**
- * Free-text -> structured-posting extraction for real chat messages (spec
- * section 7 allows AI/heuristics to extract and normalize listing data, as
- * long as it never controls identity/trial/billing -- deterministic matching
- * still owns that). This is a deliberately simple regex-based MVP extractor,
- * not an AI extractor: no API key/model decision has been made for that yet.
- * It only recognizes messages that look like an FS or WTB post; everything
- * else returns null and is left alone (not every message in a group is a
- * posting).
+ * Regex-based heuristic FS/WTB extractor (spec section 7 allows AI/heuristics
+ * to extract and normalize listing data, as long as it never controls
+ * identity/trial/billing -- deterministic matching still owns that). It only
+ * recognizes messages that look like an FS or WTB post; everything else
+ * returns null and is left alone (not every message in a group is a posting).
  *
- * Known limitations (documented, not hidden): no brand/model/dial/condition
- * extraction, a fairly permissive reference-number pattern that can
- * over/under-match on unusual formats, and no handling of multi-line or
- * multi-item posts. Upgrading this to a real LLM-based extractor later is a
- * drop-in replacement -- callers only see ParsedPosting.
+ * This is the fallback path behind aiExtraction.client.ts's AnthropicExtractor
+ * -- used directly when ANTHROPIC_API_KEY isn't set, and as the safety net
+ * when a live AI extraction call fails for any reason. Known limitations
+ * (documented, not hidden): no brand/model/dial/condition extraction, a
+ * fairly permissive reference-number pattern that can over/under-match on
+ * unusual formats, and no handling of multi-line or multi-item posts.
  */
 export interface ParsedPosting {
   postingType: 'FS' | 'WTB';
+  brand?: string;
+  model?: string;
   referenceNumber?: string;
+  dial?: string;
+  material?: string;
+  year?: number;
+  condition?: string;
+  boxPapers?: string;
   askingPrice?: number;
   maxBid?: number;
   currency?: string;
+  location?: string;
+  country?: string;
 }
 
 const FS_PATTERN = /\b(fs|for sale|selling)\b/i;

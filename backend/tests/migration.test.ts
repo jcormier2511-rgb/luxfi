@@ -39,6 +39,7 @@ test('39. the migration succeeds on an empty database', async () => {
       '002_core_schema.sql',
       '003_sync_meta_additive.sql',
       '004_introduction_delivery_tracking.sql',
+      '005_dealer_vouches.sql',
     ]);
 
     const { rows } = await pool.query(
@@ -82,6 +83,7 @@ test('40 & 41. the migration succeeds against an existing legacy sync_meta schem
       '002_core_schema.sql',
       '003_sync_meta_additive.sql',
       '004_introduction_delivery_tracking.sql',
+      '005_dealer_vouches.sql',
     ]);
 
     const { rows: columns } = await pool.query(
