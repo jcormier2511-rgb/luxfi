@@ -1,5 +1,5 @@
 import { config, isAiMatchingEnabledForPhone } from "../config";
-import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences, MatchDecision } from "../types";
+import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences, MatchDecision, PendingSellIntake } from "../types";
 import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals, attachCurrencyDisplay, CurrencyDisplay } from "../matching/engine";
 import { PriceSignal } from "../matching/priceSignal";
 import { requestPhotosForMatch } from "../matching/photoRequests";
@@ -12,7 +12,8 @@ import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
-import { extractReference, containsKnownBrand, normalizePriceShorthand } from "../postings/normalize";
+import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
+import { upsertListings } from "../watchfacts/inventoryDb";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -535,10 +536,44 @@ async function startSellIntake(state: ConversationState, request: ItemRequest, m
   messages.push(hasSpecifics ? SELL_PRICE_QUESTION : SELL_DETAILS_QUESTION);
 }
 
+/**
+ * Persists the finished intake as a live FS inventory row — see watchfacts/inventoryDb.ts's
+ * upsertListings — so a future buyer's search can actually find it, not just a conversation-
+ * state record that nothing else ever reads. Uses a distinct source ("WA-DM": a private
+ * seller's own WhatsApp DM, as opposed to "WF"/WatchFacts or "WA-Group"/monitored dealer
+ * groups) so nothing else's sync reconciliation ever touches or expires it — a private listing
+ * stays active until the seller says otherwise.
+ */
+async function persistSellIntake(state: ConversationState, pending: PendingSellIntake): Promise<void> {
+  const { brand } = normalizeText(pending.description);
+  await upsertListings(
+    [
+      {
+        id: `wadm-${state.phone}-${Date.now()}`,
+        type: "FS",
+        category: "watches",
+        item: pending.description,
+        brand,
+        ref: pending.reference ?? "",
+        condition: "",
+        price: pending.price !== undefined ? String(pending.price) : "ASK",
+        location: "",
+        contactName: "",
+        contactPhone: state.phone,
+        rating: "",
+        description: pending.description,
+        imageUrl: pending.imageUrl,
+      },
+    ],
+    new Date().toISOString(),
+    "WA-DM"
+  );
+}
+
 /** Walks details -> price -> photo, one question at a time, then acknowledges — never loops
  *  back to re-ask a step; whatever's given (including nothing) is accepted and it moves on,
  *  same "ask once" principle as the rest of this file's collectors. */
-function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[]): void {
+async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[]): Promise<void> {
   const pending = state.pendingSellIntake!;
 
   if (pending.step === "details") {
@@ -563,12 +598,13 @@ function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl
   const priceLine =
     pending.price !== undefined ? `$${pending.price.toLocaleString("en-US")}` : pending.priceText ? pending.priceText : "not set";
   const photoLine = pending.imageUrl ? "received" : "not provided";
+  await persistSellIntake(state, pending);
   messages.push(
     `Got it — here's what I have on file:\n` +
       `Item: ${pending.description}\n` +
       `Asking: ${priceLine}\n` +
       `Photo: ${photoLine}\n\n` +
-      `I don't have automatic buyer-matching wired up for self-listed items yet, but your details are saved — I'll follow up if that changes.`
+      `I've added this to the network — I'll message you as soon as a buyer's interested.`
   );
   state.pendingSellIntake = undefined;
 }
@@ -694,7 +730,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
 
   if (state.pendingSellIntake) {
-    handleSellIntakeAnswer(state, text, imageUrl, messages);
+    await handleSellIntakeAnswer(state, text, imageUrl, messages);
     saveState(state);
     return { state, messages };
   }

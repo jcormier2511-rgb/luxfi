@@ -433,6 +433,7 @@ function watchName(listing: InventoryListing): string {
  */
 function sourceLabel(listing: InventoryListing): string {
   if (listing.source === "WF") return "WatchFacts";
+  if (listing.source === "WA-DM") return "Private Seller";
   return listing.source || "Unknown";
 }
 
