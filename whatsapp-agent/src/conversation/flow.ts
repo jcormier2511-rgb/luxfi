@@ -11,6 +11,7 @@ import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
+import { CURRENCY_CODES } from "../fx/currency";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -140,6 +141,31 @@ function parsePhotoRequestCommand(text: string): number | null {
 const MENU_COMMAND = /^(help|menu)\b/i;
 const CANCEL_COMMAND = /^cancel\b/i;
 const STATUS_COMMAND = /^status\b/i;
+
+/** "Show prices in EUR" / "Use HKD as my preferred currency" — automatic currency conversion
+ *  (src/fx/) display preference. Returns the requested ISO code (uppercased, NOT yet validated
+ *  against CURRENCY_CODES) or null when the text doesn't match either accepted form. */
+function parseCurrencyPreferenceCommand(text: string): string | null {
+  const t = text.trim();
+  const shown = t.match(/^show\s+prices?\s+in\s+([a-z]{3})\b/i);
+  if (shown) return shown[1].toUpperCase();
+  const used = t.match(/^use\s+([a-z]{3})\s+as\s+(?:my\s+)?preferred\s+currency\b/i);
+  if (used) return used[1].toUpperCase();
+  return null;
+}
+
+/** Stores a contact's preferred display currency (requirement #11) — never affects the
+ *  USD-budget comparison itself (see resolveComparablePrice in matching/engine.ts), only which
+ *  currency the "Approximately: ..." estimate line is converted into. An unrecognized code is
+ *  rejected rather than silently stored — never guess that a typo'd code is a real currency. */
+function handleCurrencyPreferenceCommand(state: ConversationState, code: string, messages: string[]): void {
+  if (!CURRENCY_CODES.includes(code)) {
+    messages.push(`I don't recognize "${code}" as a currency. Supported: ${CURRENCY_CODES.join(", ")}.`);
+    return;
+  }
+  state.preferredDisplayCurrency = code;
+  messages.push(`Got it — I'll show prices in ${code} from now on.`);
+}
 // A bare greeting (spec: "'hi' should return the Fi menu, not force approve/pass") is NOT its
 // own deterministic command here — a brand-new contact's first "hi" must still get the normal
 // intro message (see state.stage === "new" below), and an existing contact's "hi" with matches
@@ -157,6 +183,7 @@ const FI_MENU = [
   '"pass <number>" — skip a match',
   '"cancel" — clear your current matches',
   '"status" — check your account status',
+  '"Show prices in EUR" (or USD/GBP/HKD/etc.) — set your preferred display currency',
   '"help" — show this menu',
 ].join("\n");
 
@@ -222,8 +249,10 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
   // nothing to signal.
   const signaled = await attachPriceSignals(results);
   // Automatic currency conversion (src/fx/) — native + converted display strings for a listing
-  // with known currency info; a no-op (undefined) for one without.
-  const withCurrency = await attachCurrencyDisplay(signaled);
+  // with known currency info; a no-op (undefined) for one without. Converts to this contact's
+  // own "Show prices in EUR"/"Use HKD as my preferred currency" choice when set, else the
+  // config-wide DEFAULT_DISPLAY_CURRENCY.
+  const withCurrency = await attachCurrencyDisplay(signaled, state.preferredDisplayCurrency);
 
   // Confirms each listing's detailUrl actually resolves before it's ever sent in a card —
   // a constructed WatchFacts URL isn't guaranteed to be a valid live page (wrong id, expired
@@ -567,6 +596,12 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
   if (STATUS_COMMAND.test(text.trim())) {
     await handleStatusCommand(state, messages);
+    saveState(state);
+    return { state, messages };
+  }
+  const currencyPreference = parseCurrencyPreferenceCommand(text);
+  if (currencyPreference) {
+    handleCurrencyPreferenceCommand(state, currencyPreference, messages);
     saveState(state);
     return { state, messages };
   }

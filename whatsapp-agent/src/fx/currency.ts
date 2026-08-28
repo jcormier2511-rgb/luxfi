@@ -29,7 +29,9 @@ const SYMBOL_TO_CURRENCY: [symbol: string, currency: string][] = Object.entries(
   .map(([currency, symbol]): [string, string] => [symbol, currency])
   .sort((a, b) => b[0].length - a[0].length);
 
-const CURRENCY_CODES = ["USD", "EUR", "GBP", "HKD", "SGD", "CAD", "AUD", "JPY", "CNY", "CHF", "AED"];
+/** Exported for conversation/flow.ts's "Show prices in <code>" / "Use <code> as my preferred
+ *  currency" command — validates a user-supplied code before it's stored as a preference. */
+export const CURRENCY_CODES = ["USD", "EUR", "GBP", "HKD", "SGD", "CAD", "AUD", "JPY", "CNY", "CHF", "AED"];
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

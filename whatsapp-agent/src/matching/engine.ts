@@ -287,12 +287,19 @@ export async function attachPriceSignals(results: MatchResult[]): Promise<MatchR
 }
 
 /** Undefined when the listing has no known native currency at all (falls back to the plain
- *  price line, exactly as before this feature existed). */
-async function buildCurrencyDisplay(listing: InventoryListing): Promise<CurrencyDisplay | undefined> {
+ *  price line, exactly as before this feature existed). `displayCurrency` defaults to the
+ *  config-wide DEFAULT_DISPLAY_CURRENCY, but a contact's own "Show prices in EUR" preference
+ *  (conversation/flow.ts) overrides it — this only affects the DISPLAYED estimate, never the
+ *  USD-budget comparison in resolveComparablePrice above, which always targets FX_BASE_CURRENCY
+ *  by the same long-standing convention priceMax/priceMin already rely on. */
+async function buildCurrencyDisplay(
+  listing: InventoryListing,
+  displayCurrency: string = config.fx.defaultDisplayCurrency
+): Promise<CurrencyDisplay | undefined> {
   if (!listing.nativeCurrency || listing.nativePriceAmount === undefined) return undefined;
   const native = formatCurrency(listing.nativePriceAmount, listing.nativeCurrency);
-  if (listing.nativeCurrency === config.fx.baseCurrency) return { native };
-  const converted = await convertAmount(listing.nativePriceAmount, listing.nativeCurrency, config.fx.baseCurrency);
+  if (listing.nativeCurrency === displayCurrency) return { native };
+  const converted = await convertAmount(listing.nativePriceAmount, listing.nativeCurrency, displayCurrency);
   if (!converted) return { native, unavailable: true };
   return { native, converted: formatCurrency(converted.amount, converted.currency) };
 }
@@ -303,8 +310,8 @@ async function buildCurrencyDisplay(listing: InventoryListing): Promise<Currency
  * known native currency, so a listing this feature has no data for renders exactly as it always
  * has (formatMatchCard's plain `$${listing.price}` line).
  */
-export async function attachCurrencyDisplay(results: MatchResult[]): Promise<MatchResult[]> {
-  return Promise.all(results.map(async (r) => ({ ...r, currencyDisplay: await buildCurrencyDisplay(r.listing) })));
+export async function attachCurrencyDisplay(results: MatchResult[], displayCurrency?: string): Promise<MatchResult[]> {
+  return Promise.all(results.map(async (r) => ({ ...r, currencyDisplay: await buildCurrencyDisplay(r.listing, displayCurrency) })));
 }
 
 /**

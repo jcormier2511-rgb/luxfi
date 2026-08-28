@@ -102,5 +102,9 @@ export interface ConversationState {
   preferences?: SearchPreferences;
   pendingPreferenceCollection?: PendingPreferenceCollection;
   pendingNaturalFollowUp?: PendingNaturalFollowUp;
+  // Automatic currency conversion (src/fx/) — set via "Show prices in USD" / "Use HKD as my
+  // preferred currency" (see conversation/flow.ts). ISO 4217 code. Undefined means the
+  // config-wide DEFAULT_DISPLAY_CURRENCY is used instead.
+  preferredDisplayCurrency?: string;
   updatedAt: string;
 }
