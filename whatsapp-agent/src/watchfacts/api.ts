@@ -1,6 +1,7 @@
 import { Page } from "playwright";
 import { InventoryListing, ListingType } from "../types";
 import { extractReference, extractUnambiguousPrice } from "../postings/normalize";
+import { extractNativePrice } from "../fx/currency";
 
 /**
  * Real WatchFacts Trading Floor API, found by capturing network traffic from a logged-in
@@ -120,6 +121,14 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
     // sub-listing's own title price (if any) isn't cross-checked against anything reliable.
     const textPrice = !isBundleOfMultiple ? extractUnambiguousPrice(title) : null;
     const price = isBundleOfMultiple ? "ASK" : textPrice !== null ? String(textPrice) : sale.price > 0 ? String(sale.price) : "ASK";
+    // Automatic currency conversion (src/fx/) — the listing's OWN currency, read the same way
+    // as the title-price override above, from that sub-listing's own title only (never the
+    // bundle-wide sale title, which could name several other watches' prices/currencies).
+    // Independent of the bundle-vs-single price decision above: even a bundle sub-listing's own
+    // title can state its currency, purely as descriptive info about what the text says — this
+    // never feeds into the "ASK" bundle-price safety rule, only into currency-aware display/
+    // budget comparison for whichever price ends up being used.
+    const native = extractNativePrice(title);
     return {
       id: isBundleOfMultiple ? `${sale.id}-${detail?.id ?? i}` : sale.id,
       type,
@@ -137,6 +146,9 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
       description: title,
       detailUrl: `https://watchfacts.com/flash-sales/${sale.id}`,
       imageUrl: detail?.frontImage || undefined,
+      nativePriceAmount: native?.amount,
+      nativeCurrency: native?.currency,
+      originalPriceText: native?.originalText,
     };
   });
 }

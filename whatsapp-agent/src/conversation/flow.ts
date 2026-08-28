@@ -1,6 +1,6 @@
 import { config, isAiMatchingEnabledForPhone } from "../config";
 import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences, MatchDecision } from "../types";
-import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals } from "../matching/engine";
+import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals, attachCurrencyDisplay, CurrencyDisplay } from "../matching/engine";
 import { PriceSignal } from "../matching/priceSignal";
 import { requestPhotosForMatch } from "../matching/photoRequests";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
@@ -221,24 +221,29 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
   // reference) — see matching/priceSignal.ts. FS results only; a no-op fetch when there's
   // nothing to signal.
   const signaled = await attachPriceSignals(results);
+  // Automatic currency conversion (src/fx/) — native + converted display strings for a listing
+  // with known currency info; a no-op (undefined) for one without.
+  const withCurrency = await attachCurrencyDisplay(signaled);
 
   // Confirms each listing's detailUrl actually resolves before it's ever sent in a card —
   // a constructed WatchFacts URL isn't guaranteed to be a valid live page (wrong id, expired
   // listing, site-side error). An unreachable URL is dropped rather than sent broken; matching
   // itself (and the listing's own contactPhone) is completely unaffected either way.
-  const validated: { listing: InventoryListing; explanation?: string; priceSignal?: PriceSignal }[] = await Promise.all(
-    signaled.map(async ({ listing, explanation, priceSignal }) => ({
-      listing: { ...listing, detailUrl: await getValidatedListingUrl(listing.detailUrl) },
-      explanation,
-      priceSignal,
-    }))
-  );
+  const validated: { listing: InventoryListing; explanation?: string; priceSignal?: PriceSignal; currencyDisplay?: CurrencyDisplay }[] =
+    await Promise.all(
+      withCurrency.map(async ({ listing, explanation, priceSignal, currencyDisplay }) => ({
+        listing: { ...listing, detailUrl: await getValidatedListingUrl(listing.detailUrl) },
+        explanation,
+        priceSignal,
+        currencyDisplay,
+      }))
+    );
 
   // Each card now ends with its own reply instructions (approve/photos/pass for an FS/seller
   // card, approve/pass for a WTB/buyer card) — see formatMatchCard — so there's no separate
   // shared footer message here anymore.
-  validated.forEach(({ listing, explanation, priceSignal }, i) =>
-    messages.push(formatMatchCard(listing, i, request.action, explanation, priceSignal))
+  validated.forEach(({ listing, explanation, priceSignal, currencyDisplay }, i) =>
+    messages.push(formatMatchCard(listing, i, request.action, explanation, priceSignal, currencyDisplay))
   );
   // A fresh search intentionally starts its own new monitor/numbering (spec: "a new buy/sell
   // request starts a new monitor") — any prior pendingMatches is superseded here, but note that

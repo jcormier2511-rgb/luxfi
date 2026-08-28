@@ -27,6 +27,14 @@ export interface InventoryListing {
   description: string; // full original listing text, e.g. from the WF detail page — richer than `item`
   detailUrl?: string; // e.g. https://watchfacts.com/flash-sales/<id> — optional, WF listings only
   imageUrl?: string; // primary photo — WatchFacts' own frontImage, when the API provided one
+  // Automatic currency conversion (src/fx/) — the listing's OWN stated price/currency, read
+  // directly from its title/description, kept separate from `price` above (which stays the
+  // plain numeric string every existing price-parsing/filter path already relies on) so the
+  // original is never overwritten by a converted value. Undefined when the text named no
+  // unambiguous price of its own (falls back to `price` as today).
+  nativePriceAmount?: number;
+  nativeCurrency?: string; // ISO 4217 code, e.g. "HKD"
+  originalPriceText?: string; // verbatim substring, e.g. "HK$850,000"
 }
 
 export type RequestAction = "buy" | "sell";
