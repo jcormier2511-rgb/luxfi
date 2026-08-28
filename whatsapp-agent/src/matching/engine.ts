@@ -5,6 +5,7 @@ import { isAiMatchingEnabledForPhone } from "../config";
 import { interpretQuery } from "../ai/queryInterpreter";
 import { rerankCandidates } from "../ai/rerank";
 import { computePriceSignal, PriceSignal } from "./priceSignal";
+import { isPartsOrAccessoryListing } from "./partsFilter";
 
 // Shares extractReference/REFERENCE_PATTERN with postings/normalize.ts (v4) — one reference-
 // extraction rule for both, not two hand-synced copies. A reference number in the free-text
@@ -53,6 +54,11 @@ function parseListingPrice(raw: string): number | undefined {
  */
 function isUnambiguousListing(listing: InventoryListing): boolean {
   return !hasMultipleDistinctPrices(listing.description || "");
+}
+
+/** A candidate must be an actual watch, not a standalone part/accessory — see partsFilter.ts. */
+function isCompleteWatchListing(listing: InventoryListing): boolean {
+  return !isPartsOrAccessoryListing(listing);
 }
 
 /** True if a listing's price falls inside the preference range, or no range was set. */
@@ -159,9 +165,9 @@ function softPreferenceScore(listing: InventoryListing, preferences?: SearchPref
  */
 export async function findMatches(request: ItemRequest, limit: number, preferences?: SearchPreferences): Promise<InventoryListing[]> {
   const wantType = request.action === "buy" ? "FS" : "WTB";
-  // Excludes multi-item price-list dumps before they ever reach the reference/token branches
-  // below — see isUnambiguousListing.
-  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing);
+  // Excludes multi-item price-list dumps and standalone part/accessory listings before they
+  // ever reach the reference/token branches below — see isUnambiguousListing/isCompleteWatchListing.
+  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
   const requestedRef = extractRequestedReference(request.query);
 
   if (requestedRef) {
@@ -260,8 +266,9 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   }
 
   const wantType = interpreted.action === "buy" ? "FS" : "WTB";
-  // Excludes multi-item price-list dumps before AI ever sees the pool — see isUnambiguousListing.
-  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing);
+  // Excludes multi-item price-list dumps and standalone part/accessory listings before AI ever
+  // sees the pool — see isUnambiguousListing/isCompleteWatchListing.
+  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
   // The reference safety gate below must never depend solely on the AI correctly parsing the
   // reference out of the message — if interpretQuery's own extraction misses/garbles it (a real
   // model failure mode, not hypothetical), falling back to null here would let EVERY listing
@@ -374,9 +381,17 @@ export function formatMatchCard(
     // stored source text (the dealer's own message, or the WatchFacts listing's own
     // description), so a reader can see exactly what the seller/buyer actually wrote.
     `Description: ${listing.description || "Not provided"}`,
+    listing.imageUrl ? `Photo: ${listing.imageUrl}` : "Photos: Not provided.",
   ];
   if (listing.detailUrl) lines.push(`Listing: ${listing.detailUrl}`);
   if (explanation) lines.push(`Why: ${explanation}`);
+  // "photos <n>" is only meaningful on an FS/seller card — there's a seller on the other end to
+  // privately ask. A "sell" card (showing a WTB buyer) keeps the original two-option footer.
+  lines.push(
+    action === "buy"
+      ? 'Reply "approve <number>" to connect,\n"photos <number>" to request photos,\nor "pass <number>" to skip.'
+      : 'Reply "approve <number>" to connect, or "pass <number>" to skip.'
+  );
   return lines.join("\n");
 }
 

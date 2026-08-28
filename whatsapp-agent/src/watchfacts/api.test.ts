@@ -65,6 +65,19 @@ test("mapToInventoryListings maps structured API fields, never CTA/button text",
   assert.doesNotMatch(listing.item, /view details|check availability/i);
 });
 
+test("mapToInventoryListings captures the listing's own frontImage as its primary photo", () => {
+  const withPhoto = sale({
+    listings: [{ ...sale().listings[0], frontImage: "https://watchfacts.com/media/sale-1.jpg" }],
+  });
+  const [listing] = mapToInventoryListings(withPhoto, "FS");
+  assert.equal(listing.imageUrl, "https://watchfacts.com/media/sale-1.jpg");
+});
+
+test("mapToInventoryListings leaves imageUrl undefined rather than null/empty when no frontImage exists", () => {
+  const [listing] = mapToInventoryListings(sale(), "FS"); // default fixture's frontImage is null
+  assert.equal(listing.imageUrl, undefined);
+});
+
 test("mapToInventoryListings falls back to fromName/companyWhatsapp when company fields are blank", () => {
   const [listing] = mapToInventoryListings(sale({ companyName: null, whatsappNumber: null, fromName: "Sean Ash" }), "FS");
   assert.equal(listing.contactName, "Sean Ash");

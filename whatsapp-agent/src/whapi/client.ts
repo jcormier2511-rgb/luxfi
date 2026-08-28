@@ -84,13 +84,18 @@ export interface IncomingMessage {
 
 export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[] {
   return (body.messages ?? [])
-    .filter((m) => !m.from_me && ((m.type === "text" && m.text?.body) || (m.type === "image" && m.image?.caption)))
+    // An image message no longer needs a caption to be picked up — a seller answering Fi's own
+    // private "please reply with 3-6 clear photos" request (see matching/photoRequests.ts) very
+    // often sends bare, uncaptioned images. An uncaptioned image just carries empty `text`,
+    // which is a safe no-op everywhere else that reads it (e.g. group-monitor's
+    // classifyGroupPost("") already returns null and ingests nothing).
+    .filter((m) => !m.from_me && ((m.type === "text" && m.text?.body) || (m.type === "image" && m.image?.link)))
     .map((m) => {
       const isGroup = (m.chat_id ?? "").includes("@g.us");
       return {
         id: m.id,
         phone: digitsOnly(isGroup ? m.from : m.chat_id || m.from),
-        text: m.type === "image" ? m.image!.caption! : m.text!.body,
+        text: m.type === "image" ? m.image?.caption ?? "" : m.text!.body,
         isGroup,
         groupId: isGroup ? digitsOnly(m.chat_id) : undefined,
         senderName: m.from_name,

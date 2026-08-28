@@ -94,6 +94,18 @@ async function ensureSchema(): Promise<void> {
           WHERE fs_last_error IS NULL AND last_error IS NOT NULL;
         UPDATE sync_meta SET wtb_last_error = last_error
           WHERE wtb_last_error IS NULL AND last_error IS NOT NULL;
+        -- Private "request photos before approval" workflow (Fi v4 matching). Additive columns
+        -- on the existing row, keyed the same way (source, type, external_id) as every other
+        -- listing field — deliberately NOT included in upsertListings' ON CONFLICT SET clause
+        -- below, so a routine WatchFacts re-sync can never clobber an in-progress photo request.
+        -- image_url is the one exception: it's synced data (WatchFacts' own frontImage), not
+        -- request state, so it DOES get refreshed on every sync like every other listing field.
+        ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT '';
+        ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS photo_request_status TEXT NOT NULL DEFAULT 'none';
+        ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS photo_requested_at TIMESTAMPTZ;
+        ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS photo_requester_phone TEXT;
+        ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS photo_request_match_id TEXT;
+        ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS requested_photos JSONB NOT NULL DEFAULT '[]';
         `
       )
       .then(() => undefined);
@@ -146,6 +158,7 @@ export interface UpsertRow {
   rating: string;
   description: string;
   detailUrl?: string;
+  imageUrl?: string;
 }
 
 /** Insert new listings, update existing ones (matched by source+type+external_id). */
@@ -160,15 +173,15 @@ export async function upsertListings(rows: UpsertRow[], syncedAt: string, source
         `
         INSERT INTO inventory_listings
           (source, type, external_id, category, item, brand, ref, condition, price, location,
-           contact_name, contact_phone, rating, description, detail_url, is_active, first_seen_at, last_seen_at)
+           contact_name, contact_phone, rating, description, detail_url, image_url, is_active, first_seen_at, last_seen_at)
         VALUES
-          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, TRUE, $16, $16)
+          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE, $17, $17)
         ON CONFLICT (source, type, external_id) DO UPDATE SET
           category = excluded.category, item = excluded.item, brand = excluded.brand, ref = excluded.ref,
           condition = excluded.condition, price = excluded.price, location = excluded.location,
           contact_name = excluded.contact_name, contact_phone = excluded.contact_phone,
           rating = excluded.rating, description = excluded.description, detail_url = excluded.detail_url,
-          is_active = TRUE, last_seen_at = excluded.last_seen_at
+          image_url = excluded.image_url, is_active = TRUE, last_seen_at = excluded.last_seen_at
         `,
         [
           source,
@@ -186,6 +199,7 @@ export async function upsertListings(rows: UpsertRow[], syncedAt: string, source
           r.rating,
           r.description,
           r.detailUrl ?? "",
+          r.imageUrl ?? "",
           syncedAt,
         ]
       );
@@ -235,6 +249,7 @@ interface ListingRow {
   rating: string;
   description: string;
   detail_url: string;
+  image_url: string;
   external_id: string;
 }
 
@@ -255,6 +270,7 @@ function rowToListing(row: ListingRow): InventoryListing {
     rating: row.rating,
     description: row.description,
     detailUrl: row.detail_url || undefined,
+    imageUrl: row.image_url || undefined,
   };
 }
 
@@ -292,6 +308,19 @@ export async function getActiveListings(type?: ListingType): Promise<InventoryLi
     : await getPool().query(`SELECT * FROM inventory_listings WHERE is_active = TRUE`);
   const dbListings = (result.rows as ListingRow[]).map(rowToListing);
   return [...dbListings, ...loadGroupListings(type)];
+}
+
+/** One listing by its exact identity — used by the photo-request workflow to rebuild a full
+ *  Match Card once a seller's photos have come in. */
+export async function getListingByKey(source: string, type: ListingType, externalId: string): Promise<InventoryListing | null> {
+  await ensureSchema();
+  const result = await getPool().query(`SELECT * FROM inventory_listings WHERE source = $1 AND type = $2 AND external_id = $3`, [
+    source,
+    type,
+    externalId,
+  ]);
+  const row = result.rows[0] as ListingRow | undefined;
+  return row ? rowToListing(row) : null;
 }
 
 export interface DiagnosticListingRow {
@@ -456,4 +485,137 @@ export async function recordTypeSyncError(type: ListingType, message: string): P
   } else {
     await getPool().query(`UPDATE sync_meta SET wtb_last_error = $1 WHERE id = 1`, [message]);
   }
+}
+
+/**
+ * Private "request photos before approval" workflow (Fi v4 matching) — persistence for the
+ * additive photo-request columns on inventory_listings. Deliberately kept in this module rather
+ * than a new one: these columns live on the same row every other listing field does, keyed the
+ * same way (source, type, external_id).
+ */
+export type PhotoRequestStatus = "none" | "requested" | "received" | "unavailable";
+
+export interface PhotoMediaEntry {
+  url: string;
+  receivedAt: string;
+}
+
+export interface PhotoRequestRecord {
+  source: string;
+  type: ListingType;
+  externalId: string;
+  contactPhone: string;
+  status: PhotoRequestStatus;
+  requestedAt: string | null;
+  requesterPhone: string | null;
+  matchId: string | null;
+  photos: PhotoMediaEntry[];
+}
+
+interface PhotoRequestRow {
+  source: string;
+  type: string;
+  external_id: string;
+  contact_phone: string;
+  photo_request_status: string;
+  photo_requested_at: Date | string | null;
+  photo_requester_phone: string | null;
+  photo_request_match_id: string | null;
+  requested_photos: PhotoMediaEntry[];
+}
+
+function rowToPhotoRequestRecord(row: PhotoRequestRow): PhotoRequestRecord {
+  return {
+    source: row.source,
+    type: row.type as ListingType,
+    externalId: row.external_id,
+    contactPhone: row.contact_phone,
+    status: row.photo_request_status as PhotoRequestStatus,
+    requestedAt: toIso(row.photo_requested_at),
+    requesterPhone: row.photo_requester_phone,
+    matchId: row.photo_request_match_id,
+    photos: row.requested_photos ?? [],
+  };
+}
+
+const PHOTO_REQUEST_SELECT = `SELECT source, type, external_id, contact_phone, photo_request_status, photo_requested_at,
+     photo_requester_phone, photo_request_match_id, requested_photos FROM inventory_listings`;
+
+/** The exact identity + current photo-request state of one listing — used to decide whether a
+ *  new request would be a duplicate, and who a fulfilled request should be delivered to. */
+export async function getPhotoRequestRecord(source: string, type: ListingType, externalId: string): Promise<PhotoRequestRecord | null> {
+  await ensureSchema();
+  const result = await getPool().query(`${PHOTO_REQUEST_SELECT} WHERE source = $1 AND type = $2 AND external_id = $3`, [
+    source,
+    type,
+    externalId,
+  ]);
+  const row = result.rows[0] as PhotoRequestRow | undefined;
+  return row ? rowToPhotoRequestRecord(row) : null;
+}
+
+/** Starts a fresh request cycle — resets any previously collected photos, since this is a new
+ *  request (possibly from a different requester) rather than a continuation of an old one. */
+export async function markPhotoRequested(
+  source: string,
+  type: ListingType,
+  externalId: string,
+  requesterPhone: string,
+  matchId: string
+): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `UPDATE inventory_listings
+     SET photo_request_status = 'requested', photo_requested_at = now(),
+         photo_requester_phone = $4, photo_request_match_id = $5, requested_photos = '[]'
+     WHERE source = $1 AND type = $2 AND external_id = $3`,
+    [source, type, externalId, requesterPhone, matchId]
+  );
+}
+
+/** Set when a request can never be fulfilled (e.g. the listing has no contact number on file) — never a live request the buyer is left waiting on. */
+export async function markPhotoRequestUnavailable(source: string, type: ListingType, externalId: string): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `UPDATE inventory_listings SET photo_request_status = 'unavailable' WHERE source = $1 AND type = $2 AND external_id = $3`,
+    [source, type, externalId]
+  );
+}
+
+/** Appends one received photo to the listing's media array and flips status to 'received' —
+ *  safe to call once per inbound image, including every image after the first in a batch. */
+export async function appendReceivedPhoto(source: string, type: ListingType, externalId: string, url: string): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `UPDATE inventory_listings
+     SET requested_photos = requested_photos || $4::jsonb, photo_request_status = 'received'
+     WHERE source = $1 AND type = $2 AND external_id = $3`,
+    [source, type, externalId, JSON.stringify([{ url, receivedAt: new Date().toISOString() }])]
+  );
+}
+
+// How long a seller's incoming image is still attributed to an earlier photo request — bounded
+// so an unrelated image sent long after a request was made or fulfilled never gets misfiled
+// against it.
+const PHOTO_REQUEST_LOOKBACK_DAYS = 7;
+
+/**
+ * Finds the listing a seller's incoming (non-group) image should be attributed to: the most
+ * recent listing whose contact_phone matches theirs and which has an open or just-fulfilled
+ * photo request ('requested' or 'received') within the lookback window. 'requested' matches so
+ * the very first photo of a reply is still routed; 'received' matches so every photo AFTER the
+ * first in the same multi-image reply keeps being forwarded, not just the one that flipped the
+ * status.
+ */
+export async function findPendingPhotoRequestByContactPhone(phone: string): Promise<PhotoRequestRecord | null> {
+  await ensureSchema();
+  const cutoff = new Date(Date.now() - PHOTO_REQUEST_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const result = await getPool().query(
+    `${PHOTO_REQUEST_SELECT}
+     WHERE contact_phone = $1 AND photo_request_status IN ('requested', 'received') AND photo_requested_at > $2
+     ORDER BY photo_requested_at DESC LIMIT 1`,
+    [phone, cutoff]
+  );
+  const row = result.rows[0] as PhotoRequestRow | undefined;
+  return row ? rowToPhotoRequestRecord(row) : null;
 }
