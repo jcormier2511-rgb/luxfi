@@ -19,12 +19,12 @@ const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling|ready\s+stock|in\s+stock|avail
 const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|jpy|cny|chf)";
 // Trailing `\s?[kK]?` captures dealer shorthand like "$25.5k" — see normalizePriceShorthand,
 // which does the actual k-multiplication; this pattern just needs to not truncate it away.
-const PRICE_PATTERN = new RegExp(
-  `\\$\\s?[\\d,]+(?:\\.\\d+)?\\s?[kK]?\\b` +
-    `|\\b${CURRENCY_CODE}\\s?[\\d,]+(?:\\.\\d+)?\\s?[kK]?\\b` +
-    `|\\b[\\d,]+(?:\\.\\d+)?\\s?[kK]?\\s?${CURRENCY_CODE}\\b`,
-  "gi"
-);
+// Must start with an actual digit — a naive `[\d,]+` also matches a BARE comma (no digits at
+// all), which let a stray ", " right before an unrelated currency code (e.g. "Sold, USD wire
+// only") turn into a phantom price token. Requires either proper thousands-grouped digits or a
+// plain unbroken digit run.
+const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?\\s?[kK]?";
+const PRICE_PATTERN = new RegExp(`\\$\\s?${NUM}\\b` + `|\\b${CURRENCY_CODE}\\s?${NUM}\\b` + `|\\b${NUM}\\s?${CURRENCY_CODE}\\b`, "gi");
 // `(?<!\$\s?)` excludes a digit run directly preceded by a $ sign (with or without a space) —
 // "$20000"/"$ 20000" is unambiguously a price, never a reference, even though bare "20000"
 // alone would otherwise fit the same shape. This is the ONE disambiguation that's actually
