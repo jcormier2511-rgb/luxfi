@@ -10,6 +10,7 @@ import { getEntitlement, recordBillingRequested } from "../billing/entitlementSt
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
+import { detectCurrency } from "../matching/currency";
 
 const OPT_OUT_WORDS = ["stop", "unsubscribe", "cancel", "opt out", "optout"];
 
@@ -43,7 +44,9 @@ function classify(segment: string): ItemRequest | null {
 
 export function parseItemRequests(text: string): ItemRequest[] {
   const segments = text
-    .split(/\n|,|;|\band\b/i)
+    // A comma inside a formatted number is data, not an item separator. Splitting
+    // "$110,000" here used to turn the request into "...under $110" plus "000".
+    .split(/\n|,(?!\d)|;|\band\b/i)
     .map((s) => s.trim())
     .filter(Boolean);
   const items: ItemRequest[] = [];
@@ -216,6 +219,7 @@ async function handlePreferenceAnswer(state: ConversationState, text: string, me
     const range = parsePriceRange(text);
     state.preferences.priceMin = range?.min;
     state.preferences.priceMax = range?.max;
+    state.preferences.priceCurrency = range ? detectCurrency(text) ?? undefined : undefined;
     pending.step = "location";
     messages.push(LOCATION_QUESTION);
     return;
@@ -291,6 +295,7 @@ function mergeFollowUpPreferences(partial: SearchPreferences, fromReply: SearchP
   return {
     priceMin: partial.priceMin ?? fromReply.priceMin,
     priceMax: partial.priceMax ?? fromReply.priceMax,
+    priceCurrency: partial.priceCurrency ?? fromReply.priceCurrency,
     location: partial.location ?? fromReply.location,
     dialColor: partial.dialColor ?? fromReply.dialColor,
     condition: partial.condition ?? fromReply.condition,

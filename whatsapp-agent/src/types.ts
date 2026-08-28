@@ -27,6 +27,9 @@ export interface InventoryListing {
   description: string; // full original listing text, e.g. from the WF detail page — richer than `item`
   detailUrl?: string; // e.g. https://watchfacts.com/flash-sales/<id> — optional, WF listings only
   imageUrl?: string; // primary photo — WatchFacts' own frontImage, when the API provided one
+  priceAmount?: number; // parsed original amount, populated by matching
+  priceCurrency?: string; // original ISO currency, populated by matching
+  priceUsd?: number; // converted comparison amount, populated by matching when available
 }
 
 export type RequestAction = "buy" | "sell";
@@ -54,6 +57,7 @@ export type ConversationStage = "new" | "active" | "opted_out";
 export interface SearchPreferences {
   priceMin?: number;
   priceMax?: number;
+  priceCurrency?: string;
   location?: string;
   dialColor?: string;
   condition?: string;
