@@ -5,6 +5,8 @@ import { runMigrations } from './db/migrate';
 import { runFsSync, runWtbSync } from './services/sync.service';
 import { reconcileMatches } from './services/matching.service';
 import { runMonitorLifecycleJob } from './services/monitor.service';
+import { getWhatsAppAdapterIfConfigured } from './adapters/whatsapp.client';
+import { setMessagingAdapter } from './adapters/messaging.adapter';
 
 async function main(): Promise<void> {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -13,6 +15,16 @@ async function main(): Promise<void> {
   if (applied.length) {
     // eslint-disable-next-line no-console
     console.log(`[migrate] applied: ${applied.join(', ')}`);
+  }
+
+  const whatsappAdapter = getWhatsAppAdapterIfConfigured(pool);
+  if (whatsappAdapter) {
+    setMessagingAdapter(whatsappAdapter);
+    // eslint-disable-next-line no-console
+    console.log('[messaging] WhatsApp Cloud API adapter active');
+  } else {
+    // eslint-disable-next-line no-console
+    console.log('[messaging] WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID not set -- using stub messaging adapter');
   }
 
   // Refresh on startup (spec section 13), independently for FS and WTB.

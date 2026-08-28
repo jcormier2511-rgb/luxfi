@@ -1,18 +1,18 @@
 import { Router } from 'express';
 import { Pool } from 'pg';
-import { ingestChatPosting } from '../services/posting.service';
-import { runMatchingForPosting } from '../services/matching.service';
-import { sendFirstContactIfNeeded, sendMonitoringAcknowledgment } from '../services/conversation.service';
+import { ingestAndProcessChatPosting } from '../services/chatIngestion.service';
 import { ChatPostingInput } from '../types/domain';
 
 export function webhookRoutes(pool: Pool): Router {
   const router = Router();
 
   /**
-   * Normalized chat-posting ingestion endpoint. A real WhatsApp/Telegram
-   * webhook adapter (not available to build in this session -- no transport
-   * credentials) would parse the provider's raw payload and call this same
-   * shape; this is the stable seam it would plug into.
+   * Normalized chat-posting ingestion endpoint. Accepts an already-normalized
+   * payload (platform, chatId, messageId, postingType, structured attributes).
+   * The real WhatsApp webhook (whatsapp.routes.ts) parses the provider's raw
+   * payload and free-text message body, then feeds the same underlying
+   * pipeline; this endpoint remains useful directly for Telegram (later) or
+   * any other source that can normalize on its own end.
    */
   router.post('/chat-posting', async (req, res) => {
     const body = req.body as ChatPostingInput;
@@ -22,15 +22,8 @@ export function webhookRoutes(pool: Pool): Router {
     }
 
     try {
-      const { posting, created, materiallyChanged } = await ingestChatPosting(pool, body);
-      await sendFirstContactIfNeeded(pool, posting.canonicalUserId);
-
-      const { matchCount } = await runMatchingForPosting(pool, posting.id, created || materiallyChanged);
-      if (created && matchCount === 0) {
-        await sendMonitoringAcknowledgment(posting.canonicalUserId);
-      }
-
-      res.status(created ? 201 : 200).json({ postingId: posting.id, created, materiallyChanged, matchCount });
+      const result = await ingestAndProcessChatPosting(pool, body);
+      res.status(result.created ? 201 : 200).json(result);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
