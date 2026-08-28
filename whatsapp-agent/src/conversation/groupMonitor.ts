@@ -14,12 +14,6 @@ function csvEscape(value: string): string {
   return value;
 }
 
-/** AI may use the common RMB alias; persisted prices use canonical ISO codes for FX parsing. */
-function canonicalEnrichmentCurrency(currency: string | null): string {
-  const normalized = currency?.trim().toUpperCase();
-  return normalized === "RMB" ? "CNY" : normalized || "USD";
-}
-
 function appendGroupListing(row: InventoryListing): void {
   const csvPath = config.data.groupListingsCsv;
   const line =
@@ -70,22 +64,27 @@ async function buildGroupRows(
   if (config.aiMatching.enrichmentEnabled) {
     const enrichment = await enrichListingText(text);
     if (enrichment.length > 1) {
-      return enrichment.map((e, i) => ({
-        id: `group-${groupId}-${Date.now()}-${i}`,
-        type,
-        category: "watches",
-        item: e.evidence,
-        brand: e.brand || "",
-        ref: e.referenceRaw || e.referenceFamily || "",
-        condition: e.condition || "",
-        price: e.price != null ? `${canonicalEnrichmentCurrency(e.currency)} ${e.price}` : "ASK",
-        location: e.location || "",
-        contactName: senderName || senderPhone,
-        contactPhone: senderPhone,
-        source: "WA-Group",
-        rating: "",
-        description: e.evidence,
-      }));
+      return enrichment.map((e, i) => {
+        // Evidence is the verified source substring. Re-parse amount AND currency from that
+        // same token rather than trusting either AI field independently.
+        const evidencePrice = normalizeText(e.evidence);
+        return {
+          id: `group-${groupId}-${Date.now()}-${i}`,
+          type,
+          category: "watches",
+          item: e.evidence,
+          brand: e.brand || "",
+          ref: e.referenceRaw || e.referenceFamily || "",
+          condition: e.condition || "",
+          price: evidencePrice.price != null ? `${evidencePrice.currency} ${evidencePrice.price}` : "ASK",
+          location: e.location || "",
+          contactName: senderName || senderPhone,
+          contactPhone: senderPhone,
+          source: "WA-Group",
+          rating: "",
+          description: e.evidence,
+        };
+      });
     }
   }
 

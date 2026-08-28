@@ -1,6 +1,6 @@
 import { normalizePriceShorthand } from "../postings/normalize";
 
-export const SUPPORTED_CURRENCIES = ["USD", "HKD", "EUR", "GBP", "AED", "CHF", "CAD", "SGD", "JPY", "CNY"] as const;
+export const SUPPORTED_CURRENCIES = ["USD", "HKD", "EUR", "GBP", "AED", "CHF", "CAD", "SGD", "AUD", "JPY", "CNY"] as const;
 export type CurrencyCode = typeof SUPPORTED_CURRENCIES[number];
 
 export interface Money {
@@ -11,7 +11,7 @@ export interface Money {
 export type ExchangeRateProvider = (currency: CurrencyCode) => Promise<number | null>;
 
 const SYMBOLS: Record<CurrencyCode, string> = {
-  USD: "$", HKD: "HK$", EUR: "€", GBP: "£", AED: "AED ", CHF: "CHF ", CAD: "C$", SGD: "S$", JPY: "¥", CNY: "CN¥",
+  USD: "$", HKD: "HK$", EUR: "€", GBP: "£", AED: "AED ", CHF: "CHF ", CAD: "C$", SGD: "S$", AUD: "A$", JPY: "¥", CNY: "CN¥",
 };
 const RATE_TTL_MS = 60 * 60 * 1000;
 const rateCache = new Map<CurrencyCode, { rate: number; expiresAt: number }>();
@@ -41,6 +41,7 @@ export function detectCurrency(raw: string, fallback: CurrencyCode = "USD"): Cur
   if (/HK\$/i.test(raw)) return "HKD";
   if (/C\$/i.test(raw)) return "CAD";
   if (/S\$/i.test(raw)) return "SGD";
+  if (/A\$/i.test(raw)) return "AUD";
   if (/€/.test(raw)) return "EUR";
   if (/£/.test(raw)) return "GBP";
   if (/د\.?إ|دإ/.test(raw)) return "AED";

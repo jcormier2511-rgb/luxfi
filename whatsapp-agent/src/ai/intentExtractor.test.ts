@@ -161,6 +161,7 @@ test("the primary intent verifier retains every supported non-USD currency", asy
     ["WTB Patek 5712G under HK$900,000", 900000, "HKD"],
     ["WTB Patek 5712G under S$110,000", 110000, "SGD"],
     ["WTB Patek 5712G under C$100,000", 100000, "CAD"],
+    ["WTB Patek 5712G under A$100,000", 100000, "AUD"],
     ["WTB Patek 5712G under AED 400,000", 400000, "AED"],
     ["WTB Patek 5712G under CHF 95,000", 95000, "CHF"],
     ["WTB Patek 5712G under ¥15,000,000", 15000000, "JPY"],
@@ -195,6 +196,17 @@ test("the primary intent verifier preserves both endpoints of a same-currency ra
   assert.equal(result!.intent.priceMin, 80000);
   assert.equal(result!.intent.priceMax, 100000);
   assert.equal(result!.intent.currency, "USD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
+test("the primary intent verifier applies a suffix currency to the full range", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 800000, priceMax: 900000, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G budget 800k-900k HKD");
+  assert.equal(result!.intent.priceMin, 800000);
+  assert.equal(result!.intent.priceMax, 900000);
+  assert.equal(result!.intent.currency, "HKD");
   assert.equal(result!.priceUnreliable, false);
 });
 

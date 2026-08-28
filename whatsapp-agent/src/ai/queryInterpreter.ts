@@ -14,7 +14,7 @@ export interface ConfirmedNaturalLanguageIntent {
   currency: string | null;
 }
 
-const CURRENCY_MARKER = String.raw`(?:HK\$|C\$|S\$|CN¥|[$€£¥]|\b(?:USD|HKD|EUR|GBP|AED|CHF|CAD|SGD|JPY|CNY|RMB)\b)`;
+const CURRENCY_MARKER = String.raw`(?:HK\$|C\$|S\$|A\$|CN¥|[$€£¥]|\b(?:USD|HKD|EUR|GBP|AED|CHF|CAD|SGD|AUD|JPY|CNY|RMB)\b)`;
 const PRICE_NUMBER = String.raw`[\d][\d.,]*(?:\s*[kK]\b)?`;
 const PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|over|at least|min(?:imum)?|above|more than|budget(?:\s+of)?|around|about)\b`;
 
@@ -23,7 +23,7 @@ function extractExplicitPriceExpression(text: string): string | null {
   const patterns = [
     // A range must win before a leading comparator such as "budget" can truncate it to the
     // first endpoint ("budget $80k-$100k" must mean 80k-100k, never a max of 80k).
-    new RegExp(`(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])\\s*(?:-|to|–)\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
+    new RegExp(`(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])\\s*(?:-|to|–)\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])(?:\\s*${CURRENCY_MARKER})?`, "i"),
     new RegExp(`${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
     new RegExp(`${CURRENCY_MARKER}\\s*${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
     new RegExp(`${PRICE_NUMBER}(?![A-Z0-9])\\s*${CURRENCY_MARKER}`, "i"),

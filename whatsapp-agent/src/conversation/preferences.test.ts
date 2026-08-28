@@ -68,6 +68,11 @@ test("'minimum HKD 100k' sets only the stated minimum", () => {
   assert.deepEqual(parsePriceRange("minimum HKD 100k"), { min: 100000 });
 });
 
+test("AUD code and A$ symbol preserve the numeric ceiling", () => {
+  assert.deepEqual(parsePriceRange("under AUD 100,000"), { max: 100000 });
+  assert.deepEqual(parsePriceRange("under A$100,000"), { max: 100000 });
+});
+
 test("'any' still means no preference", () => {
   assert.equal(parsePriceRange("any"), undefined);
 });

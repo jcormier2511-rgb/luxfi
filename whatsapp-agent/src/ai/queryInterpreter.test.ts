@@ -189,6 +189,23 @@ test("a budget range preserves both endpoints instead of truncating to the first
   });
 });
 
+test("a suffix currency applies to both endpoints of a budget range", () => {
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G budget 800k-900k HKD"), {
+    intent: "buy",
+    brand: "Patek Philippe",
+    reference: "5712G",
+    priceMin: 800000,
+    priceMax: 900000,
+    currency: "HKD",
+  });
+});
+
+test("AUD budgets are never defaulted to USD", () => {
+  for (const text of ["WTB Patek 5712G under AUD 100,000", "WTB Patek 5712G under A$100,000"]) {
+    assert.equal(extractConfirmedNaturalLanguageIntent(text).currency, "AUD", text);
+  }
+});
+
 test("an explicit minimum remains a floor without an invented ceiling", async (t) => {
   t.mock.method(client, "callAiJson", async () => ({
     action: "buy", brand: "Patek", referenceFamily: "5712", maxPrice: 115000, minPrice: null,

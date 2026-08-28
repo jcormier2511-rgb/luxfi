@@ -9,6 +9,7 @@ test("recognizes every required currency and preserves grouped amounts", () => {
     ["$110,000", "USD"], ["HKD 110,000", "HKD"], ["€110,000", "EUR"], ["£110,000", "GBP"],
     ["AED 110,000", "AED"], ["CHF 110,000", "CHF"], ["CAD 110,000", "CAD"],
     ["SGD 110,000", "SGD"], ["S$110,000", "SGD"],
+    ["AUD 110,000", "AUD"], ["A$110,000", "AUD"],
     ["JPY 110,000", "JPY"], ["CNY 110,000", "CNY"], ["RMB 110,000", "CNY"],
   ] as const;
   for (const [raw, currency] of examples) {

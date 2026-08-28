@@ -16,10 +16,10 @@ const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling|ready\s+stock|in\s+stock|avail
 // after ("25,5usd", already handled by normalizePriceShorthand's "first currency wins" rule —
 // see below). Recognizing these here (not just $-amounts) is what lets hasMultipleDistinctPrices
 // actually detect that kind of listing as the multi-item dump it is.
-const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|jpy|cny|rmb|chf)";
-// Longest-first prevents the bare "$" branch from splitting HK$/C$/S$, while including euro,
+const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|aud|jpy|cny|rmb|chf)";
+// Longest-first prevents the bare "$" branch from splitting HK$/C$/S$/A$, while including euro,
 // pound, yen, and yuan symbols makes symbol-only overseas listings real priced inventory.
-const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|CN¥|[$€£¥])";
+const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[$€£¥])";
 // Trailing `\s?[kK]?` captures dealer shorthand like "$25.5k" — see normalizePriceShorthand,
 // which does the actual k-multiplication; this pattern just needs to not truncate it away.
 // Must start with an actual digit — a naive `[\d,]+` also matches a BARE comma (no digits at
@@ -29,7 +29,15 @@ const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|CN¥|[$€£¥])";
 // Accept repeated comma OR dot thousands groups ("1,250,000" / "1.250.000"), while retaining
 // short-decimal shorthand such as "25.5k". The old single-dot tail truncated €1.250.000.
 const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)\\s?[kK]?";
-const PRICE_PATTERN = new RegExp(`(?:${CURRENCY_SYMBOL})\\s?${NUM}\\b` + `|\\b${CURRENCY_CODE}\\s?${NUM}\\b` + `|\\b${NUM}\\s?${CURRENCY_CODE}\\b`, "gi");
+const PRICE_PATTERN = new RegExp(
+  `(?:${CURRENCY_SYMBOL})\\s?${NUM}\\b` +
+    `|\\b${CURRENCY_CODE}\\s?${NUM}\\b` +
+    // A reference can sit immediately before a currency-prefixed price, as in
+    // "Rolex 126333 RMB 137000". Do not consume "126333 RMB" as a trailing-code
+    // price when that currency is itself followed by another numeric token.
+    `|\\b${NUM}\\s?${CURRENCY_CODE}\\b(?!\\s*${NUM})`,
+  "gi"
+);
 // `(?<!\$\s?)` excludes a digit run directly preceded by a $ sign (with or without a space) —
 // "$20000"/"$ 20000" is unambiguously a price, never a reference, even though bare "20000"
 // alone would otherwise fit the same shape. This is the ONE disambiguation that's actually
@@ -163,11 +171,12 @@ interface PriceMention {
 
 /** Currency derived from the SAME token that supplied the amount, never unrelated text. */
 function currencyFromPriceToken(token: string): string {
-  const named = token.match(/\b(USD|CAD|HKD|EUR|GBP|AED|SGD|JPY|CNY|RMB|CHF)\b/i)?.[1].toUpperCase();
+  const named = token.match(/\b(USD|CAD|HKD|EUR|GBP|AED|SGD|AUD|JPY|CNY|RMB|CHF)\b/i)?.[1].toUpperCase();
   if (named) return named === "RMB" ? "CNY" : named;
   if (/HK\$/i.test(token)) return "HKD";
   if (/C\$/i.test(token)) return "CAD";
   if (/S\$/i.test(token)) return "SGD";
+  if (/A\$/i.test(token)) return "AUD";
   if (/CN¥/i.test(token)) return "CNY";
   if (/€/.test(token)) return "EUR";
   if (/£/.test(token)) return "GBP";

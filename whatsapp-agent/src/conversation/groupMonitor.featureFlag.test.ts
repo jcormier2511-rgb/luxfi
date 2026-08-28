@@ -77,3 +77,36 @@ test("AI-enriched group rows persist RMB prices as canonical CNY", async (t) => 
   // structured price field must be canonicalized for the downstream FX parser.
   assert.doesNotMatch(csv, /,RMB (?:900000|137000),,/);
 });
+
+test("AI-enriched group rows use the currency in evidence, not the model label", async (t) => {
+  const originalEnrichmentFlag = config.aiMatching.enrichmentEnabled;
+  config.aiMatching.enrichmentEnabled = true;
+  t.after(() => {
+    config.aiMatching.enrichmentEnabled = originalEnrichmentFlag;
+  });
+  t.mock.method(enrichment, "enrichListingText", async () => [
+    {
+      brand: "Patek Philippe", model: null, referenceRaw: "5712G", referenceFamily: "5712",
+      variant: null, year: null, condition: null, price: 820000, currency: "USD",
+      location: null, confidence: 0.99, evidence: "Patek 5712G HK$820,000",
+    },
+    {
+      brand: "Rolex", model: null, referenceRaw: "126333", referenceFamily: "126333",
+      variant: null, year: null, condition: null, price: 137000, currency: "USD",
+      location: null, confidence: 0.99, evidence: "Rolex 126333 C$137,000",
+    },
+  ]);
+
+  await handleGroupMessage(
+    "m3",
+    "g1",
+    "15551234567",
+    "Alex",
+    "FS Patek 5712G HK$820,000\nFS Rolex 126333 C$137,000"
+  );
+
+  const csv = fs.readFileSync(config.data.groupListingsCsv, "utf-8");
+  assert.match(csv, /,HKD 820000,,/);
+  assert.match(csv, /,CAD 137000,,/);
+  assert.doesNotMatch(csv, /,USD (?:820000|137000),,/);
+});

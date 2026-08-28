@@ -123,7 +123,7 @@ function isValidIntent(value: unknown): value is Intent {
 // RMB is an accepted alias for CNY. Multi-character symbols must precede the bare symbols they
 // contain, otherwise "HK$" could be read as a generic "$" price.
 const CURRENCY_CODE = `(?:${[...SUPPORTED_CURRENCIES, "RMB"].join("|")})`;
-const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|CN¥|[$€£¥])";
+const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[$€£¥])";
 const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)";
 const NL_PRICE_PATTERN = new RegExp(
   `${CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b` + // $105,000 / $25k / €5000
@@ -157,6 +157,16 @@ function nlPriceValues(text: string): Set<number> {
 
 /** Canonical currency from the same verified price token(s), never the model or unrelated text. */
 export function extractVerifiedPriceCurrency(text: string): string | null {
+  // A single prefix/suffix currency applies to both endpoints of a range. Without this,
+  // "800k-900k HKD" looks like one implicit-USD token plus one HKD token.
+  const markedRangePatterns = [
+    new RegExp(`(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)\\s*${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?`, "i"),
+    new RegExp(`${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?\\s*(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)`, "i"),
+  ];
+  for (const pattern of markedRangePatterns) {
+    const range = text.match(pattern)?.[0];
+    if (range) return detectCurrency(range);
+  }
   const currencies = new Set(nlPriceMentions(text).map((mention) => mention.currency));
   return currencies.size === 1 ? [...currencies][0] : null;
 }
