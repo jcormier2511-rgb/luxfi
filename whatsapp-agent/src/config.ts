@@ -147,7 +147,13 @@ export const config = {
     // default since a real feed can be well over a million listings with thousands posted
     // daily; a row that exceeds this cap is simply retried on a later sync, not dropped.
     enrichmentMaxPerSync: Number(process.env.AI_ENRICHMENT_MAX_PER_SYNC ?? 25),
-    testPhone: process.env.AI_MATCHING_TEST_PHONE?.trim() || null,
+    // Comma-separated, same convention as WATCHFACTS_ADMIN_PHONES below — lets more than one
+    // phone pilot AI matching without widening it to the whole population. Empty by default:
+    // no phone is a test phone until explicitly configured, rather than defaulting to "on."
+    testPhones: (process.env.AI_MATCHING_TEST_PHONE ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
     // Which backend src/ai/client.ts routes to — see src/ai/providers/{anthropic,openai}.ts.
     // Defaults to "anthropic" (the originally built/tested path) so an unset env var never
     // silently changes behavior for anyone already relying on it.
@@ -174,8 +180,8 @@ export const config = {
 
 /**
  * All three conditions required: the master flag, a real API key configured FOR WHICHEVER
- * PROVIDER is selected, and this exact phone number set as the (single) test phone — so
- * turning the flag on alone can never light this up for real users. No test phone configured
+ * PROVIDER is selected, and this exact phone number on the configured test-phone list — so
+ * turning the flag on alone can never light this up for real users. No test phones configured
  * means the feature is inert for everyone, even with the flag on, rather than silently
  * defaulting to "enabled for all."
  */
@@ -184,7 +190,7 @@ export function isAiMatchingEnabledForPhone(phone: string): boolean {
     config.aiMatching.provider === "openai"
       ? !!config.aiMatching.openaiApiKey && !!config.aiMatching.openaiModel
       : !!config.aiMatching.apiKey;
-  return config.aiMatching.enabled && hasProviderCredentials && !!config.aiMatching.testPhone && phone === config.aiMatching.testPhone;
+  return config.aiMatching.enabled && hasProviderCredentials && config.aiMatching.testPhones.includes(phone);
 }
 
 /** Pure — the actual chat-id/allowlist matching logic, unit-testable without env/config wiring. */

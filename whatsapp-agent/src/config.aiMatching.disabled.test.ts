@@ -11,7 +11,7 @@ const { config, isAiMatchingEnabledForPhone } = require("./config") as typeof im
 
 test("ENABLE_AI_MATCHING defaults to disabled, with no test phone or API key configured", () => {
   assert.equal(config.aiMatching.enabled, false);
-  assert.equal(config.aiMatching.testPhone, null);
+  assert.deepEqual(config.aiMatching.testPhones, []);
   assert.equal(config.aiMatching.apiKey, "");
 });
 
