@@ -2,6 +2,7 @@ import { config, isAiMatchingEnabledForPhone } from "../config";
 import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences } from "../types";
 import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals } from "../matching/engine";
 import { PriceSignal } from "../matching/priceSignal";
+import { requestPhotosForMatch } from "../matching/photoRequests";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
@@ -69,6 +70,13 @@ function parseDecisionCommand(text: string): DecisionCommand | null {
   return { action: m[1].toLowerCase() as "approve" | "pass", index: m[2] ? parseInt(m[2], 10) : 1 };
 }
 
+/** Matches "photos <n>", "photo <n>", and "request photos <n>" (spec's three accepted forms). */
+function parsePhotoRequestCommand(text: string): number | null {
+  const m = text.trim().match(/^(?:request\s+)?photos?\b\s*#?(\d+)?/i);
+  if (!m) return null;
+  return m[1] ? parseInt(m[1], 10) : 1;
+}
+
 export interface FlowResult {
   state: ConversationState;
   messages: string[];
@@ -103,10 +111,12 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
     }))
   );
 
+  // Each card now ends with its own reply instructions (approve/photos/pass for an FS/seller
+  // card, approve/pass for a WTB/buyer card) — see formatMatchCard — so there's no separate
+  // shared footer message here anymore.
   validated.forEach(({ listing, explanation, priceSignal }, i) =>
     messages.push(formatMatchCard(listing, i, request.action, explanation, priceSignal))
   );
-  messages.push('Reply "approve <number>" to connect, or "pass <number>" to skip one.');
   state.pendingMatches = { request, matches: validated.map((r) => r.listing), decisions: validated.map(() => "pending") };
 }
 
@@ -154,6 +164,37 @@ async function handleDecision(state: ConversationState, decision: DecisionComman
 
   if (state.approvedCount === config.trial.maxApprovedMatches) {
     messages.push(config.fiFlow.conversionPitch(firstName));
+  }
+}
+
+/**
+ * "photos <n>" / "photo <n>" / "request photos <n>" — private side traffic on a pending FS/
+ * seller match, never a decision: doesn't touch state.approvedCount (nothing here is metered
+ * against the trial) and never closes or passes the match — the buyer can still approve or
+ * pass at any time, before or after photos arrive. See matching/photoRequests.ts.
+ */
+async function handlePhotoRequest(state: ConversationState, index: number, messages: string[]): Promise<void> {
+  const pending = state.pendingMatches!;
+  const idx = index - 1;
+
+  if (idx < 0 || idx >= pending.matches.length) {
+    messages.push(`I don't have a match #${index} — pick a number from the list above.`);
+    return;
+  }
+  // Photos only make sense on an FS/seller card — a "sell" search shows WTB buyers, who have
+  // nothing to photograph.
+  if (pending.request.action !== "buy") {
+    messages.push("Photo requests are only available for items currently for sale.");
+    return;
+  }
+
+  const outcome = await requestPhotosForMatch(state.phone, pending.matches[idx], index);
+  if (outcome === "duplicate") {
+    messages.push("Photos have already been requested. I'll send them when received.");
+  } else if (outcome === "unavailable") {
+    messages.push(`I don't have a way to reach the seller for #${index}, so I can't request photos for it.`);
+  } else {
+    messages.push(`Photo request sent for #${index} — I'll forward them here as soon as the seller replies.`);
   }
 }
 
@@ -323,6 +364,13 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   const decision = parseDecisionCommand(text);
   if (decision && state.pendingMatches) {
     await handleDecision(state, decision, messages, firstName);
+    saveState(state);
+    return { state, messages };
+  }
+
+  const photoRequestIndex = parsePhotoRequestCommand(text);
+  if (photoRequestIndex !== null && state.pendingMatches) {
+    await handlePhotoRequest(state, photoRequestIndex, messages);
     saveState(state);
     return { state, messages };
   }

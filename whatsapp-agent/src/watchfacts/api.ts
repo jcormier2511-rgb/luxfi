@@ -136,6 +136,7 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
       rating: sale.companyStars != null ? String(sale.companyStars) : "",
       description: title,
       detailUrl: `https://watchfacts.com/flash-sales/${sale.id}`,
+      imageUrl: detail?.frontImage || undefined,
     };
   });
 }

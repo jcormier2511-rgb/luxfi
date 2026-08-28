@@ -9,6 +9,7 @@ import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { getActiveListings, getSyncStatus, searchListingsForDiagnostics } from "./watchfacts/inventoryDb";
 import { getEntitlement, setManualOverride } from "./billing/entitlementStore";
+import { handleIncomingSellerPhoto } from "./matching/photoRequests";
 import { approveMatch, passMatch, ApprovalOutcome } from "./postings/notify";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
@@ -113,6 +114,17 @@ export function createServer() {
           // Silent by design — never reply into a group, only ingest WTB/FS-looking posts.
           await handleGroupMessage(message.id, message.groupId!, message.phone, message.senderName, message.text, message.imageUrl);
           continue;
+        }
+
+        // Private "request photos before approval" workflow (matching/photoRequests.ts):
+        // an incoming image from a phone with an open photo request is routed there directly,
+        // never reaching the ordinary conversation flow — a seller answering "please send 3-6
+        // photos" is not searching or deciding on anything themselves. Falls through to the
+        // normal flow (below) when this phone has no matching request, e.g. an ordinary buyer/
+        // seller who just happens to send a photo unprompted.
+        if (message.imageUrl) {
+          const handledAsPhotoReply = await handleIncomingSellerPhoto(message.phone, message.imageUrl);
+          if (handledAsPhotoReply) continue;
         }
 
         const v4Reply = await tryHandleV4Decision(message.phone, message.text);
