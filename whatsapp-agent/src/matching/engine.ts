@@ -189,7 +189,15 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   const wantType = interpreted.action === "buy" ? "FS" : "WTB";
   // Excludes multi-item price-list dumps before AI ever sees the pool — see isUnambiguousListing.
   const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing);
-  const requestedFamily = interpreted.referenceFamily ? normalizeReference(interpreted.referenceFamily) : null;
+  // The reference safety gate below must never depend solely on the AI correctly parsing the
+  // reference out of the message — if interpretQuery's own extraction misses/garbles it (a real
+  // model failure mode, not hypothetical), falling back to null here would let EVERY listing
+  // through the eligible filter, leaving relevance entirely up to the AI reranker's judgment.
+  // extractRequestedReference is the same deterministic regex-based extractor the plain
+  // findMatches() path already relies on — reused here as a backstop, never a replacement.
+  const requestedFamily = interpreted.referenceFamily
+    ? normalizeReference(interpreted.referenceFamily)
+    : extractRequestedReference(request.query);
 
   // Deterministic exclusion, same rule findMatches uses: a candidate WITH its own reference
   // that explicitly conflicts with the requested one is never eligible, regardless of what an

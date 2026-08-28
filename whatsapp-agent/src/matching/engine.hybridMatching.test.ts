@@ -156,6 +156,30 @@ test("required acceptance: AI cannot return a candidate without evidence from th
   assert.equal(results.length, 0, "an unverifiable pick must never surface as a match");
 });
 
+test("required regression: a reference named in the raw message still gates eligibility even when the AI's own extraction misses it — an unrelated model can never surface just because interpretQuery left referenceFamily null", async (t) => {
+  await _resetDbForTests();
+  await upsertListings(
+    [
+      // A completely different model/reference — this is the live bug: a Datejust surfacing
+      // for a Daytona 116500 search because the AI's own referenceFamily field came back null.
+      row("wrong-model", { brand: "Rolex", ref: "178341RBR", price: "12200", description: "Rolex Datejust 178341RBR chocolate diamond" }),
+    ],
+    new Date().toISOString()
+  );
+  // Simulates the AI failing to extract the reference from the message even though "116500" is
+  // right there in the text — referenceFamily comes back null, exactly like the reported bug.
+  t.mock.method(queryInterpreterModule, "interpretQuery", async () => interpreted({ referenceFamily: null, maxPrice: 27000 }));
+  t.mock.method(rerankModule, "rerankCandidates", async (_q: unknown, candidates: { id: string }[]) =>
+    candidates.map((c) => ({ id: c.id, explanation: "same brand, in budget", evidence: "Rolex Datejust 178341RBR chocolate diamond" }))
+  );
+  const results = await findMatchesHybrid(
+    TEST_PHONE,
+    { action: "buy", query: "looking for a rolex daytona 116500 under 27k, black dial, pre-owned, USA" },
+    5
+  );
+  assert.equal(results.length, 0, "the deterministic reference in the raw message must still exclude an unrelated model, even if the AI's own extraction missed it");
+});
+
 test("required acceptance: no arbitrary fallback inventory — an AI outage falls back to deterministic matching, not to an unrelated pool", async (t) => {
   await _resetDbForTests();
   await upsertListings([row("a", { brand: "Rolex", ref: "116500LN", description: "Rolex Daytona 116500LN" })], new Date().toISOString());
