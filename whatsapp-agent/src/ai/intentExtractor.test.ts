@@ -177,6 +177,27 @@ test("the primary intent verifier retains every supported non-USD currency", asy
   }
 });
 
+test("the primary intent verifier corrects an AI-mislabeled HKD budget", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMax: 900000, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G under HK$900,000 — USD wire accepted");
+  assert.equal(result!.intent.priceMax, 900000);
+  assert.equal(result!.intent.currency, "HKD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
+test("the primary intent verifier preserves both endpoints of a same-currency range", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 80000, priceMax: 100000, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G budget $80k-$100k");
+  assert.equal(result!.intent.priceMin, 80000);
+  assert.equal(result!.intent.priceMax, 100000);
+  assert.equal(result!.intent.currency, "USD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
 test("an invalid/unrecognized intent value from the model is rejected rather than trusted", async (t) => {
   t.mock.method(client, "callAiJson", async () => aiResult({ intent: "not-a-real-intent" }));
   assert.equal(await extractIntent("something ambiguous"), null);

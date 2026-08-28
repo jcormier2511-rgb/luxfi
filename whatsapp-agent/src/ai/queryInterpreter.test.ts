@@ -37,6 +37,16 @@ test("confirmed buyer budgets retain their stated non-USD currency", () => {
   });
 });
 
+test("confirmed currency comes from the price expression, not unrelated payment text", () => {
+  assert.deepEqual(
+    extractConfirmedNaturalLanguageIntent("WTB Patek 5712G under HK$900,000 — USD wire accepted"),
+    {
+      intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMin: null,
+      priceMax: 900000, currency: "HKD",
+    }
+  );
+});
+
 test("interpretQuery returns null for empty text without calling AI", async (t) => {
   const spy = t.mock.method(client, "callAiJson", async () => {
     throw new Error("must never be called for empty input");

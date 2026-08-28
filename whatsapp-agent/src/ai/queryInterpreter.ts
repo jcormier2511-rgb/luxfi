@@ -67,7 +67,7 @@ export function extractConfirmedNaturalLanguageIntent(text: string): ConfirmedNa
   const priceRange = priceExpression ? parsePriceRange(priceExpression) : undefined;
   const priceMin = priceRange?.min ?? null;
   const priceMax = priceRange?.max ?? null;
-  const currency = priceMin === null && priceMax === null ? null : detectCurrency(text);
+  const currency = priceMin === null && priceMax === null ? null : detectCurrency(priceExpression ?? "");
   return { intent, brand, reference, priceMin, priceMax, currency };
 }
 

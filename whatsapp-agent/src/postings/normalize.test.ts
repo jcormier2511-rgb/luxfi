@@ -198,6 +198,12 @@ test("normalizeText preserves dollar-prefixed HKD and CAD symbols during ingesti
   assert.equal(cad.price, 30000);
 });
 
+test("normalizeText binds currency to the price token, not an unrelated payment marker", () => {
+  const normalized = normalizeText("FS Patek 5712G HK$820,000 — USD wire accepted");
+  assert.equal(normalized.price, 820000);
+  assert.equal(normalized.currency, "HKD");
+});
+
 test("normalizeText preserves SGD by code or S$ symbol", () => {
   assert.equal(normalizeText("FS Patek 5712G SGD 110,000").currency, "SGD");
   assert.equal(normalizeText("FS Patek 5712G S$110,000").currency, "SGD");
@@ -217,4 +223,11 @@ test("symbol-only EUR, GBP, JPY, and CNY listings retain their asking price", ()
     assert.equal(normalized.currency, currency, text);
     assert.equal(classifyText(text), "FS", text);
   }
+});
+
+test("repeated dot thousands separators are consumed as one complete price", () => {
+  assert.equal(normalizePriceShorthand("€1.250.000"), 1250000);
+  const normalized = normalizeText("FS Patek 5712G €1.250.000");
+  assert.equal(normalized.price, 1250000);
+  assert.equal(normalized.currency, "EUR");
 });

@@ -26,7 +26,9 @@ const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|CN¥|[$€£¥])";
 // all), which let a stray ", " right before an unrelated currency code (e.g. "Sold, USD wire
 // only") turn into a phantom price token. Requires either proper thousands-grouped digits or a
 // plain unbroken digit run.
-const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?\\s?[kK]?";
+// Accept repeated comma OR dot thousands groups ("1,250,000" / "1.250.000"), while retaining
+// short-decimal shorthand such as "25.5k". The old single-dot tail truncated €1.250.000.
+const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)\\s?[kK]?";
 const PRICE_PATTERN = new RegExp(`(?:${CURRENCY_SYMBOL})\\s?${NUM}\\b` + `|\\b${CURRENCY_CODE}\\s?${NUM}\\b` + `|\\b${NUM}\\s?${CURRENCY_CODE}\\b`, "gi");
 // `(?<!\$\s?)` excludes a digit run directly preceded by a $ sign (with or without a space) —
 // "$20000"/"$ 20000" is unambiguously a price, never a reference, even though bare "20000"
@@ -109,6 +111,10 @@ const LOW_VALUE_THOUSANDS_THRESHOLD = 1000;
 
 /** Disambiguates "," / "." as a decimal point (1-2 trailing digits) vs. a thousands separator (exactly 3 trailing digits, e.g. "26,200"). */
 function parseNumericToken(token: string): { value: number | null; hadShortDecimal: boolean } {
+  if (/^\d{1,3}(?:[.,]\d{3})+$/.test(token)) {
+    const n = Number(token.replace(/[.,]/g, ""));
+    return { value: Number.isFinite(n) ? n : null, hadShortDecimal: false };
+  }
   const sepMatch = token.match(/^(\d+)[.,](\d+)$/);
   if (sepMatch) {
     const [, whole, frac] = sepMatch;
@@ -119,7 +125,7 @@ function parseNumericToken(token: string): { value: number | null; hadShortDecim
     const n = Number(`${whole}.${frac}`); // decimal point: "25.5" / "25,5" -> 25.5
     return { value: Number.isFinite(n) ? n : null, hadShortDecimal: true };
   }
-  // Multiple separators (e.g. "1,234,567" grouped thousands) — strip all commas and parse plain.
+  // Multiple separators that are not valid thousands grouping are not safe to reinterpret.
   const plain = Number(token.replace(/,/g, ""));
   return { value: Number.isFinite(plain) ? plain : null, hadShortDecimal: false };
 }
@@ -150,11 +156,44 @@ export function normalizePriceShorthand(raw: string): number | null {
 }
 
 /** The distinct normalized $-amounts named in `text` — shared by extractUnambiguousPrice (below) and hasMultipleDistinctPrices, so "how many different prices does this text mention" is computed exactly one way. */
-function distinctPriceValues(text: string): Set<number> {
+interface PriceMention {
+  amount: number;
+  currency: string;
+}
+
+/** Currency derived from the SAME token that supplied the amount, never unrelated text. */
+function currencyFromPriceToken(token: string): string {
+  const named = token.match(/\b(USD|CAD|HKD|EUR|GBP|AED|SGD|JPY|CNY|RMB|CHF)\b/i)?.[1].toUpperCase();
+  if (named) return named === "RMB" ? "CNY" : named;
+  if (/HK\$/i.test(token)) return "HKD";
+  if (/C\$/i.test(token)) return "CAD";
+  if (/S\$/i.test(token)) return "SGD";
+  if (/CN¥/i.test(token)) return "CNY";
+  if (/€/.test(token)) return "EUR";
+  if (/£/.test(token)) return "GBP";
+  if (/¥/.test(token)) return "JPY";
+  return "USD";
+}
+
+function priceMentions(text: string): PriceMention[] {
   const matches = text.match(PRICE_PATTERN);
-  if (!matches) return new Set();
-  const values = matches.map((m) => normalizePriceShorthand(m)).filter((v): v is number => v !== null);
-  return new Set(values);
+  if (!matches) return [];
+  return matches
+    .map((raw) => {
+      const amount = normalizePriceShorthand(raw);
+      return amount === null ? null : { amount, currency: currencyFromPriceToken(raw) };
+    })
+    .filter((mention): mention is PriceMention => mention !== null);
+}
+
+function distinctPriceValues(text: string): Set<number> {
+  return new Set(priceMentions(text).map((mention) => mention.amount));
+}
+
+function extractUnambiguousMoney(text: string): PriceMention | null {
+  const mentions = priceMentions(text);
+  const distinct = new Map(mentions.map((mention) => [`${mention.currency}:${mention.amount}`, mention]));
+  return distinct.size === 1 ? [...distinct.values()][0] : null;
 }
 
 /**
@@ -166,10 +205,7 @@ function distinctPriceValues(text: string): Set<number> {
  * mapToInventoryListings for why the structured field alone isn't always trustworthy.
  */
 export function extractUnambiguousPrice(text: string): number | null {
-  const distinct = distinctPriceValues(text);
-  if (distinct.size !== 1) return null;
-  const [only] = distinct;
-  return Number.isFinite(only) ? only : null;
+  return extractUnambiguousMoney(text)?.amount ?? null;
 }
 
 /**
@@ -212,21 +248,11 @@ export function referencesMatch(a: string, b: string): boolean {
 export function normalizeText(text: string): NormalizedFields {
   const lower = text.toLowerCase();
   const brand = BRAND_LIST.find((b) => lower.includes(b)) ?? "";
-  const namedCurrency = text.match(/\b(USD|CAD|HKD|EUR|GBP|AED|SGD|JPY|CNY|RMB|CHF)\b/i)?.[1].toUpperCase();
-  const currency = namedCurrency === "RMB"
-    ? "CNY"
-    : namedCurrency ?? (/HK\$/i.test(text) ? "HKD"
-      : /C\$/i.test(text) ? "CAD"
-      : /S\$/i.test(text) ? "SGD"
-      : /CN¥/i.test(text) ? "CNY"
-      : /€/.test(text) ? "EUR"
-      : /£/.test(text) ? "GBP"
-      : /¥/.test(text) ? "JPY"
-      : "USD");
+  const money = extractUnambiguousMoney(text);
   return {
     brand,
     reference: extractReference(text) ?? "",
-    price: extractUnambiguousPrice(text),
-    currency,
+    price: money?.amount ?? null,
+    currency: money?.currency ?? "USD",
   };
 }

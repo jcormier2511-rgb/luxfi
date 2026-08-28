@@ -1,7 +1,7 @@
 import { callAiJson } from "./client";
 import { config } from "../config";
 import { normalizePriceShorthand } from "../postings/normalize";
-import { SUPPORTED_CURRENCIES } from "../matching/currency";
+import { detectCurrency, SUPPORTED_CURRENCIES } from "../matching/currency";
 
 /**
  * The single structured shape every private WhatsApp message is converted into (Fi routing
@@ -124,7 +124,7 @@ function isValidIntent(value: unknown): value is Intent {
 // contain, otherwise "HK$" could be read as a generic "$" price.
 const CURRENCY_CODE = `(?:${[...SUPPORTED_CURRENCIES, "RMB"].join("|")})`;
 const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|CN¥|[$€£¥])";
-const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?";
+const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)";
 const NL_PRICE_PATTERN = new RegExp(
   `${CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b` + // $105,000 / $25k / €5000
     `|\\b${CURRENCY_CODE}\\s?${NUM}\\s?[kK]?\\b` + // USD 105000
@@ -136,18 +136,29 @@ const GOLD_PURITY_WORD = /^\s*(gold|karat|kt\b|white\s+gold|yellow\s+gold|rose\s
 
 /** Every distinct normalized price value the raw text unambiguously names, excluding a
  *  k-suffixed number immediately followed by a gold/karat word (a material, not a price). */
-function nlPriceValues(text: string): Set<number> {
-  const values = new Set<number>();
+function nlPriceMentions(text: string): { value: number; currency: string }[] {
+  const mentions: { value: number; currency: string }[] = [];
   const re = new RegExp(NL_PRICE_PATTERN);
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
     const after = text.slice(m.index + m[0].length);
     if (!GOLD_PURITY_WORD.test(after)) {
       const value = normalizePriceShorthand(m[0]);
-      if (value !== null) values.add(value);
+      const currency = detectCurrency(m[0]);
+      if (value !== null && currency) mentions.push({ value, currency });
     }
   }
-  return values;
+  return mentions;
+}
+
+function nlPriceValues(text: string): Set<number> {
+  return new Set(nlPriceMentions(text).map((mention) => mention.value));
+}
+
+/** Canonical currency from the same verified price token(s), never the model or unrelated text. */
+export function extractVerifiedPriceCurrency(text: string): string | null {
+  const currencies = new Set(nlPriceMentions(text).map((mention) => mention.currency));
+  return currencies.size === 1 ? [...currencies][0] : null;
 }
 
 /**
@@ -160,7 +171,10 @@ function nlPriceValues(text: string): Set<number> {
 function verifiedPrice(claimed: number | null, rawText: string): number | null | "unreliable" {
   if (claimed === null) return null;
   const found = nlPriceValues(rawText);
-  return found.size === 1 ? [...found][0] : "unreliable";
+  if (found.size === 1) return [...found][0];
+  // A real range contains two values. Trust each claimed endpoint only when it exactly appears
+  // in that verified set; a third/invented value remains unreliable.
+  return found.has(claimed) ? claimed : "unreliable";
 }
 
 export interface IntentExtractionResult {
@@ -194,9 +208,13 @@ export async function extractIntent(text: string): Promise<IntentExtractionResul
 
   const minCheck = verifiedPrice(result.priceMin ?? null, trimmed);
   const maxCheck = verifiedPrice(result.priceMax ?? null, trimmed);
-  const priceUnreliable = minCheck === "unreliable" || maxCheck === "unreliable";
-  const priceMin = minCheck === "unreliable" ? null : minCheck;
-  const priceMax = maxCheck === "unreliable" ? null : maxCheck;
+  const checkedPriceMin = minCheck === "unreliable" ? null : minCheck;
+  const checkedPriceMax = maxCheck === "unreliable" ? null : maxCheck;
+  const verifiedCurrency = extractVerifiedPriceCurrency(trimmed);
+  const currencyUnreliable = (checkedPriceMin !== null || checkedPriceMax !== null) && verifiedCurrency === null;
+  const priceUnreliable = minCheck === "unreliable" || maxCheck === "unreliable" || currencyUnreliable;
+  const priceMin = currencyUnreliable ? null : checkedPriceMin;
+  const priceMax = currencyUnreliable ? null : checkedPriceMax;
 
   const confidence = typeof result.confidence === "number" && Number.isFinite(result.confidence) ? result.confidence : 0;
 
@@ -211,7 +229,7 @@ export async function extractIntent(text: string): Promise<IntentExtractionResul
     boxPapers: typeof result.boxPapers === "boolean" ? result.boxPapers : null,
     priceMin,
     priceMax,
-    currency: result.currency?.trim() || "USD",
+    currency: verifiedCurrency ?? detectCurrency(result.currency?.trim() || "USD") ?? "USD",
     location: result.location?.trim() || null,
     searchText,
     confidence,

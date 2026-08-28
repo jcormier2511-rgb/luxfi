@@ -11,7 +11,7 @@ import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
 import { detectCurrency } from "../matching/currency";
-import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
+import { extractIntent, extractVerifiedPriceCurrency, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
 import { extractReference, containsKnownBrand, normalizePriceShorthand } from "../postings/normalize";
 
@@ -610,7 +610,10 @@ async function resolveItemRequests(phone: string, text: string): Promise<Resolve
       const aiPreferences: SearchPreferences = {};
       if (it.priceMin !== null) aiPreferences.priceMin = it.priceMin;
       if (it.priceMax !== null) aiPreferences.priceMax = it.priceMax;
-      if ((it.priceMin !== null || it.priceMax !== null) && it.currency) aiPreferences.priceCurrency = it.currency;
+      const verifiedCurrency = extractVerifiedPriceCurrency(text);
+      if ((it.priceMin !== null || it.priceMax !== null) && verifiedCurrency) {
+        aiPreferences.priceCurrency = verifiedCurrency;
+      }
       if (it.location) aiPreferences.location = it.location;
       if (it.dial) aiPreferences.dialColor = it.dial;
       if (it.condition) aiPreferences.condition = it.condition;
