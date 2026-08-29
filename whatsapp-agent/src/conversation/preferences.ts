@@ -35,10 +35,10 @@ export function parsePriceRange(text: string): PriceRange | undefined {
   const normalized = skipToUndefined(text);
   if (!normalized) return undefined;
 
-  // `\$?\s*` before EACH number — a range is often written with the currency symbol repeated
-  // on both ends ("$5,000-$8,000"), which the original single-leading-`$` version missed on
-  // the second number entirely (falling through to the single-target approximation instead).
-  const rangeMatch = normalized.match(/(?:us\$|\$)?\s*([\d.,]+k?)\s*(?:-|to|–)\s*(?:us\$|\$)?\s*([\d.,]+k?)/i);
+  // Accept every supported code or symbol before either endpoint. Dealers commonly repeat the
+  // marker ("HK$800k-HK$900k" or "€80k-€100k"); losing the second marker used to make the
+  // parser fall through to a one-sided budget and discard the stated floor.
+  const rangeMatch = normalized.match(/(?:(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|aud|jpy|cny|rmb|us\$|hk\$|c\$|s\$|a\$|cn¥|[$€£¥])\s*)?([\d.,]+k?)\s*(?:-|to|–)\s*(?:(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|aud|jpy|cny|rmb|us\$|hk\$|c\$|s\$|a\$|cn¥|[$€£¥])\s*)?([\d.,]+k?)/i);
   if (rangeMatch) {
     let min = toNumber(rangeMatch[1]);
     let max = toNumber(rangeMatch[2]);

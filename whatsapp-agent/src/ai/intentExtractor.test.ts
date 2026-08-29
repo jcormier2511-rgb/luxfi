@@ -210,6 +210,17 @@ test("the primary intent verifier preserves both endpoints of a same-currency ra
   assert.equal(result!.priceUnreliable, false);
 });
 
+test("the primary intent verifier accepts repeated non-USD markers on a range", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 800000, priceMax: 900000, currency: "HKD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G budget HK$800k-HK$900k");
+  assert.equal(result!.intent.priceMin, 800000);
+  assert.equal(result!.intent.priceMax, 900000);
+  assert.equal(result!.intent.currency, "HKD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
 test("the primary intent verifier inherits one k suffix across a compact range", async (t) => {
   t.mock.method(client, "callAiJson", async () =>
     aiResult({ intent: "buy", priceMin: 80000, priceMax: 100000, currency: "USD" })

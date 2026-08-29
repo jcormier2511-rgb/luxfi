@@ -41,6 +41,16 @@ test("a real range like $5,000-$8,000 still parses both ends correctly", () => {
   assert.equal(range!.max, 8000);
 });
 
+test("repeated supported currency markers preserve both range endpoints", () => {
+  const markers = [
+    "USD", "HKD", "EUR", "GBP", "AED", "CHF", "CAD", "SGD", "AUD", "JPY", "CNY", "RMB",
+    "US$", "HK$", "C$", "S$", "A$", "CN¥", "$", "€", "£", "¥",
+  ];
+  for (const marker of markers) {
+    assert.deepEqual(parsePriceRange(`${marker}80k-${marker}100k`), { min: 80000, max: 100000 }, marker);
+  }
+});
+
 test("a k-shorthand range like 5k-8k still parses both ends correctly", () => {
   const range = parsePriceRange("5k-8k");
   assert.equal(range!.min, 5000);
