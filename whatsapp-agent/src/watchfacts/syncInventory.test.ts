@@ -111,4 +111,9 @@ test("v4PriceFields keeps unreliable bundle prices as ASK", () => {
     v4PriceFields({ price: "15000000", nativePriceAmount: 15000000, nativeCurrency: "JPY" }),
     { price: "15000000", currency: "JPY" }
   );
+  assert.deepEqual(
+    v4PriceFields({ price: "15000", nativePriceAmount: 126333, nativeCurrency: "USD" }),
+    { price: "15000", currency: "USD" },
+    "settlement text that resembles a native price must not replace the selected API price"
+  );
 });

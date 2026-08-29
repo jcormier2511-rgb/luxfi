@@ -14,9 +14,14 @@ export function v4PriceFields(listing: {
   nativeCurrency?: string | null;
 }): Pick<ApiFsListing, "price" | "currency"> {
   if (listing.price === "ASK") return { price: "ASK", currency: "USD" };
+  const selectedAmount = Number(listing.price);
+  const nativeMatchesSelected =
+    listing.nativePriceAmount != null &&
+    Number.isFinite(selectedAmount) &&
+    listing.nativePriceAmount === selectedAmount;
   return {
-    price: String(listing.nativePriceAmount ?? listing.price),
-    currency: listing.nativeCurrency ?? "USD",
+    price: nativeMatchesSelected ? String(listing.nativePriceAmount) : listing.price,
+    currency: nativeMatchesSelected ? (listing.nativeCurrency ?? "USD") : "USD",
   };
 }
 
