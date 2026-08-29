@@ -12,7 +12,7 @@ import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone } f
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
-import { extractIntent, extractVerifiedPriceCurrency, isConfidentIntent } from "../ai/intentExtractor";
+import { extractIntent, extractVerifiedPriceCurrency, hasConflictingPriceCurrencies, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
 import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
 import { upsertListings } from "../watchfacts/inventoryDb";
@@ -441,7 +441,7 @@ async function handlePreferenceAnswer(state: ConversationState, text: string, me
     // overwrite the actual price currency. A parsed range with conflicting explicit currencies
     // is rejected as a unit so invalid bounds can never survive under the default currency.
     const verifiedCurrency = range ? extractVerifiedPriceCurrency(text) : null;
-    if (range && !verifiedCurrency) {
+    if (range && hasConflictingPriceCurrencies(text)) {
       state.preferences.priceMin = undefined;
       state.preferences.priceMax = undefined;
       state.preferences.priceCurrency = undefined;
