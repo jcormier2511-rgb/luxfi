@@ -846,10 +846,9 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     saveState(state);
     return { state, messages };
   }
-  // Keep the exact "listings" command deterministic. When general AI chat is enabled,
-  // natural phrases such as "listing summary" remain questions the assistant can answer;
-  // without AI they fall back to the same safe menu.
-  if (LISTINGS_COMMAND.test(text.trim()) && (!isAiChatEnabled() || /^listings$/i.test(text.trim()))) {
+  // Listing-summary requests must remain deterministic: the general-chat model has no access
+  // to the user's approved, pending, or active listings and must never invent that data.
+  if (LISTINGS_COMMAND.test(text.trim())) {
     messages.push(LISTINGS_MENU);
     state.pendingListingsMenu = true;
     saveState(state);
