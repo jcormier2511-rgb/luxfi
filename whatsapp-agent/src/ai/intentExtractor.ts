@@ -144,6 +144,21 @@ const NL_PRICE_RANGE_PATTERN = new RegExp(
     `(?:\\s*(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b))?`,
   "i"
 );
+const EXPLICIT_RANGE_CURRENCY_PATTERN = new RegExp(
+  `(?:${SPECIFIC_CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)`,
+  "gi"
+);
+
+/** Distinct explicit currencies named inside a range. A generic $ is intentionally omitted:
+ *  a trailing ISO marker such as CAD disambiguates "$80k-$100k CAD" for both endpoints. */
+function explicitRangeCurrencies(expression: string): Set<string> {
+  const currencies = new Set<string>();
+  for (const marker of expression.match(EXPLICIT_RANGE_CURRENCY_PATTERN) ?? []) {
+    const currency = detectCurrency(marker);
+    if (currency) currencies.add(currency);
+  }
+  return currencies;
+}
 const GOLD_PURITY_WORD = /^\s*(gold|karat|kt\b|white\s+gold|yellow\s+gold|rose\s+gold)/i;
 const MAX_PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|budget(?:\s+(?:of|is))?)\b`;
 const MIN_PRICE_COMPARATOR = String.raw`\b(?:over|at least|min(?:imum)?|above|more than)\b`;
@@ -176,7 +191,7 @@ function nlPriceRange(text: string): { min: number; max: number } | null {
   const expression = match[0];
   const hasPriceSignal = new RegExp(`(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b|\\d[\\d.,]*\\s*k\\b)`, "i")
     .test(expression);
-  if (!hasPriceSignal) return null;
+  if (!hasPriceSignal || explicitRangeCurrencies(expression).size > 1) return null;
 
   const parsed = parsePriceRange(expression);
   return parsed?.min === undefined || parsed.max === undefined
@@ -203,6 +218,9 @@ function nlComparatorPriceBounds(text: string): { min: number | null; max: numbe
 
 /** Canonical currency from the same verified price token(s), never the model or unrelated text. */
 export function extractVerifiedPriceCurrency(text: string): string | null {
+  const fullRange = text.match(NL_PRICE_RANGE_PATTERN)?.[0];
+  if (fullRange && explicitRangeCurrencies(fullRange).size > 1) return null;
+
   // A single prefix/suffix currency applies to both endpoints of a range. Without this,
   // "800k-900k HKD" looks like one implicit-USD token plus one HKD token.
   const markedRangePatterns = [
