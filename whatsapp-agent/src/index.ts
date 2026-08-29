@@ -5,6 +5,7 @@ import { initSchema } from "./postings/db";
 import { sendExpirationReminders } from "./postings/reminders";
 import { runReconciliation } from "./postings/matching";
 import { initConciergeSchema } from "./concierge/db";
+import { runMarketUpdateScheduler } from "./marketUpdates";
 
 const app = createServer();
 
@@ -18,7 +19,11 @@ app.listen(config.server.port, () => {
 // production well before the flag is ever flipped on. Never processes postings or sends a
 // message; see src/postings/db.ts's initSchema.
 initSchema()
-  .then(() => console.log(`[postings] v4 schema ready${config.postingsV4.enabled ? "" : " (v4 disabled)"}`))
+  .then(() => {
+    console.log(`[postings] v4 schema ready${config.postingsV4.enabled ? "" : " (v4 disabled)"}`);
+    if (config.marketUpdates.enabled) runMarketUpdateScheduler();
+    else console.log("[market-updates] disabled");
+  })
   .catch((err) => console.error("[postings] v4 schema initialization failed:", err.message));
 
 // Fi Concierge expansion, Stage 1 (group registry) — additive schema only, no behavior change

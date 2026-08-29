@@ -12,7 +12,7 @@ function formatReminderMessage(posting: PostingRow): string {
   const noun = posting.type === "WTB" ? "request" : "listing";
   return (
     `Your ${noun} for "${watchLabel(posting)}" expires in ${daysLeft} day${daysLeft === 1 ? "" : "s"}.\n` +
-    `Reply "extend ${posting.id}" to keep it active for 30 more days.`
+    `Reply "extend ${posting.id}" to renew it for 15 more days.`
   );
 }
 

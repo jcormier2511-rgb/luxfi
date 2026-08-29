@@ -25,6 +25,20 @@ import { config } from "../config";
 let pool: Pool | null = null;
 let schemaReady: Promise<void> | null = null;
 
+// One-time migration and permanently idempotent invariant repair for records created by the
+// old 30-day implementation. LEAST means this can only shorten an active request; it never
+// extends a record that already expires sooner. Terminal/closed statuses are untouched.
+const CAP_ACTIVE_POSTING_EXPIRATIONS_SQL = `
+  UPDATE postings
+  SET expires_at = LEAST(expires_at, COALESCE(renewed_at, created_at) + INTERVAL '15 days'),
+      updated_at = CASE
+        WHEN expires_at > COALESCE(renewed_at, created_at) + INTERVAL '15 days' THEN now()
+        ELSE updated_at
+      END
+  WHERE status = 'active'
+    AND expires_at > COALESCE(renewed_at, created_at) + INTERVAL '15 days';
+`;
+
 function getPool(): Pool {
   if (!pool) {
     pool = new Pool({ connectionString: config.database.url });
@@ -212,6 +226,8 @@ async function ensureSchema(): Promise<void> {
         -- exists, so a column added later needs its own idempotent ADD COLUMN IF NOT EXISTS
         -- to actually reach a database that already has an older version of these tables.
         ALTER TABLE postings ADD COLUMN IF NOT EXISTS reminder_sent_for_expires_at TIMESTAMPTZ;
+        ALTER TABLE postings ADD COLUMN IF NOT EXISTS renewed_at TIMESTAMPTZ;
+        ${CAP_ACTIVE_POSTING_EXPIRATIONS_SQL}
         ALTER TABLE matches ADD COLUMN IF NOT EXISTS connected_at TIMESTAMPTZ;
 
         -- Lets the v3 on-demand flow's own approvals share this table (see the CREATE TABLE
@@ -230,6 +246,26 @@ async function ensureSchema(): Promise<void> {
         ALTER TABLE approvals ADD COLUMN IF NOT EXISTS listing_description TEXT;
         ALTER TABLE approvals ADD COLUMN IF NOT EXISTS counterpart_name TEXT;
         ALTER TABLE approvals ADD COLUMN IF NOT EXISTS counterpart_phone TEXT;
+
+        -- One row is the durable idempotency key for one user's local delivery window.
+        -- The sending state is a short lease; delivered rows are immutable and failed/abandoned
+        -- leases can be reclaimed by any replica.
+        CREATE TABLE IF NOT EXISTS market_update_deliveries (
+          id BIGSERIAL PRIMARY KEY,
+          canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id),
+          period TEXT NOT NULL CHECK (period IN ('morning', 'afternoon')),
+          local_date DATE NOT NULL,
+          timezone TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('sending', 'delivered', 'failed')),
+          activity_signature TEXT NOT NULL DEFAULT '',
+          claimed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          delivered_at TIMESTAMPTZ,
+          error TEXT,
+          UNIQUE (canonical_user_id, period, local_date, timezone)
+        );
+        CREATE INDEX IF NOT EXISTS market_update_delivery_history
+          ON market_update_deliveries (canonical_user_id, delivered_at DESC)
+          WHERE status='delivered';
 
         -- Widens source_type for the private "sell a watch" conversational intake
         -- (conversation/flow.ts's sell-intake flow, see postingsStore.ts's createDirectPosting):
@@ -265,6 +301,13 @@ export async function initSchema(): Promise<void> {
   await ensureSchema();
 }
 
+/** Exported for an explicit maintenance rerun and migration regression tests. */
+export async function capActivePostingExpirations(): Promise<number> {
+  await ensureSchema();
+  const result = await getPool().query(CAP_ACTIVE_POSTING_EXPIRATIONS_SQL);
+  return result.rowCount ?? 0;
+}
+
 export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   await ensureSchema();
   const client = await getPool().connect();
@@ -285,7 +328,7 @@ export async function _resetDbForTests(): Promise<void> {
   await getPool().query(`
     DROP TABLE IF EXISTS
       reconciliation_runs, postings_meta, billing_ledger, approvals, match_recipients, matches,
-      posting_images, postings, linked_identities, canonical_users
+      market_update_deliveries, posting_images, postings, linked_identities, canonical_users
     CASCADE
   `);
   schemaReady = null;
