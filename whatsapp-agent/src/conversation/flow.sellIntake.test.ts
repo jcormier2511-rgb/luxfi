@@ -1,4 +1,4 @@
-import { test, after } from "node:test";
+import { test, after, TestContext } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs";
 import os from "os";
@@ -7,14 +7,26 @@ import path from "path";
 // Real reported gap: "I want to sell a watch" ran a doomed search against the (disabled) WTB
 // feed and just reported "no matches" — the seller's message was never used for anything. A
 // "sell" search that finds nothing now collects what Fi actually needs to describe the item to
-// a future buyer: more detail if the request was vague, a price, and a photo.
+// a future buyer: more detail if the request was vague, a price, and a photo, then creates a
+// real 'direct'-sourced FS posting and matches it against live WTB postings immediately (see
+// postings/ingest.ts's ingestDirectSellPosting) — so this file also touches the postings DB.
 const tmpPersistDir = fs.mkdtempSync(path.join(os.tmpdir(), "luxfi-flow-sellintake-test-"));
 process.env.PERSIST_DIR = tmpPersistDir;
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
+// Only needed for the one test below that seeds a chat-sourced WTB counterpart to prove the
+// direct-posting match/notify path end to end — the 'direct' FS side's own matching and
+// decision-handling need no flag at all (see server.directPostingDecision.test.ts, which
+// proves that half with this left unset). Must be set before config.ts is first required.
+process.env.ENABLE_V4_POSTINGS = "true";
+process.env.V4_ALLOWED_CHAT_IDS = "*";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const postingsDb = require("../postings/db") as typeof import("../postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const whapiClient = require("../whapi/client") as typeof import("../whapi/client");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -22,8 +34,17 @@ const { resetState } = require("./stateStore") as typeof import("./stateStore");
 
 after(async () => {
   await inventoryDb._closePoolForTests();
+  await postingsDb._closePoolForTests();
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
+
+function mockSends(t: TestContext): { phone: string; message: string }[] {
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => {
+    sent.push({ phone, message });
+  });
+  return sent;
+}
 
 /** Walks a fresh contact through the once-per-contact preference interview with "any" each
  *  time (same pattern as flow.matching.test.ts), then returns the search's own result. */
@@ -60,10 +81,12 @@ test("required: a specific request (has a reference) skips straight to the price
   assert.equal(result.state.pendingSellIntake?.step, "price");
 });
 
-test("required: the full details -> price -> photo flow, ending in a clear acknowledgment", async () => {
+test("required: the full details -> price -> photo flow, ending in a clear acknowledgment", async (t) => {
   const phone = "19992220003";
   resetState(phone);
   await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
+  mockSends(t);
 
   const start = await freshRequest(phone, "I want to sell a watch");
   assert.equal(start.state.pendingSellIntake?.step, "details");
@@ -82,13 +105,16 @@ test("required: the full details -> price -> photo flow, ending in a clear ackno
   const summary = afterPhoto.messages.join("\n");
   assert.match(summary, /Asking: \$14,500/);
   assert.match(summary, /Photo: received/);
+  assert.match(summary, /let you know automatically as soon as I find a qualifying buyer/i, "no live WTB postings exist, so this must be an honest 'still looking' acknowledgment, not the old 'not wired up' caveat");
   assert.equal(afterPhoto.state.pendingSellIntake, undefined, "the intake must be cleared once complete");
 });
 
-test("the photo step still finishes cleanly (as 'not provided') when no image ever arrives", async () => {
+test("the photo step still finishes cleanly (as 'not provided') when no image ever arrives", async (t) => {
   const phone = "19992220004";
   resetState(phone);
   await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
+  mockSends(t);
 
   await freshRequest(phone, "I want to sell a 5711/1A");
   await handleIncomingMessage(phone, "$85,000");
@@ -96,6 +122,39 @@ test("the photo step still finishes cleanly (as 'not provided') when no image ev
 
   assert.match(result.messages.join("\n"), /Photo: not provided/);
   assert.equal(result.state.pendingSellIntake, undefined);
+});
+
+test("required: a completed sell intake creates a real 'direct' posting that immediately matches a live WTB request and notifies both sides", async (t) => {
+  const phone = "19992220007";
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
+  const sent = mockSends(t);
+
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { ingestAndMatch } = require("../postings/ingest") as typeof import("../postings/ingest");
+  await ingestAndMatch({
+    platform: "whatsapp",
+    chatId: "group-1",
+    messageId: "wtb-direct-1",
+    senderIdentity: "19991110000",
+    text: "WTB Rolex Submariner 116610LV budget $16,000",
+  });
+  sent.length = 0; // clear the "monitoring" acknowledgment noise
+
+  await freshRequest(phone, "I want to sell a Rolex Submariner 116610LV");
+  await handleIncomingMessage(phone, "$14,500");
+  const afterPhoto = await handleIncomingMessage(phone, "here you go", undefined, "https://cdn.example/sub.jpg");
+
+  assert.match(
+    afterPhoto.messages.join("\n"),
+    /found a buyer already looking for something like this/i,
+    "the seller's own acknowledgment must reflect the match found on this same posting"
+  );
+  assert.ok(
+    sent.some((s) => s.phone === "19991110000" && /Potential Match/.test(s.message)),
+    "the existing WTB buyer must be notified of the new direct-sourced FS listing"
+  );
 });
 
 test('"cancel" mid-intake clears it without unsubscribing', async () => {

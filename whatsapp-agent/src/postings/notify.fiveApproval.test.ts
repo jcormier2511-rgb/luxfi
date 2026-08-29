@@ -1,6 +1,14 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import fs from "fs";
+import os from "os";
+import path from "path";
 
+// Isolate PERSIST_DIR: approveMatch now also touches conversation state (markPendingEscrowOffer,
+// see conversation/stateStore.ts) — without this, that would write real conversations.json rows
+// into the repo's own ./persist.
+const tmpPersistDir = fs.mkdtempSync(path.join(os.tmpdir(), "luxfi-notify-5approval-test-"));
+process.env.PERSIST_DIR = tmpPersistDir;
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 process.env.TRIAL_MAX_APPROVED_MATCHES = "3";
@@ -27,6 +35,7 @@ const { approveMatch, passMatch } = notify;
 after(async () => {
   await db._closePoolForTests();
   await entitlements._closePoolForTests();
+  fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
 
 async function resetAll(): Promise<void> {

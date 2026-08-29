@@ -114,16 +114,27 @@ export interface PendingSellIntake {
 export interface ConversationState {
   phone: string;
   stage: ConversationStage;
-  approvedCount: number; // trial = TRIAL_MAX_APPROVED_MATCHES approved matches, not searches
+  // Approval usage (trial + weekly plan cap) is NOT tracked here — it lives in Postgres
+  // (canonical_users.total_approved_count / account_entitlements, see postings/
+  // approvalUsage.ts) as the single shared counter between this on-demand flow and the v4
+  // automatic-matching flow, so a canonical account can't exhaust its trial twice under two
+  // separate counters. Read it live via getApprovalUsage(phone) rather than caching it here.
   hired: boolean; // said "join" after the trial — informational only; does NOT unlock approvals.
-  // The actual gate is account_entitlements.manual_override_enabled (Postgres, admin-only —
-  // see src/billing/entitlementStore.ts). Kept here to remember they've expressed interest.
+  // The actual gate is account_entitlements (Postgres, admin-only — see src/billing/
+  // entitlementStore.ts / postings/approvalUsage.ts). Kept here to remember expressed interest.
   pendingMatches?: PendingMatchSet;
   preferencesCollected: boolean;
   preferences?: SearchPreferences;
   pendingPreferenceCollection?: PendingPreferenceCollection;
   pendingNaturalFollowUp?: PendingNaturalFollowUp;
   pendingSellIntake?: PendingSellIntake;
+  // Set right after a real connection reveal suggests escrow/inspection partners (see
+  // config.fiFlow.escrowSuggestion) — checked once, on the contact's very next reply, so a
+  // bare "yes" is recognized as accepting the offer (see conversation/flow.ts's handling and
+  // stateStore.ts's markPendingEscrowOffer, used by both this flow and the v4 automatic-
+  // matching flow's own reveal points in server.ts/postings/notify.ts). Cleared after that one
+  // reply regardless of what it was — never nags on a later, unrelated message.
+  pendingEscrowOffer?: boolean;
   // Automatic currency conversion (src/fx/) — set via "Show prices in USD" / "Use HKD as my
   // preferred currency" (see conversation/flow.ts). ISO 4217 code. Undefined means the
   // config-wide DEFAULT_DISPLAY_CURRENCY is used instead.

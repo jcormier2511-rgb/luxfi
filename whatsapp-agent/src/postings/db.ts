@@ -162,7 +162,15 @@ async function ensureSchema(): Promise<void> {
 
         CREATE TABLE IF NOT EXISTS approvals (
           id SERIAL PRIMARY KEY,
-          match_id INTEGER NOT NULL REFERENCES matches(id),
+          -- Nullable (see the ALTER below) for the v3 on-demand flow's own approvals — that
+          -- flow's "matches" are ephemeral live-search results, never a real row in the
+          -- matches table, so it records approval usage against the SAME canonical_users
+          -- counter v4 uses (see postings/approvalUsage.ts) with no match_id at all. Multiple
+          -- NULL match_ids for the same approver never collide with the UNIQUE constraint
+          -- below (Postgres never considers NULLs equal) — v3 doesn't need that dedup anyway,
+          -- since it already has its own state-machine-level idempotency (flow.ts's
+          -- pending.decisions[idx] check).
+          match_id INTEGER REFERENCES matches(id),
           approving_canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id),
           is_complimentary BOOLEAN NOT NULL,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -205,6 +213,22 @@ async function ensureSchema(): Promise<void> {
         -- to actually reach a database that already has an older version of these tables.
         ALTER TABLE postings ADD COLUMN IF NOT EXISTS reminder_sent_for_expires_at TIMESTAMPTZ;
         ALTER TABLE matches ADD COLUMN IF NOT EXISTS connected_at TIMESTAMPTZ;
+
+        -- Lets the v3 on-demand flow's own approvals share this table (see the CREATE TABLE
+        -- approvals comment above) — an existing deployed database still has the original
+        -- NOT NULL from before this column was widened.
+        ALTER TABLE approvals ALTER COLUMN match_id DROP NOT NULL;
+
+        -- Widens source_type for the private "sell a watch" conversational intake
+        -- (conversation/flow.ts's sell-intake flow, see postingsStore.ts's createDirectPosting):
+        -- a person telling Fi directly what they're selling, as distinct from 'chat' (a passively
+        -- monitored group message) or 'api' (a mirrored WatchFacts listing). Deliberately its own
+        -- value rather than reusing 'chat' or 'api' — isPostingChatEnabled (config.ts) already
+        -- treats any non-'chat' source_type as never chat-gated, which is exactly right here: a
+        -- direct 1:1 request carries its own explicit consent and needs none of the group-chat
+        -- allowlist rollout controls 'chat' postings do.
+        ALTER TABLE postings DROP CONSTRAINT IF EXISTS postings_source_type_check;
+        ALTER TABLE postings ADD CONSTRAINT postings_source_type_check CHECK (source_type IN ('chat', 'api', 'direct'));
         `
       )
       .then(() => undefined);

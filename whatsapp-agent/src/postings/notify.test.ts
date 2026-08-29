@@ -1,6 +1,14 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import fs from "fs";
+import os from "os";
+import path from "path";
 
+// Isolate PERSIST_DIR: approveMatch now also touches conversation state (markPendingEscrowOffer,
+// see conversation/stateStore.ts) — without this, that would write real conversations.json rows
+// into the repo's own ./persist (gitignored, but still stray/confusing to leave behind).
+const tmpPersistDir = fs.mkdtempSync(path.join(os.tmpdir(), "luxfi-notify-test-"));
+process.env.PERSIST_DIR = tmpPersistDir;
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 process.env.TRIAL_MAX_APPROVED_MATCHES = "3";
@@ -31,6 +39,7 @@ const { approveMatch, passMatch } = notify;
 after(async () => {
   await db._closePoolForTests();
   await entitlements._closePoolForTests();
+  fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
 
 let counter = 0;
@@ -171,7 +180,7 @@ test("an admin manual override unlocks approvals past the third — and every le
   );
   assert.deepEqual(
     ledger.rows.map((r) => r.billing_status),
-    ["complimentary", "complimentary", "complimentary", "admin_override_pending_billing"]
+    ["complimentary", "complimentary", "complimentary", "plan_included"]
   );
 });
 
@@ -261,6 +270,7 @@ test("once both sides approve, the second approver is revealed immediately and t
   assert.equal(sent.length, 1, "exactly one introduction must be pushed — to the side that was left waiting");
   assert.equal(sent[0].phone, "buyer-mutual-2");
   assert.match(sent[0].message, /seller-mutual-2/, "the introduction must contain the counterpart's contact info");
+  assert.match(sent[0].message, /escrow and inspection partners/i, "the one-time introduction push must also suggest escrow/inspection");
 
   const matchRow = await db.withSchema((pool) => pool.query(`SELECT connected_at FROM matches WHERE id=$1`, [matchId]));
   assert.ok(matchRow.rows[0].connected_at, "the match must record a connected status once both sides have confirmed");

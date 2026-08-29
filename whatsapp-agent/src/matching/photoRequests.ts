@@ -12,9 +12,9 @@ import { formatMatchCard } from "./engine";
 
 /**
  * Private "request photos before approval" workflow (Fi v4 matching). A photo request is
- * side traffic on a pending match, never a decision: it doesn't touch state.approvedCount
- * (nothing here is metered against the trial), and it never flips a match's pending/approved/
- * passed status — the buyer can still approve or pass at any time, with or without photos.
+ * side traffic on a pending match, never a decision: it never touches approval usage (nothing
+ * here is metered against the trial or weekly plan cap), and it never flips a match's pending/
+ * approved/passed status — the buyer can still approve or pass at any time, with or without photos.
  * Neither party's phone number is ever sent to the other; only Fi (this service's own WhatsApp
  * number) talks to each side directly.
  */

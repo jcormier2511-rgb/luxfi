@@ -1,18 +1,22 @@
 import { config, isAiMatchingEnabledForPhone } from "../config";
-import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences, MatchDecision } from "../types";
+import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences, MatchDecision, PendingSellIntake } from "../types";
 import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals, attachCurrencyDisplay, CurrencyDisplay } from "../matching/engine";
 import { PriceSignal } from "../matching/priceSignal";
 import { requestPhotosForMatch } from "../matching/photoRequests";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
-import { getEntitlement, recordBillingRequested } from "../billing/entitlementStore";
+import { recordBillingRequested } from "../billing/entitlementStore";
+import { MEMBERSHIP_PLANS } from "../billing/plans";
+import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone } from "../postings/approvalUsage";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
 import { extractIntent, extractVerifiedPriceCurrency, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
-import { extractReference, containsKnownBrand, normalizePriceShorthand } from "../postings/normalize";
+import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
+import { upsertListings } from "../watchfacts/inventoryDb";
+import { ingestDirectSellPosting } from "../postings/ingest";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -196,13 +200,24 @@ const FI_MENU = [
   '"help" — show this menu',
 ].join("\n");
 
-/** "status" — a quick, honest snapshot of trial usage and anything still awaiting a decision. */
+/** "status" — a quick, honest snapshot of trial/plan usage and anything still awaiting a
+ *  decision. Reads live from the same canonical Postgres counter both the on-demand (v3) and
+ *  automatic-matching (v4) approve paths share (see postings/approvalUsage.ts) — never a
+ *  locally-cached count that could drift from what actually gated the last approval. */
 async function handleStatusCommand(state: ConversationState, messages: string[]): Promise<void> {
   const pendingCount = state.pendingMatches?.decisions.filter((d) => d === "pending").length ?? 0;
-  const entitlement = await getEntitlement(state.phone);
-  const approvalLine = entitlement.manualOverrideEnabled
-    ? `Approved matches: ${state.approvedCount} (unlimited — your account is unlocked)`
-    : `Approved matches: ${state.approvedCount}/${config.trial.maxApprovedMatches}`;
+  const usage = await getApprovalUsage(state.phone);
+  let approvalLine: string;
+  if (usage.isComplimentary) {
+    approvalLine = `Approved matches: ${usage.totalApproved}/${config.trial.maxApprovedMatches} (complimentary trial)`;
+  } else if (usage.weeklyLimit === null) {
+    approvalLine = `Approved matches: unlimited (your plan has no weekly cap)`;
+  } else if (usage.weeklyLimit === 0) {
+    approvalLine = `Approved matches: locked — no active Fi membership. Message "join" to get started.`;
+  } else {
+    const planLabel = MEMBERSHIP_PLANS[usage.entitlement.plan!].label;
+    approvalLine = `Approved matches this week: ${usage.weeklyUsed}/${usage.weeklyLimit} (${planLabel} plan)`;
+  }
   const pendingLine =
     pendingCount > 0
       ? `Pending decisions: ${pendingCount} match${pendingCount === 1 ? "" : "es"} awaiting approve/pass`
@@ -301,15 +316,6 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
   console.log(`[router] new_search=true pending_match_preserved=${hadExistingPending}`);
 }
 
-/**
- * Handles an "approve <n>" / "pass <n>" reply against the currently pending match set.
- *
- * Fi Build Spec v4 §11: after the 3rd complimentary approval, further approvals are locked
- * until Fi billing is authorized. No payment processor exists yet, so the entitlement check
- * is against `account_entitlements.manual_override_enabled` (Postgres) — the ONLY way to
- * unlock further approvals is an admin action (POST /admin/entitlement/override), never a
- * self-service command and never a live charge. Passing/monitoring stay unrestricted either way.
- */
 /** The highest-indexed still-"pending" entry — spec: "approve/pass without a number applies to
  *  the latest unresolved match." Null when every entry has already been decided. */
 function findLatestPendingIndex(pending: { decisions: MatchDecision[] }): number | null {
@@ -319,6 +325,19 @@ function findLatestPendingIndex(pending: { decisions: MatchDecision[] }): number
   return null;
 }
 
+/**
+ * Handles an "approve <n>" / "pass <n>" reply against the currently pending match set.
+ *
+ * After the 3rd complimentary approval, further approvals are gated by the SAME shared
+ * canonical-account usage v4's automatic-matching flow uses (postings/approvalUsage.ts) —
+ * no plan assigned locks approving outright; a tier1/tier2 plan allows up to its rolling
+ * 7-day weekly cap; tier3 or the legacy admin override is unlimited. This on-demand flow has
+ * no real Postgres match row of its own (it's an ephemeral search result, not a persisted
+ * posting pair), so its approvals are recorded with a NULL match_id — see
+ * recordApprovalEventForPhone. No payment processor exists, so this is never a live charge;
+ * an admin assigns the plan (POST /admin/entitlement/plan), never self-service. Passing/
+ * monitoring stay unrestricted either way.
+ */
 async function handleDecision(state: ConversationState, decision: DecisionCommand, messages: string[], firstName: string): Promise<void> {
   const pending = state.pendingMatches!;
 
@@ -351,29 +370,30 @@ async function handleDecision(state: ConversationState, decision: DecisionComman
     return;
   }
 
-  // Approving is the only thing metered against the trial.
-  if (state.approvedCount >= config.trial.maxApprovedMatches) {
-    const entitlement = await getEntitlement(state.phone);
-    if (!entitlement.manualOverrideEnabled) {
-      messages.push(config.fiFlow.declineMessage);
-      return;
-    }
+  // Approving is the only thing metered against the trial/plan.
+  const usage = await getApprovalUsage(state.phone);
+  const gate = evaluateApprovalGate(usage);
+  if (!gate.allowed) {
+    messages.push(gate.reason === "no_plan" ? config.fiFlow.noPlanMessage : config.fiFlow.weeklyCapMessage(gate.plan, gate.weeklyLimit));
+    return;
   }
 
+  await recordApprovalEventForPhone(usage.canonicalUserId, gate.isComplimentary);
   pending.decisions[idx] = "approved";
-  state.approvedCount += 1;
   messages.push(formatMatchApproved(pending.matches[idx], idx));
+  messages.push(config.fiFlow.escrowSuggestion);
+  state.pendingEscrowOffer = true;
 
-  if (state.approvedCount === config.trial.maxApprovedMatches) {
+  if (gate.isComplimentary && usage.totalApproved + 1 === config.trial.maxApprovedMatches) {
     messages.push(config.fiFlow.conversionPitch(firstName));
   }
 }
 
 /**
  * "photos <n>" / "photo <n>" / "request photos <n>" — private side traffic on a pending FS/
- * seller match, never a decision: doesn't touch state.approvedCount (nothing here is metered
- * against the trial) and never closes or passes the match — the buyer can still approve or
- * pass at any time, before or after photos arrive. See matching/photoRequests.ts.
+ * seller match, never a decision: never touches approval usage (nothing here is metered
+ * against the trial or weekly plan cap) and never closes or passes the match — the buyer can
+ * still approve or pass at any time, before or after photos arrive. See matching/photoRequests.ts.
  */
 async function handlePhotoRequest(state: ConversationState, index: number, messages: string[]): Promise<void> {
   const pending = state.pendingMatches!;
@@ -542,10 +562,55 @@ async function startSellIntake(state: ConversationState, request: ItemRequest, m
   messages.push(hasSpecifics ? SELL_PRICE_QUESTION : SELL_DETAILS_QUESTION);
 }
 
+/**
+ * Persists the finished intake as a live FS inventory row — see watchfacts/inventoryDb.ts's
+ * upsertListings — so a future buyer's search can actually find it, not just a conversation-
+ * state record that nothing else ever reads. Uses a distinct source ("WA-DM": a private
+ * seller's own WhatsApp DM, as opposed to "WF"/WatchFacts or "WA-Group"/monitored dealer
+ * groups) so nothing else's sync reconciliation ever touches or expires it — a private listing
+ * stays active until the seller says otherwise.
+ */
+async function persistSellIntake(state: ConversationState, pending: PendingSellIntake): Promise<void> {
+  const { brand } = normalizeText(pending.description);
+  await upsertListings(
+    [
+      {
+        id: `wadm-${state.phone}-${Date.now()}`,
+        type: "FS",
+        category: "watches",
+        item: pending.description,
+        brand,
+        ref: pending.reference ?? "",
+        condition: "",
+        price: pending.price !== undefined ? String(pending.price) : "ASK",
+        location: "",
+        contactName: "",
+        contactPhone: state.phone,
+        rating: "",
+        description: pending.description,
+        imageUrl: pending.imageUrl,
+      },
+    ],
+    new Date().toISOString(),
+    "WA-DM"
+  );
+}
+
 /** Walks details -> price -> photo, one question at a time, then acknowledges — never loops
  *  back to re-ask a step; whatever's given (including nothing) is accepted and it moves on,
- *  same "ask once" principle as the rest of this file's collectors. */
-function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[]): void {
+ *  same "ask once" principle as the rest of this file's collectors. The final "photo" step both
+ *  quietly archives the listing (persistSellIntake, v3's inventory_listings — searchable by a
+ *  future buyer's own "buy:" search, same as any other passively-captured listing) and creates
+ *  a real v4 FS posting run against every active WTB posting immediately (see postings/ingest.ts's
+ *  ingestDirectSellPosting) — the acknowledgment reflects whether that immediate search actually
+ *  found a live buyer, rather than a blanket "not wired up yet" caveat. */
+async function handleSellIntakeAnswer(
+  state: ConversationState,
+  text: string,
+  imageUrl: string | undefined,
+  messages: string[],
+  contact?: Contact
+): Promise<void> {
   const pending = state.pendingSellIntake!;
 
   if (pending.step === "details") {
@@ -570,12 +635,29 @@ function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl
   const priceLine =
     pending.price !== undefined ? `$${pending.price.toLocaleString("en-US")}` : pending.priceText ? pending.priceText : "not set";
   const photoLine = pending.imageUrl ? "received" : "not provided";
+
+  await persistSellIntake(state, pending);
+
+  const { matchesFound } = await ingestDirectSellPosting({
+    phone: state.phone,
+    senderName: contact?.name,
+    description: pending.description,
+    reference: pending.reference ?? null,
+    price: pending.price ?? null,
+    imageUrl: pending.imageUrl,
+  });
+
+  const outcomeLine =
+    matchesFound > 0
+      ? `Good news — I found ${matchesFound === 1 ? "a buyer" : `${matchesFound} buyers`} already looking for something like this. I'll be in touch as soon as it's confirmed.`
+      : `I'm listing it now and will let you know automatically as soon as I find a qualifying buyer.`;
+
   messages.push(
     `Got it — here's what I have on file:\n` +
       `Item: ${pending.description}\n` +
       `Asking: ${priceLine}\n` +
       `Photo: ${photoLine}\n\n` +
-      `I don't have automatic buyer-matching wired up for self-listed items yet, but your details are saved — I'll follow up if that changes.`
+      outcomeLine
   );
   state.pendingSellIntake = undefined;
 }
@@ -704,8 +786,25 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     return { state, messages };
   }
 
+  // One-shot: only the reply immediately after an escrow/inspection suggestion is checked for
+  // a "yes" — cleared regardless of what they said, so it never nags on a later, unrelated
+  // message, and so this can't misfire against natural-language decision interpretation
+  // further down (a bare "yes" with a still-open pendingMatches set would otherwise be
+  // ambiguous between "yes, I want the escrow code" and "yes, approve the last one").
+  if (state.pendingEscrowOffer) {
+    state.pendingEscrowOffer = false;
+    if (/^(yes|yeah|yep|yup|sure|ok|okay)\b/i.test(text.trim())) {
+      messages.push(
+        `Great — use code ${config.fiFlow.escrowPromoCode} for your first escrow/inspection service free, and 50% off future services with a Fi membership.`
+      );
+      saveState(state);
+      return { state, messages };
+    }
+    // Not an affirmative reply — fall through so this message is still handled normally.
+  }
+
   if (state.pendingSellIntake) {
-    handleSellIntakeAnswer(state, text, imageUrl, messages);
+    await handleSellIntakeAnswer(state, text, imageUrl, messages, contact);
     saveState(state);
     return { state, messages };
   }

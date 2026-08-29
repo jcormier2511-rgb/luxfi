@@ -3,8 +3,11 @@ import { getOrCreateCanonicalUser } from "./identity";
 import { PostingRow, getPrimaryImageUrl } from "./postingsStore";
 import { recordNotificationFailure } from "./status";
 import { getEntitlement } from "../billing/entitlementStore";
+import { weeklyLimitFor, PlanKey } from "../billing/plans";
+import { getWeeklyApprovalCount, recordApprovalEvent } from "./approvalUsage";
 import { sendText } from "../whapi/client";
 import { config, isPostingChatEnabled } from "../config";
+import { markPendingEscrowOffer } from "../conversation/stateStore";
 
 async function getPhoneForCanonicalUser(canonicalUserId: number): Promise<string | null> {
   return withSchema(async (pool) => {
@@ -167,6 +170,11 @@ export async function passMatch(matchId: number, phone: string): Promise<"passed
 export interface ApprovalOutcome {
   status: "approved" | "pending_confirmation" | "locked" | "invalid" | "posting_closed";
   counterpart?: { name: string; phone: string };
+  /** Only set when status is "locked" — which of the two lock reasons this is, so the caller
+   *  can show the right message (see server.ts's formatApprovalOutcome). */
+  lockReason?: "no_plan" | "weekly_cap";
+  plan?: PlanKey;
+  weeklyLimit?: number;
 }
 
 interface QueryClient {
@@ -235,10 +243,12 @@ async function getRecipientRow(
  *   further approval outright, even against a match that was created/surfaced before it
  *   closed.
  *
- * The first 3 account-level approvals are complimentary ($0 ledger entries); the 4th and
- * later are locked unless an admin has enabled account_entitlements.manual_override_enabled
- * (checked as a pre-transaction snapshot — see src/billing/entitlementStore.ts). No payment
- * processor exists, so every ledger entry is $0 — a real charge is never attempted.
+ * The first 3 account-level approvals are complimentary ($0 ledger entries). After that, this
+ * shares the SAME gating logic v3's on-demand flow uses (postings/approvalUsage.ts) — no plan
+ * assigned locks further approvals outright; a tier1/tier2 plan allows up to its weekly cap
+ * (rolling 7 days); tier3 or the legacy admin override (account_entitlements.manual_override_
+ * enabled) is unlimited. No payment processor exists, so every ledger entry is $0 — a real
+ * charge is never attempted; an admin assigns the plan (see src/billing/entitlementStore.ts).
  */
 export async function approveMatch(matchId: number, phone: string): Promise<ApprovalOutcome> {
   const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
@@ -275,27 +285,26 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
       }
 
       const isComplimentary = user.total_approved_count < config.trial.maxApprovedMatches;
-      if (!isComplimentary && !entitlement.manualOverrideEnabled) {
-        return { outcome: { status: "locked" as const }, notify: null };
+      if (!isComplimentary) {
+        const weeklyLimit = weeklyLimitFor(entitlement);
+        if (weeklyLimit === 0) {
+          return { outcome: { status: "locked" as const, lockReason: "no_plan" as const }, notify: null };
+        }
+        if (weeklyLimit !== null) {
+          const weeklyUsed = await getWeeklyApprovalCount(client, canonicalUserId);
+          if (weeklyUsed >= weeklyLimit) {
+            return {
+              outcome: { status: "locked" as const, lockReason: "weekly_cap" as const, plan: entitlement.plan as PlanKey, weeklyLimit },
+              notify: null,
+            };
+          }
+        }
       }
 
       // Idempotency key: match_id + approving_canonical_user_id. A duplicate/racing click hits
       // this conflict and is treated as a no-op rather than double-counting.
-      const approvalInsert = await client.query(
-        `INSERT INTO approvals (match_id, approving_canonical_user_id, is_complimentary) VALUES ($1,$2,$3)
-         ON CONFLICT (match_id, approving_canonical_user_id) DO NOTHING RETURNING id`,
-        [matchId, canonicalUserId, isComplimentary]
-      );
-      if (approvalInsert.rows.length > 0) {
-        await client.query(
-          `INSERT INTO billing_ledger (canonical_user_id, match_id, amount_cents, currency, billing_status)
-           VALUES ($1,$2,0,'USD',$3)`,
-          [canonicalUserId, matchId, isComplimentary ? "complimentary" : "admin_override_pending_billing"]
-        );
-        await client.query(`UPDATE canonical_users SET total_approved_count = total_approved_count + 1 WHERE id=$1`, [
-          canonicalUserId,
-        ]);
-
+      const approved = await recordApprovalEvent(client, canonicalUserId, matchId, isComplimentary);
+      if (approved) {
         if (ownPostingId !== null) {
           const updated = await client.query(
             `UPDATE postings SET approved_match_count = approved_match_count + 1, updated_at=now()
@@ -360,7 +369,11 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
     const phone = await getPhoneForCanonicalUser(result.notify.canonicalUserId);
     if (phone) {
       try {
-        await sendText(phone, `You're connected! ${result.notify.myContact.name}: ${result.notify.myContact.phone}`);
+        await sendText(
+          phone,
+          `You're connected! ${result.notify.myContact.name}: ${result.notify.myContact.phone}\n\n${config.fiFlow.escrowSuggestion}`
+        );
+        markPendingEscrowOffer(phone);
       } catch (err) {
         console.error(`[postings] failed to deliver connection introduction for match ${matchId} to ${phone}:`, err);
         await recordNotificationFailure((err as Error).message);

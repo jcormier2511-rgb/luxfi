@@ -14,6 +14,8 @@ const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../wa
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const entitlementStore = require("../billing/entitlementStore") as typeof import("../billing/entitlementStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const postingsDb = require("../postings/db") as typeof import("../postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { resetState } = require("./stateStore") as typeof import("./stateStore");
@@ -21,6 +23,7 @@ const { resetState } = require("./stateStore") as typeof import("./stateStore");
 after(async () => {
   await inventoryDb._closePoolForTests();
   await entitlementStore._closePoolForTests();
+  await postingsDb._closePoolForTests();
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
 
@@ -108,10 +111,58 @@ test('required (live-reported bug): after the only match is already approved, "h
   await handleIncomingMessage(phone, "any");
   const approve = await handleIncomingMessage(phone, "approve 1");
   assert.match(approve.messages.join("\n"), /^Approved #1/);
+  assert.ok(
+    approve.messages.some((m) => /escrow and inspection partners/i.test(m)),
+    "a real connection reveal must suggest escrow/inspection partners as a follow-up"
+  );
 
   const hiResult = await handleIncomingMessage(phone, "hi", { phone, name: "John Smith", tier: "A" });
   assert.match(hiResult.messages[0], /^Hi John, how can I help you today\?$/);
+  assert.doesNotMatch(hiResult.messages[0], /FI727/, "the escrow offer is one-shot — an unrelated reply must never retrigger it");
   assert.doesNotMatch(hiResult.messages[0], /approve <number>/i, "must never show the stale reminder once nothing is left to decide");
+});
+
+test('required: replying "yes" right after a connection reveal gets the escrow/inspection promo code', async () => {
+  const phone = "19991110009";
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("escrow-yes-1")], new Date().toISOString());
+
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "approve 1");
+
+  const yesResult = await handleIncomingMessage(phone, "yes");
+  assert.match(yesResult.messages.join("\n"), /FI727/, "a 'yes' to the escrow offer must return the promo code");
+  assert.match(yesResult.messages.join("\n"), /first escrow\/inspection service free/i);
+  assert.match(yesResult.messages.join("\n"), /50% off future services/i);
+
+  // One-shot: asking again afterward (with nothing pending) must not repeat the offer.
+  const followUp = await handleIncomingMessage(phone, "yes");
+  assert.doesNotMatch(followUp.messages.join("\n"), /FI727/, "the offer must not fire again once already consumed");
+});
+
+test('required: a non-affirmative reply right after a connection reveal does not get the promo code, and is still handled normally', async () => {
+  const phone = "19991110010";
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("escrow-no-1")], new Date().toISOString());
+
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "approve 1");
+
+  const result = await handleIncomingMessage(phone, "status");
+  assert.doesNotMatch(result.messages.join("\n"), /FI727/, "a non-affirmative reply must never get the promo code");
+  assert.match(result.messages.join("\n"), /Approved matches/, "the message must still be handled normally (the 'status' command here), not swallowed");
 });
 
 test('required (live-reported bug): "Photos2" and "approve1" (no space before the number) are recognized the same as with a space', async () => {
