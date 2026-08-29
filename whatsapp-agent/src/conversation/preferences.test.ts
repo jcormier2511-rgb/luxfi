@@ -80,6 +80,12 @@ test("AUD code and A$ symbol preserve the numeric ceiling", () => {
   assert.deepEqual(parsePriceRange("under A$100,000"), { max: 100000 });
 });
 
+test("US$ prices preserve comparator direction and range endpoints", () => {
+  assert.deepEqual(parsePriceRange("under US$100,000"), { max: 100000 });
+  assert.deepEqual(parsePriceRange("over US$80,000"), { min: 80000 });
+  assert.deepEqual(parsePriceRange("US$80k-US$100k"), { min: 80000, max: 100000 });
+});
+
 test("'any' still means no preference", () => {
   assert.equal(parsePriceRange("any"), undefined);
 });

@@ -38,7 +38,7 @@ export function parsePriceRange(text: string): PriceRange | undefined {
   // `\$?\s*` before EACH number — a range is often written with the currency symbol repeated
   // on both ends ("$5,000-$8,000"), which the original single-leading-`$` version missed on
   // the second number entirely (falling through to the single-target approximation instead).
-  const rangeMatch = normalized.match(/\$?\s*([\d.,]+k?)\s*(?:-|to|–)\s*\$?\s*([\d.,]+k?)/i);
+  const rangeMatch = normalized.match(/(?:us\$|\$)?\s*([\d.,]+k?)\s*(?:-|to|–)\s*(?:us\$|\$)?\s*([\d.,]+k?)/i);
   if (rangeMatch) {
     let min = toNumber(rangeMatch[1]);
     let max = toNumber(rangeMatch[2]);
@@ -53,19 +53,19 @@ export function parsePriceRange(text: string): PriceRange | undefined {
     if (min !== undefined || max !== undefined) return { min, max };
   }
 
-  const maxOnlyMatch = normalized.match(/(?:under|up to|max(?:imum)?|below|less than|budget(?:\s+(?:of|is))?)\s*(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|aud|jpy|cny|rmb|hk\$|c\$|s\$|a\$|cn¥|[$€£¥])?\s*([\d.,]+k?)/);
+  const maxOnlyMatch = normalized.match(/(?:under|up to|max(?:imum)?|below|less than|budget(?:\s+(?:of|is))?)\s*(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|aud|jpy|cny|rmb|us\$|hk\$|c\$|s\$|a\$|cn¥|[$€£¥])?\s*([\d.,]+k?)/);
   if (maxOnlyMatch) {
     const max = toNumber(maxOnlyMatch[1]);
     if (max !== undefined) return { max };
   }
 
-  const minOnlyMatch = normalized.match(/(?:over|at least|min(?:imum)?|above|more than)\s*(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|aud|jpy|cny|rmb|hk\$|c\$|s\$|a\$|cn¥|[$€£¥])?\s*([\d.,]+k?)/);
+  const minOnlyMatch = normalized.match(/(?:over|at least|min(?:imum)?|above|more than)\s*(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|aud|jpy|cny|rmb|us\$|hk\$|c\$|s\$|a\$|cn¥|[$€£¥])?\s*([\d.,]+k?)/);
   if (minOnlyMatch) {
     const min = toNumber(minOnlyMatch[1]);
     if (min !== undefined) return { min };
   }
 
-  const singleMatch = normalized.match(/\$?\s*([\d.,]+k?)/);
+  const singleMatch = normalized.match(/(?:us\$|\$)?\s*([\d.,]+k?)/);
   if (singleMatch) {
     const target = toNumber(singleMatch[1]);
     if (target !== undefined) return { min: Math.round(target * 0.85), max: Math.round(target * 1.15) };
