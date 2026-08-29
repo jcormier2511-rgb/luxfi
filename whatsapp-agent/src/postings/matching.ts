@@ -65,7 +65,9 @@ export async function scoreMatch(fs: PostingRow, wtb: PostingRow): Promise<Score
     // exclude the pair rather than allowing a false positive or rejecting on raw numbers.
     if (fsPriceUsd === null || wtbMaxBidUsd === null) return null;
     if (fsPriceUsd > wtbMaxBidUsd) return null; // hard max bid respected in a common currency
-    reasons.push(`Within budget (USD ${Math.round(fsPriceUsd).toLocaleString("en-US")} ≤ USD ${Math.round(wtbMaxBidUsd).toLocaleString("en-US")})`);
+    const fsPriceUsdLabel = "USD $" + Math.round(fsPriceUsd).toLocaleString("en-US");
+    const wtbMaxBidUsdLabel = "USD $" + Math.round(wtbMaxBidUsd).toLocaleString("en-US");
+    reasons.push(`Within budget (${fsPriceUsdLabel} ≤ ${wtbMaxBidUsdLabel})`);
   }
 
   return { score, reasons };
