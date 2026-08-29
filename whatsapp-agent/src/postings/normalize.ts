@@ -202,7 +202,9 @@ function priceTokens(text: string): string[] {
       // If the text already named a watch reference before this token, this numeric token is
       // the listing price even when settlement instructions follow it. Without an earlier
       // reference, preserve the safer interpretation: the token itself is the reference.
-      return REFERENCE_PATTERN.test(text.slice(0, index));
+      const amount = normalizePriceShorthand(raw);
+      return REFERENCE_PATTERN.test(text.slice(0, index)) ||
+        (amount !== null && amount >= 1000 && amount % 500 === 0);
     })
     .map((match) => match[0]);
 }

@@ -271,6 +271,13 @@ test("a reference followed by settlement currency wording is not treated as a pr
   }
 });
 
+test("a model-only listing keeps a genuine round asking price before settlement wording", () => {
+  const normalized = normalizeText("FS Rolex Daytona 100000 USD, wire only");
+  assert.equal(normalized.reference, "");
+  assert.equal(normalized.price, 100000);
+  assert.equal(normalized.currency, "USD");
+});
+
 test("a genuine price before settlement wording is preserved when the watch reference was already named", () => {
   const normalized = normalizeText("FS Patek 5712G 100000 USD, wire only");
   assert.equal(normalized.reference, "5712G");

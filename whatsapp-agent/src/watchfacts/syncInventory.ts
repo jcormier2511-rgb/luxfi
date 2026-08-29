@@ -8,6 +8,18 @@ import { ingestApiFsSync } from "../postings/ingest";
 import { ApiFsListing } from "../postings/postingsStore";
 import { ListingType } from "../types";
 
+export function v4PriceFields(listing: {
+  price: string;
+  nativePriceAmount?: number | null;
+  nativeCurrency?: string | null;
+}): Pick<ApiFsListing, "price" | "currency"> {
+  if (listing.price === "ASK") return { price: "ASK", currency: "USD" };
+  return {
+    price: String(listing.nativePriceAmount ?? listing.price),
+    currency: listing.nativeCurrency ?? "USD",
+  };
+}
+
 export interface SyncResult {
   forSale: number;
   wtb: number;
@@ -78,8 +90,7 @@ export async function syncOneSide(
             brand: l.brand,
             ref: l.ref,
             condition: l.condition,
-            price: String(l.nativePriceAmount ?? l.price),
-            currency: l.nativeCurrency ?? "USD",
+            ...v4PriceFields(l),
             contactName: l.contactName,
             contactPhone: l.contactPhone,
             detailUrl: l.detailUrl,

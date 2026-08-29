@@ -13,7 +13,7 @@ const api = require("./api") as typeof import("./api");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("./inventoryDb") as typeof import("./inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { syncOneSide } = require("./syncInventory") as typeof import("./syncInventory");
+const { syncOneSide, v4PriceFields } = require("./syncInventory") as typeof import("./syncInventory");
 
 after(() => inventoryDb._closePoolForTests());
 
@@ -99,4 +99,16 @@ test("syncOneSide: an FS failure never touches WTB's already-saved data or statu
   assert.ok(status.wtb.lastSuccessAt);
   assert.equal(status.wtb.lastError, null);
   assert.ok(status.fs.lastError);
+});
+
+
+test("v4PriceFields keeps unreliable bundle prices as ASK", () => {
+  assert.deepEqual(
+    v4PriceFields({ price: "ASK", nativePriceAmount: 100000, nativeCurrency: "USD" }),
+    { price: "ASK", currency: "USD" }
+  );
+  assert.deepEqual(
+    v4PriceFields({ price: "15000000", nativePriceAmount: 15000000, nativeCurrency: "JPY" }),
+    { price: "15000000", currency: "JPY" }
+  );
 });
