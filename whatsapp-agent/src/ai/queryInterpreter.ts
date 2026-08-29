@@ -2,7 +2,6 @@ import { callAiJson } from "./client";
 import { InterpretedQuery } from "./types";
 import { SearchPreferences } from "../types";
 import { parsePriceRange } from "../conversation/preferences";
-import { detectCurrency } from "../matching/currency";
 import { extractReference } from "../postings/normalize";
 import { extractVerifiedPriceCurrency } from "./intentExtractor";
 
