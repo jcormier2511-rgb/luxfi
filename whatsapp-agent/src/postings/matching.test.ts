@@ -140,6 +140,24 @@ test("scoreMatch: excludes a foreign-currency pair when its conversion rate is u
   assert.equal(await scoreMatch(fs, wtb), null);
 });
 
+test("mirrorApiFsPosting persists the WatchFacts native currency for v4 matching", async () => {
+  await db._resetDbForTests();
+  const mirrored = await store.mirrorApiFsPosting({
+    id: "wf-jpy-1",
+    item: "Patek 5712G",
+    brand: "Patek",
+    ref: "5712G",
+    condition: "Full Set",
+    price: "15000000",
+    currency: "JPY",
+    contactName: "Seller",
+    contactPhone: "15550001111",
+    description: "Patek 5712G ¥15,000,000",
+  });
+  assert.equal(mirrored.posting.price, "15000000");
+  assert.equal(mirrored.posting.currency, "JPY");
+});
+
 test("upsertMatch creates a new match at revision 1", async () => {
   await db._resetDbForTests();
   const fs = await ingestChatPosting({

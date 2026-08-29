@@ -18,6 +18,14 @@ test("required regression: extractNativePrice reads the HK$ symbol as HKD, never
   assert.equal(result?.amount, 850000);
 });
 
+test("extractNativePrice binds a trailing ISO code to a bare-dollar amount", () => {
+  assert.deepEqual(extractNativePrice("Patek 5712G $100k CAD"), {
+    amount: 100000,
+    currency: "CAD",
+    originalText: "$100k CAD",
+  });
+});
+
 test("extractNativePrice reads EUR and GBP", () => {
   assert.deepEqual(extractNativePrice("AP Royal Oak, EUR95,000"), { amount: 95000, currency: "EUR", originalText: "EUR95,000" });
   assert.deepEqual(extractNativePrice("Submariner, GBP 8,000"), { amount: 8000, currency: "GBP", originalText: "GBP 8,000" });

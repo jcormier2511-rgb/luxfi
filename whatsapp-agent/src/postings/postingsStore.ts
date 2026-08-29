@@ -174,6 +174,7 @@ export interface ApiFsListing {
   ref: string;
   condition: string;
   price: string;
+  currency: string;
   contactName: string;
   contactPhone: string;
   detailUrl?: string;
@@ -213,10 +214,10 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
       const insert = await pool.query<PostingRow>(
         `INSERT INTO postings
            (source_platform, source_type, external_listing_id, type, original_text, brand, reference, condition,
-            price, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
-         VALUES ('watchfacts_api','api',$1,'FS',$2,$3,$4,$5,$6,$7,$8,$9,'active',$10, now())
+            price, currency, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
+         VALUES ('watchfacts_api','api',$1,'FS',$2,$3,$4,$5,$6,$7,$8,$9,$10,'active',$11, now())
          RETURNING *`,
-        [listing.id, originalText, listing.brand, listing.ref, listing.condition, price, listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt]
+        [listing.id, originalText, listing.brand, listing.ref, listing.condition, price, listing.currency, listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt]
       );
       return { posting: insert.rows[0], created: true, materialChange: true };
     }
@@ -226,13 +227,14 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
       !valuesEqual(old.reference, listing.ref) ||
       !valuesEqual(old.brand, listing.brand) ||
       !valuesEqual(old.price, price) ||
+      !valuesEqual(old.currency, listing.currency) ||
       !valuesEqual(old.condition, listing.condition);
 
     const update = await pool.query<PostingRow>(
-      `UPDATE postings SET original_text=$1, brand=$2, reference=$3, condition=$4, price=$5,
-         contact_name=$6, contact_phone=$7, detail_url=$8, status='active', updated_at=now(), last_seen_at=now()
-       WHERE id=$9 RETURNING *`,
-      [originalText, listing.brand, listing.ref, listing.condition, price, listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
+      `UPDATE postings SET original_text=$1, brand=$2, reference=$3, condition=$4, price=$5, currency=$6,
+         contact_name=$7, contact_phone=$8, detail_url=$9, status='active', updated_at=now(), last_seen_at=now()
+       WHERE id=$10 RETURNING *`,
+      [originalText, listing.brand, listing.ref, listing.condition, price, listing.currency, listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
     );
     return { posting: update.rows[0], created: false, materialChange };
   });
