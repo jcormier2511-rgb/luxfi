@@ -35,6 +35,11 @@ export interface InventoryListing {
   nativePriceAmount?: number;
   nativeCurrency?: string; // ISO 4217 code, e.g. "HKD"
   originalPriceText?: string; // verbatim substring, e.g. "HK$850,000"
+  // Parsed/converted view used by the legacy matching path when the stored price itself
+  // includes a currency marker (e.g. "HKD 820,000").
+  priceAmount?: number;
+  priceCurrency?: import("./matching/currency").CurrencyCode;
+  priceUsd?: number;
 }
 
 export type RequestAction = "buy" | "sell";
