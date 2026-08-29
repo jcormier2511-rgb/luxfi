@@ -137,6 +137,12 @@ export async function handleWebhookPayload(body: IncomingWebhook): Promise<void>
       }
       if (message.imageUrl && await handleIncomingSellerPhoto(message.phone, message.imageUrl)) continue;
 
+      const directReply = await tryHandleDirectPostingDecision(message.phone, message.text);
+      if (directReply !== null) {
+        await sendText(message.phone, directReply);
+        continue;
+      }
+
       const v4Reply = await tryHandleV4Decision(message.phone, message.text);
       if (v4Reply !== null) {
         await sendText(message.phone, v4Reply);

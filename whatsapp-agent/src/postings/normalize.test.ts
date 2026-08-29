@@ -271,6 +271,13 @@ test("a reference followed by settlement currency wording is not treated as a pr
   }
 });
 
+test("a genuine price before settlement wording is preserved when the watch reference was already named", () => {
+  const normalized = normalizeText("FS Patek 5712G 100000 USD, wire only");
+  assert.equal(normalized.reference, "5712G");
+  assert.equal(normalized.price, 100000);
+  assert.equal(normalized.currency, "USD");
+});
+
 test("repeated dot thousands separators are consumed as one complete price", () => {
   assert.equal(normalizePriceShorthand("€1.250.000"), 1250000);
   const normalized = normalizeText("FS Patek 5712G €1.250.000");

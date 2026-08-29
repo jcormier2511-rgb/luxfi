@@ -195,8 +195,14 @@ function priceTokens(text: string): string[] {
       // A watch reference followed by settlement wording is not a trailing-code price:
       // "Rolex 126333 USD wire only" states payment currency, not a USD 126,333 ask.
       if (!new RegExp(`^${NUM}\\s?${CURRENCY_CODE}\\b`, "i").test(raw)) return true;
-      const after = text.slice((match.index ?? 0) + raw.length);
-      return !/^[\s,;:.()\[\]{}\-–—]*(?:wire|transfer|payment|settlement|account|accepted|only)\b/i.test(after);
+      const index = match.index ?? 0;
+      const after = text.slice(index + raw.length);
+      const followedBySettlement = /^[\s,;:.()\[\]{}\-–—]*(?:wire|transfer|payment|settlement|account|accepted|only)\b/i.test(after);
+      if (!followedBySettlement) return true;
+      // If the text already named a watch reference before this token, this numeric token is
+      // the listing price even when settlement instructions follow it. Without an earlier
+      // reference, preserve the safer interpretation: the token itself is the reference.
+      return REFERENCE_PATTERN.test(text.slice(0, index));
     })
     .map((match) => match[0]);
 }
