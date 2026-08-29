@@ -33,6 +33,7 @@ const PHONE_C = "17775553003";
 const PHONE_D = "17775553004";
 const PHONE_E = "17775553005";
 const PHONE_F = "17775553006";
+const PHONE_G = "17775553007";
 
 function fsRow(id: string, overrides: Partial<Parameters<typeof inventoryDb.upsertListings>[0][number]> = {}) {
   return {
@@ -84,6 +85,17 @@ test("stepwise budget capture binds currency to the price token, not unrelated s
   const preferences = result.state.preferences!;
   assert.equal(preferences.priceMax, 100000);
   assert.equal(preferences.priceCurrency, "USD");
+});
+
+test("stepwise budget capture keeps an ordinary unmarked numeric ceiling", async () => {
+  await handleIncomingMessage(PHONE_G, "hi");
+  await handleIncomingMessage(PHONE_G, "buy: Rolex Daytona 116500LN");
+  const result = await handleIncomingMessage(PHONE_G, "under 25000");
+
+  const preferences = result.state.preferences!;
+  assert.equal(preferences.priceMax, 25000);
+  assert.equal(preferences.priceCurrency, undefined);
+  assert.equal(result.state.pendingPreferenceCollection!.step, "location");
 });
 
 test("stepwise budget capture rejects conflicting currencies and asks again", async () => {
