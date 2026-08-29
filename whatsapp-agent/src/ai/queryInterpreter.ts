@@ -15,23 +15,7 @@ export interface ConfirmedNaturalLanguageIntent {
 }
 
 const CURRENCY_CODE = String.raw`\b(?:USD|HKD|EUR|GBP|AED|CHF|CAD|SGD|AUD|JPY|CNY|RMB)\b`;
-const GENERIC_DOLLAR = String.raw`(?<![A-Za-z])\import { callAiJson } from "./client";
-import { InterpretedQuery } from "./types";
-import { SearchPreferences } from "../types";
-import { parsePriceRange } from "../conversation/preferences";
-import { detectCurrency } from "../matching/currency";
-import { extractReference } from "../postings/normalize";
-
-export interface ConfirmedNaturalLanguageIntent {
-  intent: "buy" | "sell" | null;
-  brand: string | null;
-  reference: string | null;
-  priceMin: number | null;
-  priceMax: number | null;
-  currency: string | null;
-}
-
-;
+const GENERIC_DOLLAR = String.raw`(?<![A-Za-z])\$`;
 const SPECIFIC_CURRENCY_SYMBOL = String.raw`(?:US\$|HK\$|C\$|S\$|A\$|CN¥|[€£¥])`;
 const CURRENCY_MARKER = `(?:${SPECIFIC_CURRENCY_SYMBOL}|${GENERIC_DOLLAR}|${CURRENCY_CODE})`;
 const PRICE_NUMBER = String.raw`[\d][\d.,]*(?:\s*[kK]\b)?`;
