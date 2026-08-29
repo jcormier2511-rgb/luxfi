@@ -151,6 +151,172 @@ test("euro and pound symbols are recognized as price markers", async (t) => {
   assert.equal(gbp!.priceUnreliable, false);
 });
 
+test("the primary intent verifier recognizes US$ as USD rather than SGD", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMax: 100000, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G under US$100,000");
+  assert.equal(result!.intent.priceMax, 100000);
+  assert.equal(result!.intent.currency, "USD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
+test("the primary intent verifier retains every supported non-USD currency", async (t) => {
+  let current = { amount: 0, currency: "USD" };
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMax: current.amount, currency: current.currency })
+  );
+
+  const cases = [
+    ["WTB Patek 5712G under HK$900,000", 900000, "HKD"],
+    ["WTB Patek 5712G under S$110,000", 110000, "SGD"],
+    ["WTB Patek 5712G under C$100,000", 100000, "CAD"],
+    ["WTB Patek 5712G under $100k CAD", 100000, "CAD"],
+    ["WTB Patek 5712G under A$100,000", 100000, "AUD"],
+    ["WTB Patek 5712G under AED 400,000", 400000, "AED"],
+    ["WTB Patek 5712G under CHF 95,000", 95000, "CHF"],
+    ["WTB Patek 5712G under ¥15,000,000", 15000000, "JPY"],
+    ["WTB Patek 5712G under CN¥700,000", 700000, "CNY"],
+    ["WTB Patek 5712G under RMB 700,000", 700000, "CNY"],
+  ] as const;
+
+  for (const [text, amount, currency] of cases) {
+    current = { amount, currency };
+    const result = await extractIntent(text);
+    assert.equal(result!.intent.priceMax, amount, text);
+    assert.equal(result!.intent.currency, currency, text);
+    assert.equal(result!.priceUnreliable, false, text);
+  }
+});
+
+test("the primary intent verifier corrects an AI-mislabeled HKD budget", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMax: 900000, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G under HK$900,000 USD wire accepted");
+  assert.equal(result!.intent.priceMax, 900000);
+  assert.equal(result!.intent.currency, "HKD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
+test("the primary intent verifier preserves both endpoints of a same-currency range", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 80000, priceMax: 100000, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G budget $80k-$100k");
+  assert.equal(result!.intent.priceMin, 80000);
+  assert.equal(result!.intent.priceMax, 100000);
+  assert.equal(result!.intent.currency, "USD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
+test("the primary intent verifier accepts repeated non-USD markers on a range", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 800000, priceMax: 900000, currency: "HKD" })
+  );
+
+  for (const text of [
+    "WTB Patek 5712G budget HK$800k-HK$900k",
+    "WTB Patek 5712G budget HKD 800k-HKD 900k",
+  ]) {
+    const result = await extractIntent(text);
+    assert.equal(result!.intent.priceMin, 800000, text);
+    assert.equal(result!.intent.priceMax, 900000, text);
+    assert.equal(result!.intent.currency, "HKD", text);
+    assert.equal(result!.priceUnreliable, false, text);
+  }
+});
+
+test("the primary intent verifier rejects ranges with conflicting currencies", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 800000, priceMax: 100000, currency: "HKD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G budget HK$800k-US$100k");
+  assert.equal(result!.intent.priceMin, null);
+  assert.equal(result!.intent.priceMax, null);
+  assert.equal(result!.priceUnreliable, true);
+});
+
+test("the primary intent verifier inherits one k suffix across a compact range", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 80000, priceMax: 100000, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G budget 80-100k USD");
+  assert.equal(result!.intent.priceMin, 80000);
+  assert.equal(result!.intent.priceMax, 100000);
+  assert.equal(result!.intent.currency, "USD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
+test("the primary intent verifier rejects incomplete or swapped range endpoints", async (t) => {
+  let current = { priceMin: 80000 as number | null, priceMax: null as number | null };
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: current.priceMin, priceMax: current.priceMax, currency: "USD" })
+  );
+
+  const text = "WTB Patek 5712G budget $80k-$100k";
+  for (const claims of [
+    { priceMin: 80000, priceMax: null },
+    { priceMin: 100000, priceMax: 80000 },
+  ]) {
+    current = claims;
+    const result = await extractIntent(text);
+    assert.equal(result!.intent.priceMin, null);
+    assert.equal(result!.intent.priceMax, null);
+    assert.equal(result!.priceUnreliable, true);
+  }
+});
+
+test("the primary intent verifier rejects a comparator amount placed in the wrong bound", async (t) => {
+  let current = { priceMin: 100000 as number | null, priceMax: null as number | null };
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: current.priceMin, priceMax: current.priceMax, currency: "USD" })
+  );
+
+  for (const [text, claims] of [
+    ["WTB Patek 5712G under $100k", { priceMin: 100000, priceMax: null }],
+    ["WTB Patek 5712G over $100k", { priceMin: null, priceMax: 100000 }],
+  ] as const) {
+    current = claims;
+    const result = await extractIntent(text);
+    assert.equal(result!.intent.priceMin, null, text);
+    assert.equal(result!.intent.priceMax, null, text);
+    assert.equal(result!.priceUnreliable, true, text);
+  }
+});
+
+test("the primary intent verifier preserves a correctly directed floor", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 100000, priceMax: null, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G over $100k");
+  assert.equal(result!.intent.priceMin, 100000);
+  assert.equal(result!.intent.priceMax, null);
+  assert.equal(result!.priceUnreliable, false);
+});
+
+test("the primary intent verifier binds a trailing ISO code to a symbol-prefixed range", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 80000, priceMax: 100000, currency: "CAD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G budget $80k-$100k CAD");
+  assert.equal(result!.intent.priceMin, 80000);
+  assert.equal(result!.intent.priceMax, 100000);
+  assert.equal(result!.intent.currency, "CAD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
+test("the primary intent verifier applies a suffix currency to the full range", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMin: 800000, priceMax: 900000, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G budget 800k-900k HKD");
+  assert.equal(result!.intent.priceMin, 800000);
+  assert.equal(result!.intent.priceMax, 900000);
+  assert.equal(result!.intent.currency, "HKD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
 test("an invalid/unrecognized intent value from the model is rejected rather than trusted", async (t) => {
   t.mock.method(client, "callAiJson", async () => aiResult({ intent: "not-a-real-intent" }));
   assert.equal(await extractIntent("something ambiguous"), null);

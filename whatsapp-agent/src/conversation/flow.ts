@@ -12,7 +12,7 @@ import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone } f
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
-import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
+import { extractIntent, extractVerifiedPriceCurrency, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
 import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
 import { upsertListings } from "../watchfacts/inventoryDb";
@@ -106,7 +106,9 @@ function classify(segment: string): ItemRequest | null {
 
 export function parseItemRequests(text: string): ItemRequest[] {
   const segments = text
-    .split(/\n|,|;|\band\b/i)
+    // A comma inside a formatted number is data, not an item separator. Splitting
+    // "$110,000" here used to turn the request into "...under $110" plus "000".
+    .split(/\n|,(?!\d)|;|\band\b/i)
     .map((s) => s.trim())
     .filter(Boolean);
   const items: ItemRequest[] = [];
@@ -436,6 +438,10 @@ async function handlePreferenceAnswer(state: ConversationState, text: string, me
     const range = parsePriceRange(text);
     state.preferences.priceMin = range?.min;
     state.preferences.priceMax = range?.max;
+    // Bind currency to the same verified token(s) that supplied the parsed bound. Scanning the
+    // whole reply would let unrelated settlement text (for example, "USD 100k; account is HK$")
+    // overwrite the actual price currency.
+    state.preferences.priceCurrency = range ? extractVerifiedPriceCurrency(text) ?? undefined : undefined;
     pending.step = "location";
     messages.push(LOCATION_QUESTION);
     return;
@@ -511,6 +517,7 @@ function mergeFollowUpPreferences(partial: SearchPreferences, fromReply: SearchP
   return {
     priceMin: partial.priceMin ?? fromReply.priceMin,
     priceMax: partial.priceMax ?? fromReply.priceMax,
+    priceCurrency: partial.priceCurrency ?? fromReply.priceCurrency,
     location: partial.location ?? fromReply.location,
     dialColor: partial.dialColor ?? fromReply.dialColor,
     condition: partial.condition ?? fromReply.condition,
@@ -687,6 +694,10 @@ async function resolveItemRequests(phone: string, text: string): Promise<Resolve
       const aiPreferences: SearchPreferences = {};
       if (it.priceMin !== null) aiPreferences.priceMin = it.priceMin;
       if (it.priceMax !== null) aiPreferences.priceMax = it.priceMax;
+      const verifiedCurrency = extractVerifiedPriceCurrency(text);
+      if ((it.priceMin !== null || it.priceMax !== null) && verifiedCurrency) {
+        aiPreferences.priceCurrency = verifiedCurrency;
+      }
       if (it.location) aiPreferences.location = it.location;
       if (it.dial) aiPreferences.dialColor = it.dial;
       if (it.condition) aiPreferences.condition = it.condition;

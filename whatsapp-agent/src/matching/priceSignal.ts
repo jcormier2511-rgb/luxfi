@@ -1,5 +1,6 @@
 import { InventoryListing } from "../types";
-import { normalizeReference, referencesMatch, normalizePriceShorthand } from "../postings/normalize";
+import { normalizeReference, referencesMatch } from "../postings/normalize";
+import { parseMoney } from "./currency";
 
 export type PriceSignal = "Attractive" | "Fair" | "High";
 
@@ -15,9 +16,17 @@ const MIN_COMPARABLE_LISTINGS = 2;
 const ATTRACTIVE_RATIO = 0.85;
 const HIGH_RATIO = 1.15;
 
-function parsePrice(raw: string): number | undefined {
-  const n = normalizePriceShorthand(raw);
-  return n === null ? undefined : n;
+function comparisonPrice(listing: InventoryListing): number | undefined {
+  if (listing.priceUsd !== undefined && Number.isFinite(listing.priceUsd)) return listing.priceUsd;
+
+  // WatchFacts keeps its legacy `price` field numeric-only while preserving the actual
+  // denomination in nativeCurrency/nativePriceAmount. If FX conversion was unavailable,
+  // never reinterpret that bare number as USD for a market signal.
+  const nativeCurrency = listing.nativeCurrency?.toUpperCase();
+  if (nativeCurrency && nativeCurrency !== "USD") return undefined;
+
+  const money = parseMoney(listing.price);
+  return money?.currency === "USD" ? money.amount : undefined;
 }
 
 function median(values: number[]): number {
@@ -43,13 +52,13 @@ function median(values: number[]): number {
  * than a silent, ordinary-looking match.
  */
 export function computePriceSignal(listing: InventoryListing, comparablePool: InventoryListing[]): PriceSignal | null {
-  const price = parsePrice(listing.price);
+  const price = comparisonPrice(listing);
   if (price === undefined || !listing.ref) return null;
 
   const ref = normalizeReference(listing.ref);
   const comps = comparablePool
     .filter((l) => l.id !== listing.id && l.type === "FS" && l.ref && referencesMatch(l.ref, ref))
-    .map((l) => parsePrice(l.price))
+    .map(comparisonPrice)
     .filter((p): p is number => p !== undefined);
 
   if (comps.length < MIN_COMPARABLE_LISTINGS) return null;

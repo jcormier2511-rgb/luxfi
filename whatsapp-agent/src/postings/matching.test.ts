@@ -11,6 +11,8 @@ const store = require("./postingsStore") as typeof import("./postingsStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const matching = require("./matching") as typeof import("./matching");
 const { scoreMatch, upsertMatch, runImmediateMatch, runReconciliation } = matching;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const currency = require("../matching/currency") as typeof import("../matching/currency");
 const { ingestChatPosting } = store;
 
 after(() => db._closePoolForTests());
@@ -45,77 +47,115 @@ function posting(overrides: Partial<Posting> = {}): Posting {
   } as Posting;
 }
 
-test("scoreMatch: exact reference match scores highest and is case-insensitive", () => {
+test("scoreMatch: exact reference match scores highest and is case-insensitive", async () => {
   const fs = posting({ type: "FS", reference: "116500ln" });
   const wtb = posting({ type: "WTB", reference: "116500LN" });
-  const result = scoreMatch(fs, wtb);
+  const result = await scoreMatch(fs, wtb);
   assert.ok(result);
   assert.equal(result!.score, 100);
   assert.ok(result!.reasons.some((r) => /Exact reference/.test(r)));
 });
 
-test("scoreMatch: never falls back to a same-brand match when both sides specified different references", () => {
+test("scoreMatch: never falls back to a same-brand match when both sides specified different references", async () => {
   const fs = posting({ brand: "Rolex", reference: "116500LN" });
   const wtb = posting({ brand: "Rolex", reference: "126710BLRO" });
-  assert.equal(scoreMatch(fs, wtb), null, "a stated reference mismatch must never be papered over by same-brand");
+  assert.equal(await scoreMatch(fs, wtb), null, "a stated reference mismatch must never be papered over by same-brand");
 });
 
-test("scoreMatch: same brand is still a fallback when only one side specified a reference", () => {
+test("scoreMatch: same brand is still a fallback when only one side specified a reference", async () => {
   const fs = posting({ brand: "Rolex", reference: "116500LN" });
   const wtb = posting({ brand: "Rolex", reference: "" }); // no reference stated on the WTB side
-  const result = scoreMatch(fs, wtb);
+  const result = await scoreMatch(fs, wtb);
   assert.ok(result);
   assert.equal(result!.score, 20);
 });
 
-test("scoreMatch: reference equality is normalized (formatting differences don't block a real match)", () => {
+test("scoreMatch: reference equality is normalized (formatting differences don't block a real match)", async () => {
   const fs = posting({ reference: "116508-0013" });
   const wtb = posting({ reference: "1165080013" }); // same reference, no dash
-  const result = scoreMatch(fs, wtb);
+  const result = await scoreMatch(fs, wtb);
   assert.ok(result);
   assert.equal(result!.score, 100);
 });
 
-test("scoreMatch: a bare base reference matches a listing's suffixed variant of the same watch", () => {
+test("scoreMatch: a bare base reference matches a listing's suffixed variant of the same watch", async () => {
   const fs = posting({ reference: "116500LN" });
   const wtb = posting({ reference: "116500" }); // buyer typed the base reference with no dial-code suffix
-  const result = scoreMatch(fs, wtb);
+  const result = await scoreMatch(fs, wtb);
   assert.ok(result, "116500 must still find the 116500LN listing");
   assert.equal(result!.score, 100);
 });
 
-test("required regression: a bare base reference never matches a different reference that happens to share a prefix", () => {
+test("required regression: a bare base reference never matches a different reference that happens to share a prefix", async () => {
   const fs = posting({ reference: "116508-0013" });
   const wtb = posting({ reference: "116500" });
-  assert.equal(scoreMatch(fs, wtb), null, "116500 and 116508-0013 are different watches, not a prefix family");
+  assert.equal(await scoreMatch(fs, wtb), null, "116500 and 116508-0013 are different watches, not a prefix family");
 });
 
-test("scoreMatch: a broad match is allowed only when WTB gave no reference or brand at all", () => {
+test("scoreMatch: a broad match is allowed only when WTB gave no reference or brand at all", async () => {
   const fs = posting({ brand: "Rolex", reference: "116500LN" });
   const wtb = posting({ brand: "", reference: "" });
-  const result = scoreMatch(fs, wtb);
+  const result = await scoreMatch(fs, wtb);
   assert.ok(result);
   assert.equal(result!.score, 5);
 });
 
-test("scoreMatch: no match when brands differ and WTB did specify a brand", () => {
+test("scoreMatch: no match when brands differ and WTB did specify a brand", async () => {
   const fs = posting({ brand: "Omega", reference: "" });
   const wtb = posting({ brand: "Rolex", reference: "" });
-  assert.equal(scoreMatch(fs, wtb), null);
+  assert.equal(await scoreMatch(fs, wtb), null);
 });
 
-test("scoreMatch: a hard max bid is respected even on an otherwise-exact reference match", () => {
+test("scoreMatch: a hard max bid is respected even on an otherwise-exact reference match", async () => {
   const fs = posting({ reference: "116500LN", price: "35000" });
   const wtb = posting({ reference: "116500LN", price: "30000" });
-  assert.equal(scoreMatch(fs, wtb), null);
+  assert.equal(await scoreMatch(fs, wtb), null);
 });
 
-test("scoreMatch: within-budget adds a reason but doesn't change the base score", () => {
+test("scoreMatch: within-budget adds a reason but doesn't change the base score", async () => {
   const fs = posting({ reference: "116500LN", price: "28000" });
   const wtb = posting({ reference: "116500LN", price: "30000" });
-  const result = scoreMatch(fs, wtb);
+  const result = await scoreMatch(fs, wtb);
   assert.equal(result!.score, 100);
   assert.ok(result!.reasons.some((r) => /Within budget/.test(r)));
+});
+
+test("scoreMatch: converts v4 posting prices to USD before enforcing the buyer budget", async (t) => {
+  currency.setExchangeRateProviderForTests(async (code) => code === "JPY" ? 0.007 : null);
+  t.after(() => currency.setExchangeRateProviderForTests());
+
+  const fs = posting({ reference: "5712G", price: "15000000", currency: "JPY" });
+  const wtb = posting({ type: "WTB", reference: "5712G", price: "120000", currency: "USD" });
+  const result = await scoreMatch(fs, wtb);
+  assert.ok(result, "JPY 15,000,000 converts to USD 105,000 and must fit a USD 120,000 ceiling");
+  assert.ok(result!.reasons.some((r) => /USD \$105,000 ≤ USD \$120,000/.test(r)));
+});
+
+test("scoreMatch: excludes a foreign-currency pair when its conversion rate is unavailable", async (t) => {
+  currency.setExchangeRateProviderForTests(async () => null);
+  t.after(() => currency.setExchangeRateProviderForTests());
+
+  const fs = posting({ reference: "5712G", price: "15000000", currency: "JPY" });
+  const wtb = posting({ type: "WTB", reference: "5712G", price: "120000", currency: "USD" });
+  assert.equal(await scoreMatch(fs, wtb), null);
+});
+
+test("mirrorApiFsPosting persists the WatchFacts native currency for v4 matching", async () => {
+  await db._resetDbForTests();
+  const mirrored = await store.mirrorApiFsPosting({
+    id: "wf-jpy-1",
+    item: "Patek 5712G",
+    brand: "Patek",
+    ref: "5712G",
+    condition: "Full Set",
+    price: "15000000",
+    currency: "JPY",
+    contactName: "Seller",
+    contactPhone: "15550001111",
+    description: "Patek 5712G ¥15,000,000",
+  });
+  assert.equal(mirrored.posting.price, "15000000");
+  assert.equal(mirrored.posting.currency, "JPY");
 });
 
 test("upsertMatch creates a new match at revision 1", async () => {

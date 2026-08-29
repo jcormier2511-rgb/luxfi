@@ -1,6 +1,8 @@
 import { callAiJson } from "./client";
 import { config } from "../config";
 import { normalizePriceShorthand } from "../postings/normalize";
+import { detectCurrency, SUPPORTED_CURRENCIES } from "../matching/currency";
+import { parsePriceRange } from "../conversation/preferences";
 
 /**
  * The single structured shape every private WhatsApp message is converted into (Fi routing
@@ -94,7 +96,7 @@ reference is the reference number exactly as written (e.g. "5712", "5712G", "116
 dial and condition are read directly off the message — null if not mentioned, never guessed.
 year is a 4-digit model/production year if explicitly mentioned as a year (not a reference) — else null.
 boxPapers is true only if box and/or papers are explicitly mentioned as included, false only if explicitly mentioned as NOT included/missing, else null.
-priceMin/priceMax are numbers in the given currency, extracted ONLY from a number clearly adjacent to a currency marker (USD/EUR/GBP/$/€/£) or a "k"/"K" shorthand suffix — NEVER from a bare reference number or a bare 4-digit year. "105.000 USD" and "105,000 USD" and "$105,000" all mean 105000. "26.2k" means 26200. A single stated ceiling ("under 25k") sets priceMax only; a single stated floor sets priceMin only; a range sets both. Leave both null if no reliable price is stated — never guess a number.
+priceMin/priceMax are numbers in the given currency, extracted ONLY from a number clearly adjacent to a supported currency marker (USD/HKD/EUR/GBP/AED/CHF/CAD/SGD/AUD/JPY/CNY/RMB, including $/HK$/€/£/C$/S$/A$/¥/CN¥) or a "k"/"K" shorthand suffix — NEVER from a bare reference number or a bare 4-digit year. "105.000 USD" and "105,000 USD" and "$105,000" all mean 105000. "26.2k" means 26200. A single stated ceiling ("under 25k") sets priceMax only; a single stated floor sets priceMin only; a range sets both. Leave both null if no reliable price is stated — never guess a number.
 currency is the 3-letter code (default "USD" if a $ sign or no currency is given but a price was found).
 location is a stated country/region/city — null if not mentioned.
 searchText is brand + model + reference, cleanly joined (e.g. "Patek Philippe 5712G") — never the raw sentence, never a leftover fragment like "to buy a patek 5712g".
@@ -117,32 +119,124 @@ function isValidIntent(value: unknown): value is Intent {
  * even in a buyer's own sentence, so a k-suffixed number immediately followed by a gold/karat
  * word is excluded.
  */
-const CURRENCY_CODE = "(?:USD|EUR|GBP)";
-const CURRENCY_SYMBOL = "[$€£]"; // $ € £
-const NUM = "[\\d,]+(?:\\.\\d+)?";
-const NL_PRICE_PATTERN = new RegExp(
-  `${CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b` + // $105,000 / $25k / €5000
+// Derive the verifier's code list from the matching engine's real supported-currency list so
+// the primary NLU path cannot silently lag behind conversion/matching when a currency is added.
+// RMB is an accepted alias for CNY. Multi-character symbols must precede the bare symbols they
+// contain, otherwise "HK$" could be read as a generic "$" price.
+const CURRENCY_CODE = `(?:${[...SUPPORTED_CURRENCIES, "RMB"].join("|")})`;
+const GENERIC_DOLLAR = "(?<![A-Za-z])\\$";
+const SPECIFIC_CURRENCY_SYMBOL = "(?:US\\$|HK\\$|C\\$|S\\$|A\\$|CN¥|[€£¥])";
+const CURRENCY_SYMBOL = `(?:${SPECIFIC_CURRENCY_SYMBOL}|${GENERIC_DOLLAR})`;
+const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)";
+const NL_PRICE_TOKEN =
+  `(?:${GENERIC_DOLLAR}\\s?${NUM}\\s?[kK]?\\b(?:\\s*${CURRENCY_CODE}\\b)?` + // $105,000 / $25k CAD
+    `|${SPECIFIC_CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b` + // HK$900,000 / €5000
     `|\\b${CURRENCY_CODE}\\s?${NUM}\\s?[kK]?\\b` + // USD 105000
     `|\\b${NUM}\\s?[kK]?\\s?${CURRENCY_CODE}\\b` + // 105.000 USD / 105k USD
-    `|\\b${NUM}\\s?[kK]\\b`, // bare 25k / 26.2k -- no currency marker at all
+    `|\\b${NUM}\\s?[kK]\\b)`; // bare 25k / 26.2k -- no currency marker at all
+const NL_PRICE_PATTERN = new RegExp(NL_PRICE_TOKEN, "gi");
+// Range detection accepts compact shared-unit notation such as 80-100k USD. The overall
+// expression must still carry a currency marker or k suffix, so bare year ranges are rejected.
+const NL_PRICE_RANGE_PATTERN = new RegExp(
+  `(?:${CURRENCY_SYMBOL}\\s*|\\b${CURRENCY_CODE}\\b\\s*)?` +
+    `\\b(${NUM}\\s?[kK]?)\\s*(?:-|to|–)\\s*` +
+    `(?:(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)\\s*)?\\b(${NUM}\\s?[kK]?)` +
+    `(?:\\s*(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b))?`,
+  "i"
+);
+const EXPLICIT_RANGE_CURRENCY_PATTERN = new RegExp(
+  `(?:${SPECIFIC_CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)`,
   "gi"
 );
+
+/** Distinct explicit currencies named inside a range. A generic $ is intentionally omitted:
+ *  a trailing ISO marker such as CAD disambiguates "$80k-$100k CAD" for both endpoints. */
+function explicitRangeCurrencies(expression: string): Set<string> {
+  const currencies = new Set<string>();
+  for (const marker of expression.match(EXPLICIT_RANGE_CURRENCY_PATTERN) ?? []) {
+    const currency = detectCurrency(marker);
+    if (currency) currencies.add(currency);
+  }
+  return currencies;
+}
 const GOLD_PURITY_WORD = /^\s*(gold|karat|kt\b|white\s+gold|yellow\s+gold|rose\s+gold)/i;
+const MAX_PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|budget(?:\s+(?:of|is))?)\b`;
+const MIN_PRICE_COMPARATOR = String.raw`\b(?:over|at least|min(?:imum)?|above|more than)\b`;
 
 /** Every distinct normalized price value the raw text unambiguously names, excluding a
  *  k-suffixed number immediately followed by a gold/karat word (a material, not a price). */
-function nlPriceValues(text: string): Set<number> {
-  const values = new Set<number>();
+function nlPriceMentions(text: string): { value: number; currency: string }[] {
+  const mentions: { value: number; currency: string }[] = [];
   const re = new RegExp(NL_PRICE_PATTERN);
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
     const after = text.slice(m.index + m[0].length);
     if (!GOLD_PURITY_WORD.test(after)) {
       const value = normalizePriceShorthand(m[0]);
-      if (value !== null) values.add(value);
+      const currency = detectCurrency(m[0]);
+      if (value !== null && currency) mentions.push({ value, currency });
     }
   }
-  return values;
+  return mentions;
+}
+
+function nlPriceValues(text: string): Set<number> {
+  return new Set(nlPriceMentions(text).map((mention) => mention.value));
+}
+
+/** Ordered endpoints from one explicit price range; null for unrelated multiple amounts. */
+function nlPriceRange(text: string): { min: number; max: number } | null {
+  const match = text.match(NL_PRICE_RANGE_PATTERN);
+  if (!match) return null;
+  const expression = match[0];
+  const hasPriceSignal = new RegExp(`(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b|\\d[\\d.,]*\\s*k\\b)`, "i")
+    .test(expression);
+  if (!hasPriceSignal || explicitRangeCurrencies(expression).size > 1) return null;
+
+  const parsed = parsePriceRange(expression);
+  return parsed?.min === undefined || parsed.max === undefined
+    ? null
+    : { min: parsed.min, max: parsed.max };
+}
+
+/** Deterministic role for one comparator-bound amount, so an AI ceiling can never become a
+ * floor (or vice versa) merely because the numeric value itself appeared in the message. */
+function nlComparatorPriceBounds(text: string): { min: number | null; max: number | null } | null {
+  const maxMatch = text.match(new RegExp(`${MAX_PRICE_COMPARATOR}\\s*(${NL_PRICE_TOKEN})`, "i"));
+  if (maxMatch) {
+    const max = normalizePriceShorthand(maxMatch[1]);
+    return max === null ? null : { min: null, max };
+  }
+
+  const minMatch = text.match(new RegExp(`${MIN_PRICE_COMPARATOR}\\s*(${NL_PRICE_TOKEN})`, "i"));
+  if (minMatch) {
+    const min = normalizePriceShorthand(minMatch[1]);
+    return min === null ? null : { min, max: null };
+  }
+  return null;
+}
+
+/** Canonical currency from the same verified price token(s), never the model or unrelated text. */
+export function extractVerifiedPriceCurrency(text: string): string | null {
+  const fullRange = text.match(NL_PRICE_RANGE_PATTERN)?.[0];
+  if (fullRange && explicitRangeCurrencies(fullRange).size > 1) return null;
+
+  // A single prefix/suffix currency applies to both endpoints of a range. Without this,
+  // "800k-900k HKD" looks like one implicit-USD token plus one HKD token.
+  const markedRangePatterns = [
+    // Explicit symbols are authoritative and must not absorb later payment wording.
+    new RegExp(`${SPECIFIC_CURRENCY_SYMBOL}\\s*${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?`, "i"),
+    // A bare dollar sign is ambiguous, so a trailing ISO code may disambiguate the range.
+    new RegExp(`${GENERIC_DOLLAR}\\s*${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?(?:\\s*\\b${CURRENCY_CODE}\\b)?`, "i"),
+    new RegExp(`\\b${CURRENCY_CODE}\\b\\s*${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?`, "i"),
+    new RegExp(`${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?\\s*(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)`, "i"),
+  ];
+  for (const pattern of markedRangePatterns) {
+    const range = text.match(pattern)?.[0];
+    if (range) return detectCurrency(range);
+  }
+  const currencies = new Set(nlPriceMentions(text).map((mention) => mention.currency));
+  return currencies.size === 1 ? [...currencies][0] : null;
 }
 
 /**
@@ -187,11 +281,23 @@ export async function extractIntent(text: string): Promise<IntentExtractionResul
   const reference = result.reference?.trim() || null;
   const searchText = [brand, model, reference].filter(Boolean).join(" ").trim() || result.searchText?.trim() || null;
 
-  const minCheck = verifiedPrice(result.priceMin ?? null, trimmed);
-  const maxCheck = verifiedPrice(result.priceMax ?? null, trimmed);
-  const priceUnreliable = minCheck === "unreliable" || maxCheck === "unreliable";
-  const priceMin = minCheck === "unreliable" ? null : minCheck;
-  const priceMax = maxCheck === "unreliable" ? null : maxCheck;
+  const deterministicBounds = nlPriceRange(trimmed) ?? nlComparatorPriceBounds(trimmed);
+  const boundRolesUnreliable =
+    deterministicBounds !== null &&
+    (result.priceMin !== deterministicBounds.min || result.priceMax !== deterministicBounds.max);
+  const minCheck = deterministicBounds
+    ? boundRolesUnreliable ? "unreliable" : deterministicBounds.min
+    : verifiedPrice(result.priceMin ?? null, trimmed);
+  const maxCheck = deterministicBounds
+    ? boundRolesUnreliable ? "unreliable" : deterministicBounds.max
+    : verifiedPrice(result.priceMax ?? null, trimmed);
+  const checkedPriceMin = minCheck === "unreliable" ? null : minCheck;
+  const checkedPriceMax = maxCheck === "unreliable" ? null : maxCheck;
+  const verifiedCurrency = extractVerifiedPriceCurrency(trimmed);
+  const currencyUnreliable = (checkedPriceMin !== null || checkedPriceMax !== null) && verifiedCurrency === null;
+  const priceUnreliable = minCheck === "unreliable" || maxCheck === "unreliable" || currencyUnreliable;
+  const priceMin = currencyUnreliable ? null : checkedPriceMin;
+  const priceMax = currencyUnreliable ? null : checkedPriceMax;
 
   const confidence = typeof result.confidence === "number" && Number.isFinite(result.confidence) ? result.confidence : 0;
 
@@ -206,7 +312,7 @@ export async function extractIntent(text: string): Promise<IntentExtractionResul
     boxPapers: typeof result.boxPapers === "boolean" ? result.boxPapers : null,
     priceMin,
     priceMax,
-    currency: result.currency?.trim() || "USD",
+    currency: verifiedCurrency ?? detectCurrency(result.currency?.trim() || "USD") ?? "USD",
     location: result.location?.trim() || null,
     searchText,
     confidence,

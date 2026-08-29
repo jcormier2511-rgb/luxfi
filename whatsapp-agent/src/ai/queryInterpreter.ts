@@ -1,6 +1,98 @@
 import { callAiJson } from "./client";
 import { InterpretedQuery } from "./types";
 import { SearchPreferences } from "../types";
+import { parsePriceRange } from "../conversation/preferences";
+import { detectCurrency } from "../matching/currency";
+import { extractReference } from "../postings/normalize";
+
+export interface ConfirmedNaturalLanguageIntent {
+  intent: "buy" | "sell" | null;
+  brand: string | null;
+  reference: string | null;
+  priceMin: number | null;
+  priceMax: number | null;
+  currency: string | null;
+}
+
+const CURRENCY_CODE = String.raw`\b(?:USD|HKD|EUR|GBP|AED|CHF|CAD|SGD|AUD|JPY|CNY|RMB)\b`;
+const GENERIC_DOLLAR = String.raw`(?<![A-Za-z])\$`;
+const SPECIFIC_CURRENCY_SYMBOL = String.raw`(?:US\$|HK\$|C\$|S\$|A\$|CN¥|[€£¥])`;
+const CURRENCY_MARKER = `(?:${SPECIFIC_CURRENCY_SYMBOL}|${GENERIC_DOLLAR}|${CURRENCY_CODE})`;
+const PRICE_NUMBER = String.raw`[\d][\d.,]*(?:\s*[kK]\b)?`;
+const PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|over|at least|min(?:imum)?|above|more than|budget(?:\s+(?:of|is))?|around|about)\b`;
+
+/** Returns only the explicit price-bearing substring, never an earlier watch reference. */
+function extractExplicitPriceExpression(text: string): string | null {
+  // A bare numeric range is not necessarily money (for example a production-year range).
+  // Accept it only when the range itself carries a currency/k marker or immediately follows
+  // explicit price language such as "budget". Iterate past unrelated ranges so a later real
+  // budget in the same message can still be found.
+  const rangePattern = new RegExp(
+    `(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])\\s*(?:-|to|–)\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])(?:\\s*${CURRENCY_MARKER})?`,
+    "gi"
+  );
+  for (const match of text.matchAll(rangePattern)) {
+    const expression = match[0];
+    const precedingText = text.slice(0, match.index);
+    const hasCurrency = new RegExp(CURRENCY_MARKER, "i").test(expression);
+    const hasThousandsShorthand = /\d[\d.,]*\s*k\b/i.test(expression);
+    const hasPriceLanguage = new RegExp(`${PRICE_COMPARATOR}\\s*$`, "i").test(precedingText);
+    if (hasCurrency || hasThousandsShorthand || hasPriceLanguage) return expression;
+  }
+
+  const patterns = [
+    new RegExp(
+      `${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])(?:\\s*${CURRENCY_MARKER})?`,
+      "i"
+    ),
+    new RegExp(`${CURRENCY_MARKER}\\s*${PRICE_NUMBER}(?![A-Z0-9])`, "i"),
+    new RegExp(`${PRICE_NUMBER}(?![A-Z0-9])\\s*${CURRENCY_MARKER}`, "i"),
+    /\b\d{1,3}(?:[.,]\d+)?\s*k\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+function removeExplicitPriceExpressions(text: string): string {
+  const currencyFirst = new RegExp(`${CURRENCY_MARKER}\\s*${PRICE_NUMBER}(?![A-Z0-9])`, "gi");
+  const currencyLast = new RegExp(`${PRICE_NUMBER}(?![A-Z0-9])\\s*${CURRENCY_MARKER}`, "gi");
+  const compared = new RegExp(`${PRICE_COMPARATOR}\\s*(?:${CURRENCY_MARKER}\\s*)?${PRICE_NUMBER}(?![A-Z0-9])`, "gi");
+  return text
+    .replace(currencyFirst, " ")
+    .replace(currencyLast, " ")
+    .replace(compared, " ")
+    .replace(/\b\d{1,3}(?:[.,]\d+)?\s*k\b/gi, " ")
+    .replace(/\b\d[\d.,]*\s*(?:-|to|–)\s*\d[\d.,]*(?:\s*k\b)?/gi, " ");
+}
+
+/**
+ * Deterministic extraction for explicit, safety-critical constraints. The AI still handles
+ * fuzzy attributes, but cannot shrink a comma-formatted price ceiling (for example $110,000
+ * to $110). This also provides one inspectable representation of the fields the webhook uses.
+ */
+export function extractConfirmedNaturalLanguageIntent(text: string): ConfirmedNaturalLanguageIntent {
+  // Explicit buyer language wins when seller-oriented words merely describe the desired item
+  // ("looking to buy ... that's for sale"), matching the deterministic posting classifier.
+  const intent = /\b(buy|buying|looking for|want|need|wtb|iso)\b/i.test(text)
+    ? "buy"
+    : /\b(sell|selling|fs|for sale|wts)\b/i.test(text)
+      ? "sell"
+      : null;
+  const brand = /\bpatek(?:\s+philippe)?\b/i.test(text) ? "Patek Philippe" : null;
+  const reference = extractReference(removeExplicitPriceExpressions(text));
+  const priceExpression = extractExplicitPriceExpression(text);
+  const priceRange = priceExpression ? parsePriceRange(priceExpression) : undefined;
+  const priceMin = priceRange?.min ?? null;
+  const priceMax = priceRange?.max ?? null;
+  const explicitSymbol = priceExpression?.match(new RegExp(SPECIFIC_CURRENCY_SYMBOL, "i"))?.[0];
+  const currency = priceMin === null && priceMax === null
+    ? null
+    : detectCurrency(explicitSymbol ?? priceExpression ?? "");
+  return { intent, brand, reference, priceMin, priceMax, currency };
+}
 
 const INTERPRET_SYSTEM = `You convert a WhatsApp message into structured shopping intent for a luxury watch marketplace.
 Rules:
@@ -16,6 +108,24 @@ export async function interpretQuery(text: string): Promise<InterpretedQuery | n
   if (!trimmed) return null;
   const result = await callAiJson<InterpretedQuery>({ system: INTERPRET_SYSTEM, user: trimmed, maxTokens: 512 });
   if (!result || (result.action !== "buy" && result.action !== "sell")) return null;
+  const confirmed = extractConfirmedNaturalLanguageIntent(trimmed);
+  if (confirmed.intent) result.action = confirmed.intent;
+  if (confirmed.brand) result.brand = confirmed.brand;
+  if (confirmed.reference) result.referenceFamily = confirmed.reference;
+  if (confirmed.priceMin !== null || confirmed.priceMax !== null) {
+    // Once an explicit price expression has been verified deterministically, replace both AI
+    // bounds. This prevents an explicit minimum from retaining an invented AI maximum (and
+    // likewise prevents an explicit ceiling from retaining an invented minimum).
+    result.minPrice = confirmed.priceMin;
+    result.maxPrice = confirmed.priceMax;
+  } else {
+    // Price constraints are safety-critical: an AI-supplied number that cannot be confirmed
+    // from an explicit price expression must not become a budget (notably 2020-2022 years).
+    result.minPrice = null;
+    result.maxPrice = null;
+    result.currency = null;
+  }
+  if (confirmed.currency) result.currency = confirmed.currency;
   return result;
 }
 
@@ -29,6 +139,7 @@ export function toSearchPreferences(interpreted: InterpretedQuery): SearchPrefer
   const prefs: SearchPreferences = {};
   if (interpreted.minPrice !== null) prefs.priceMin = interpreted.minPrice;
   if (interpreted.maxPrice !== null) prefs.priceMax = interpreted.maxPrice;
+  if (interpreted.currency) prefs.priceCurrency = interpreted.currency;
   if (interpreted.location !== null) prefs.location = interpreted.location;
   if (interpreted.dialColor !== null) prefs.dialColor = interpreted.dialColor;
   if (interpreted.condition !== null) prefs.condition = interpreted.condition;

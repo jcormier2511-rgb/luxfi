@@ -90,3 +90,34 @@ test("reference matching allows a bare base reference to compare against a dial-
   ];
   assert.equal(computePriceSignal(target, comps), "Attractive");
 });
+
+test("foreign-currency listings are compared using converted USD amounts", () => {
+  const target = listing("target", { price: "HKD 200000", priceUsd: 25600 });
+  const comps = [
+    listing("comp-1", { id: "comp-1", price: "25000", priceUsd: 25000 }),
+    listing("comp-2", { id: "comp-2", price: "26000", priceUsd: 26000 }),
+  ];
+  assert.equal(computePriceSignal(target, comps), "Fair");
+});
+
+test("a foreign-currency listing without a conversion gets no price signal", () => {
+  const target = listing("target", { price: "HKD 200000" });
+  const comps = [
+    listing("comp-1", { id: "comp-1", price: "25000" }),
+    listing("comp-2", { id: "comp-2", price: "26000" }),
+  ];
+  assert.equal(computePriceSignal(target, comps), null);
+});
+
+test("a numeric-only WatchFacts native price without FX conversion gets no price signal", () => {
+  const target = listing("target", {
+    price: "200000",
+    nativePriceAmount: 200000,
+    nativeCurrency: "HKD",
+  });
+  const comps = [
+    listing("comp-1", { id: "comp-1", price: "25000" }),
+    listing("comp-2", { id: "comp-2", price: "26000" }),
+  ];
+  assert.equal(computePriceSignal(target, comps), null);
+});

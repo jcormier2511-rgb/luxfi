@@ -2,6 +2,7 @@ import { withSchema } from "./db";
 import { PostingRow, findOppositeSideCandidates, isEligible } from "./postingsStore";
 import { notifyMatch } from "./notify";
 import { normalizeReference, referencesMatch } from "./normalize";
+import { convertMoneyToUsd, CurrencyCode, SUPPORTED_CURRENCIES } from "../matching/currency";
 
 export interface ScoreResult {
   score: number;
@@ -22,7 +23,12 @@ export interface ScoreResult {
  * a match; showing one anyway because "at least it's the same brand" is worse than showing
  * nothing.
  */
-export function scoreMatch(fs: PostingRow, wtb: PostingRow): ScoreResult | null {
+function postingCurrency(posting: PostingRow): CurrencyCode | null {
+  const code = (posting.currency || "USD").toUpperCase();
+  return (SUPPORTED_CURRENCIES as readonly string[]).includes(code) ? code as CurrencyCode : null;
+}
+
+export async function scoreMatch(fs: PostingRow, wtb: PostingRow): Promise<ScoreResult | null> {
   const reasons: string[] = [];
   let score = 0;
 
@@ -48,8 +54,20 @@ export function scoreMatch(fs: PostingRow, wtb: PostingRow): ScoreResult | null 
   const fsPrice = fs.price !== null ? Number(fs.price) : null;
   const wtbMaxBid = wtb.price !== null ? Number(wtb.price) : null;
   if (fsPrice !== null && wtbMaxBid !== null) {
-    if (fsPrice > wtbMaxBid) return null; // hard max bid respected
-    reasons.push(`Within budget ($${fsPrice} ≤ $${wtbMaxBid})`);
+    const fsCurrency = postingCurrency(fs);
+    const wtbCurrency = postingCurrency(wtb);
+    if (!fsCurrency || !wtbCurrency) return null;
+    const [fsPriceUsd, wtbMaxBidUsd] = await Promise.all([
+      convertMoneyToUsd({ amount: fsPrice, currency: fsCurrency }),
+      convertMoneyToUsd({ amount: wtbMaxBid, currency: wtbCurrency }),
+    ]);
+    // Never compare nominal amounts across currencies. If either conversion is unavailable,
+    // exclude the pair rather than allowing a false positive or rejecting on raw numbers.
+    if (fsPriceUsd === null || wtbMaxBidUsd === null) return null;
+    if (fsPriceUsd > wtbMaxBidUsd) return null; // hard max bid respected in a common currency
+    const fsPriceUsdLabel = "USD $" + Math.round(fsPriceUsd).toLocaleString("en-US");
+    const wtbMaxBidUsdLabel = "USD $" + Math.round(wtbMaxBidUsd).toLocaleString("en-US");
+    reasons.push(`Within budget (${fsPriceUsdLabel} ≤ ${wtbMaxBidUsdLabel})`);
   }
 
   return { score, reasons };
@@ -114,7 +132,7 @@ export async function runImmediateMatch(posting: PostingRow): Promise<ImmediateM
 
   for (const candidate of candidates) {
     const [fs, wtb] = posting.type === "FS" ? [posting, candidate] : [candidate, posting];
-    const result = scoreMatch(fs, wtb);
+    const result = await scoreMatch(fs, wtb);
     if (!result) continue;
 
     const { matchId, revision, isNewOrChanged } = await upsertMatch(fs.id, wtb.id, result);
@@ -153,7 +171,7 @@ export async function runReconciliation(): Promise<ReconciliationResult> {
       for (const wtb of wtbRows.rows) {
         for (const fs of fsRows.rows) {
           if (fs.canonical_user_id !== null && fs.canonical_user_id === wtb.canonical_user_id) continue; // no self-match
-          const result = scoreMatch(fs, wtb);
+          const result = await scoreMatch(fs, wtb);
           if (!result) continue;
           const { matchId, revision, isNewOrChanged } = await upsertMatch(fs.id, wtb.id, result);
           if (isNewOrChanged) {

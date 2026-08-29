@@ -18,9 +18,38 @@ test("required regression: extractNativePrice reads the HK$ symbol as HKD, never
   assert.equal(result?.amount, 850000);
 });
 
+test("extractNativePrice binds a trailing ISO code to a bare-dollar amount", () => {
+  assert.deepEqual(extractNativePrice("Patek 5712G $100k CAD"), {
+    amount: 100000,
+    currency: "CAD",
+    originalText: "$100k CAD",
+  });
+});
+
 test("extractNativePrice reads EUR and GBP", () => {
   assert.deepEqual(extractNativePrice("AP Royal Oak, EUR95,000"), { amount: 95000, currency: "EUR", originalText: "EUR95,000" });
   assert.deepEqual(extractNativePrice("Submariner, GBP 8,000"), { amount: 8000, currency: "GBP", originalText: "GBP 8,000" });
+});
+
+test("extractNativePrice distinguishes JPY and CNY symbols", () => {
+  assert.deepEqual(extractNativePrice("Patek 5712G ¥15,000,000"), {
+    amount: 15000000, currency: "JPY", originalText: "¥15,000,000",
+  });
+  assert.deepEqual(extractNativePrice("Patek 5712G CN¥700,000"), {
+    amount: 700000, currency: "CNY", originalText: "CN¥700,000",
+  });
+});
+
+test("extractNativePrice canonicalizes RMB to CNY", () => {
+  assert.deepEqual(extractNativePrice("Patek 5712G RMB 900000"), {
+    amount: 900000, currency: "CNY", originalText: "RMB 900000",
+  });
+});
+
+test("extractNativePrice consumes repeated dot thousands groups", () => {
+  assert.deepEqual(extractNativePrice("Patek 5712G €1.250.000"), {
+    amount: 1250000, currency: "EUR", originalText: "€1.250.000",
+  });
 });
 
 test("required regression: a bare $ with no other currency signal resolves to the configured base currency (USD)", () => {
@@ -62,6 +91,11 @@ test("required regression: formatCurrency matches the exact required display for
   assert.equal(formatCurrency(170000, "AUD"), "A$170,000 AUD");
 });
 
+test("yen currencies format with their distinct symbols", () => {
+  assert.equal(formatCurrency(1000000, "JPY"), "¥1,000,000 JPY");
+  assert.equal(formatCurrency(700000, "CNY"), "CN¥700,000 CNY");
+});
+
 test("required regression: an unknown/unmapped currency still formats with its ISO code, never a wrong symbol", () => {
-  assert.equal(formatCurrency(1000000, "JPY"), "1,000,000 JPY");
+  assert.equal(formatCurrency(1000000, "CHF"), "1,000,000 CHF");
 });

@@ -24,6 +24,7 @@ export interface InterpretedQuery {
   referenceFamily: string | null;
   maxPrice: number | null;
   minPrice: number | null;
+  currency?: string | null;
   location: string | null;
   dialColor: string | null;
   condition: string | null;

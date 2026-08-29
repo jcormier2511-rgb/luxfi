@@ -35,29 +35,37 @@ export function parsePriceRange(text: string): PriceRange | undefined {
   const normalized = skipToUndefined(text);
   if (!normalized) return undefined;
 
-  // `\$?\s*` before EACH number — a range is often written with the currency symbol repeated
-  // on both ends ("$5,000-$8,000"), which the original single-leading-`$` version missed on
-  // the second number entirely (falling through to the single-target approximation instead).
-  const rangeMatch = normalized.match(/\$?\s*([\d.,]+k?)\s*(?:-|to|–)\s*\$?\s*([\d.,]+k?)/i);
+  // Accept every supported code or symbol before either endpoint. Dealers commonly repeat the
+  // marker ("HK$800k-HK$900k" or "€80k-€100k"); losing the second marker used to make the
+  // parser fall through to a one-sided budget and discard the stated floor.
+  const rangeMatch = normalized.match(/(?:(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|aud|jpy|cny|rmb|us\$|hk\$|c\$|s\$|a\$|cn¥|[$€£¥])\s*)?([\d.,]+k?)\s*(?:-|to|–)\s*(?:(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|aud|jpy|cny|rmb|us\$|hk\$|c\$|s\$|a\$|cn¥|[$€£¥])\s*)?([\d.,]+k?)/i);
   if (rangeMatch) {
-    const min = toNumber(rangeMatch[1]);
-    const max = toNumber(rangeMatch[2]);
+    let min = toNumber(rangeMatch[1]);
+    let max = toNumber(rangeMatch[2]);
+    const minHasThousandsSuffix = /k$/i.test(rangeMatch[1]);
+    const maxHasThousandsSuffix = /k$/i.test(rangeMatch[2]);
+
+    // In compact dealer notation the one written "k" applies to both small endpoints:
+    // 80-100k means 80,000-100,000. Already-expanded values such as 80000-100k stay intact.
+    if (maxHasThousandsSuffix && !minHasThousandsSuffix && min !== undefined && min < 1000) min *= 1000;
+    if (minHasThousandsSuffix && !maxHasThousandsSuffix && max !== undefined && max < 1000) max *= 1000;
+
     if (min !== undefined || max !== undefined) return { min, max };
   }
 
-  const maxOnlyMatch = normalized.match(/(?:under|up to|max|below|less than)\s*\$?\s*([\d.,]+k?)/);
+  const maxOnlyMatch = normalized.match(/(?:under|up to|max(?:imum)?|below|less than|budget(?:\s+(?:of|is))?)\s*(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|aud|jpy|cny|rmb|us\$|hk\$|c\$|s\$|a\$|cn¥|[$€£¥])?\s*([\d.,]+k?)/);
   if (maxOnlyMatch) {
     const max = toNumber(maxOnlyMatch[1]);
     if (max !== undefined) return { max };
   }
 
-  const minOnlyMatch = normalized.match(/(?:over|at least|min|above|more than)\s*\$?\s*([\d.,]+k?)/);
+  const minOnlyMatch = normalized.match(/(?:over|at least|min(?:imum)?|above|more than)\s*(?:usd|hkd|eur|gbp|aed|chf|cad|sgd|aud|jpy|cny|rmb|us\$|hk\$|c\$|s\$|a\$|cn¥|[$€£¥])?\s*([\d.,]+k?)/);
   if (minOnlyMatch) {
     const min = toNumber(minOnlyMatch[1]);
     if (min !== undefined) return { min };
   }
 
-  const singleMatch = normalized.match(/\$?\s*([\d.,]+k?)/);
+  const singleMatch = normalized.match(/(?:us\$|\$)?\s*([\d.,]+k?)/);
   if (singleMatch) {
     const target = toNumber(singleMatch[1]);
     if (target !== undefined) return { min: Math.round(target * 0.85), max: Math.round(target * 1.15) };

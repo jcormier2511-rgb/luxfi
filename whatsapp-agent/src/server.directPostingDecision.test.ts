@@ -31,7 +31,7 @@ const server = require("./server") as typeof import("./server");
 
 const { ingestChatPosting } = postingsStore;
 const { ingestDirectSellPosting } = ingestModule;
-const { tryHandleDirectPostingDecision, tryHandleV4Decision, formatApprovalOutcome } = server;
+const { handleWebhookPayload, tryHandleDirectPostingDecision, tryHandleV4Decision, formatApprovalOutcome } = server;
 
 after(async () => {
   await db._closePoolForTests();
@@ -78,6 +78,28 @@ test("required: a direct-sourced posting matches a live WTB request and notifies
   assert.equal(config.postingsV4.enabled, false);
   await db._resetDbForTests();
   await seedMatch(t, "19990000002");
+});
+
+test("required regression: the live webhook routes direct-posting approvals before the feature-gated v4 handler", async (t) => {
+  assert.equal(config.postingsV4.enabled, false);
+  await db._resetDbForTests();
+  const sellerPhone = "19990000007";
+  const { matchId, sent } = await seedMatch(t, sellerPhone);
+
+  await handleWebhookPayload({
+    messages: [{
+      id: "direct-webhook-approval-1",
+      from_me: false,
+      type: "text",
+      chat_id: `${sellerPhone}@s.whatsapp.net`,
+      from: `${sellerPhone}@s.whatsapp.net`,
+      text: { body: `approve ${matchId}` },
+    }],
+  });
+
+  assert.ok(sent.some((item) =>
+    item.phone === sellerPhone && /connected|as soon as the other side confirms/i.test(item.message)
+  ), "the live webhook must send the direct-posting decision reply while v4 is disabled");
 });
 
 test("required: the seller can approve a direct-posting match via tryHandleDirectPostingDecision with ENABLE_V4_POSTINGS unset", async (t) => {
