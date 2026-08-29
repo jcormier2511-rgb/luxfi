@@ -1,6 +1,6 @@
 import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
-import { normalizeReference, extractReference, referencesMatch, normalizePriceShorthand, hasMultipleDistinctPrices } from "../postings/normalize";
+import { normalizeReference, extractReference, referencesMatch, hasMultipleDistinctPrices } from "../postings/normalize";
 import { config, isAiMatchingEnabledForPhone } from "../config";
 import { interpretQuery } from "../ai/queryInterpreter";
 import { rerankCandidates } from "../ai/rerank";
@@ -79,12 +79,16 @@ async function normalizePrices(
  * "can't verify, don't assume it matches" rule as an unparseable price everywhere else.
  */
 async function resolveComparablePrice(listing: InventoryListing): Promise<number | undefined> {
+  if (listing.priceUsd !== undefined) return listing.priceUsd;
   if (listing.nativeCurrency && listing.nativePriceAmount !== undefined) {
     if (listing.nativeCurrency === config.fx.baseCurrency) return listing.nativePriceAmount;
     const converted = await convertAmount(listing.nativePriceAmount, listing.nativeCurrency, config.fx.baseCurrency);
     return converted?.amount;
   }
-  return parseListingPrice(listing.price);
+  const money = parseMoney(listing.price);
+  if (!money) return undefined;
+  const converted = await convertMoneyToUsd(money);
+  return converted ?? undefined;
 }
 
 /**
@@ -225,7 +229,11 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   const wantType = request.action === "buy" ? "FS" : "WTB";
   // Excludes multi-item price-list dumps and standalone part/accessory listings before they
   // ever reach the reference/token branches below — see isUnambiguousListing/isCompleteWatchListing.
-  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
+  const rawCandidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
+  const normalized = await normalizePrices(rawCandidates, preferences);
+  if (!normalized.conversionAvailable) return [];
+  const candidates = normalized.listings;
+  preferences = normalized.preferences;
   // Currency-aware, precomputed once for the whole candidate pool — see buildComparablePriceMap.
   const priceMap = await buildComparablePriceMap(candidates);
   const requestedRef = extractRequestedReference(request.query);
@@ -495,7 +503,13 @@ export function formatMatchCard(
   // The listing's own native price string ("HK$850,000 HKD") when currency info is known —
   // never overwritten by a converted value; falls back to the plain price field exactly as
   // before this feature existed when there's no currency info to work with at all.
-  const priceText = currencyDisplay ? currencyDisplay.native : listing.price === "ASK" ? "price on ask" : formatPrice(listing.price);
+  const parsedCurrencyText =
+    listing.priceAmount !== undefined && listing.priceCurrency && listing.priceUsd !== undefined && listing.priceCurrency !== "USD"
+      ? formatOriginalAndUsd({ amount: listing.priceAmount, currency: listing.priceCurrency }, listing.priceUsd)
+      : undefined;
+  const priceText = currencyDisplay
+    ? currencyDisplay.native
+    : parsedCurrencyText ?? (listing.price === "ASK" ? "price on ask" : formatPrice(listing.price));
   const watchLine = listing.ref ? `${watchName(listing)} (Ref. ${listing.ref})` : watchName(listing);
   const lines = [
     `Potential Match #${index + 1}`,

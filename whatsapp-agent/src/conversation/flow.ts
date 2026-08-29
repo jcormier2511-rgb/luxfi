@@ -1,7 +1,4 @@
 import { config, isAiChatEnabled, isAiMatchingEnabledForPhone } from "../config";
-import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences } from "../types";
-import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals } from "../matching/engine";
-import { config, isAiMatchingEnabledForPhone } from "../config";
 import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences, MatchDecision, PendingSellIntake } from "../types";
 import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals, attachCurrencyDisplay, CurrencyDisplay } from "../matching/engine";
 import { PriceSignal } from "../matching/priceSignal";
@@ -19,7 +16,6 @@ import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
 import { detectCurrency } from "../matching/currency";
 
-const OPT_OUT_WORDS = ["stop", "unsubscribe", "cancel", "opt out", "optout"];
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
 import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
@@ -204,7 +200,7 @@ function handleCurrencyPreferenceCommand(state: ConversationState, code: string,
 const GREETING = /^(hi|hello|hey|hiya|yo|good\s+(morning|afternoon|evening))\b/i;
 
 const FI_MENU = [
-  "Hi, I'm Fi — here's what I can do:",
+  "Hi, I'm Fi — here's what I can do. Tell me naturally what you're looking to buy or sell, or choose an option below:",
   '"buy: <item>" or "sell: <item>" — search for a match (plain English works too, e.g. "looking for a black Daytona under 25k")',
   '"approve <number>" — connect with a match',
   '"photos <number>" — privately ask the seller for photos',
@@ -795,7 +791,10 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     state.pendingPreferenceCollection = undefined;
     state.pendingNaturalFollowUp = undefined;
     saveState(state);
-    return { state, messages: ["Ready when you are — tell me naturally what you're looking to buy or sell, or ask me anything about your listings."] };
+    return {
+      state,
+      messages: ["Hi, I'm Fi — here's what I can do: tell me naturally what you're looking to buy or sell, or ask me anything about your listings."],
+    };
   }
 
   if (isOptOut(text)) {
@@ -847,6 +846,8 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     saveState(state);
     return { state, messages };
   }
+  // Listing-summary requests must remain deterministic: the general-chat model has no access
+  // to the user's approved, pending, or active listings and must never invent that data.
   if (LISTINGS_COMMAND.test(text.trim())) {
     messages.push(LISTINGS_MENU);
     state.pendingListingsMenu = true;
@@ -976,13 +977,6 @@ export async function handleIncomingMessage(phone: string, text: string, contact
       // any state, so the canned fallback is a fully safe default whenever AI is off/unavailable
       // General chat is enabled for all contacts once the operator explicitly enables AI and
       // configures credentials; matching and decisions keep their stricter phone allowlist.
-      const canned = state.pendingMatches
-        ? 'Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.'
-        : 'Try "buy: Rolex Daytona" or "selling: Hermes Birkin".';
-      const aiReply = isAiChatEnabled()
-        ? await generateGeneralChatReply(text, state.pendingMatches?.matches.length ?? 0)
-        : null;
-      // — and it's the ONLY thing every non-test-phone contact ever sees, unchanged.
       //
       // Real reported bug: state.pendingMatches stays set even after every entry in it has
       // already been approved/passed (it's only ever replaced by a new search, see startSearch),
@@ -996,7 +990,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
           : GREETING.test(text.trim())
             ? `Hi ${firstName}, how can I help you today?`
             : 'Try "buy: Rolex Daytona" or "selling: Hermes Birkin".';
-      const aiReply = isAiMatchingEnabledForPhone(phone) ? await generateGeneralChatReply(text, unresolvedCount) : null;
+      const aiReply = isAiChatEnabled() ? await generateGeneralChatReply(text, unresolvedCount) : null;
       messages.push(aiReply ?? canned);
     }
     saveState(state);
