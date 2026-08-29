@@ -436,12 +436,21 @@ async function handlePreferenceAnswer(state: ConversationState, text: string, me
 
   if (pending.step === "price") {
     const range = parsePriceRange(text);
-    state.preferences.priceMin = range?.min;
-    state.preferences.priceMax = range?.max;
     // Bind currency to the same verified token(s) that supplied the parsed bound. Scanning the
     // whole reply would let unrelated settlement text (for example, "USD 100k; account is HK$")
-    // overwrite the actual price currency.
-    state.preferences.priceCurrency = range ? extractVerifiedPriceCurrency(text) ?? undefined : undefined;
+    // overwrite the actual price currency. A parsed range with conflicting explicit currencies
+    // is rejected as a unit so invalid bounds can never survive under the default currency.
+    const verifiedCurrency = range ? extractVerifiedPriceCurrency(text) : null;
+    if (range && !verifiedCurrency) {
+      state.preferences.priceMin = undefined;
+      state.preferences.priceMax = undefined;
+      state.preferences.priceCurrency = undefined;
+      messages.push("I found more than one currency in that budget. Please restate it using one currency.");
+      return;
+    }
+    state.preferences.priceMin = range?.min;
+    state.preferences.priceMax = range?.max;
+    state.preferences.priceCurrency = verifiedCurrency ?? undefined;
     pending.step = "location";
     messages.push(LOCATION_QUESTION);
     return;
