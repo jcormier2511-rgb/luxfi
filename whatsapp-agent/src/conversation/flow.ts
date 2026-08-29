@@ -200,7 +200,7 @@ function handleCurrencyPreferenceCommand(state: ConversationState, code: string,
 const GREETING = /^(hi|hello|hey|hiya|yo|good\s+(morning|afternoon|evening))\b/i;
 
 const FI_MENU = [
-  "Hi, I'm Fi — here's what I can do:",
+  "Hi, I'm Fi — here's what I can do. Tell me naturally what you're looking to buy or sell, or choose an option below:",
   '"buy: <item>" or "sell: <item>" — search for a match (plain English works too, e.g. "looking for a black Daytona under 25k")',
   '"approve <number>" — connect with a match',
   '"photos <number>" — privately ask the seller for photos',
