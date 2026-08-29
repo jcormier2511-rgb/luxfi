@@ -174,7 +174,7 @@ export interface ApiFsListing {
   ref: string;
   condition: string;
   price: string;
-  currency: string;
+  currency?: string;
   contactName: string;
   contactPhone: string;
   detailUrl?: string;
