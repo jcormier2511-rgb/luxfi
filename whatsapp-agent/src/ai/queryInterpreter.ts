@@ -4,6 +4,7 @@ import { SearchPreferences } from "../types";
 import { parsePriceRange } from "../conversation/preferences";
 import { detectCurrency } from "../matching/currency";
 import { extractReference } from "../postings/normalize";
+import { extractVerifiedPriceCurrency } from "./intentExtractor";
 
 export interface ConfirmedNaturalLanguageIntent {
   intent: "buy" | "sell" | null;
@@ -85,12 +86,14 @@ export function extractConfirmedNaturalLanguageIntent(text: string): ConfirmedNa
   const reference = extractReference(removeExplicitPriceExpressions(text));
   const priceExpression = extractExplicitPriceExpression(text);
   const priceRange = priceExpression ? parsePriceRange(priceExpression) : undefined;
-  const priceMin = priceRange?.min ?? null;
-  const priceMax = priceRange?.max ?? null;
-  const explicitSymbol = priceExpression?.match(new RegExp(SPECIFIC_CURRENCY_SYMBOL, "i"))?.[0];
-  const currency = priceMin === null && priceMax === null
-    ? null
-    : detectCurrency(explicitSymbol ?? priceExpression ?? "");
+  const verifiedCurrency = priceExpression ? extractVerifiedPriceCurrency(priceExpression) : null;
+  // A syntactically valid range is still unsafe when its endpoints name different currencies.
+  // In that case discard the entire budget instead of relabeling both numbers with the first
+  // marker and enforcing invalid/reversed bounds.
+  const priceVerified = priceRange !== undefined && verifiedCurrency !== null;
+  const priceMin = priceVerified ? priceRange.min ?? null : null;
+  const priceMax = priceVerified ? priceRange.max ?? null : null;
+  const currency = priceMin === null && priceMax === null ? null : verifiedCurrency;
   return { intent, brand, reference, priceMin, priceMax, currency };
 }
 
