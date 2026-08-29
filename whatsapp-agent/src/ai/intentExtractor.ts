@@ -124,10 +124,13 @@ function isValidIntent(value: unknown): value is Intent {
 // RMB is an accepted alias for CNY. Multi-character symbols must precede the bare symbols they
 // contain, otherwise "HK$" could be read as a generic "$" price.
 const CURRENCY_CODE = `(?:${[...SUPPORTED_CURRENCIES, "RMB"].join("|")})`;
-const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[$€£¥])";
+const GENERIC_DOLLAR = "(?<![A-Za-z])\\$";
+const SPECIFIC_CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[€£¥])";
+const CURRENCY_SYMBOL = `(?:${SPECIFIC_CURRENCY_SYMBOL}|${GENERIC_DOLLAR})`;
 const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)";
 const NL_PRICE_TOKEN =
-  `(?:${CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b(?:\\s*${CURRENCY_CODE}\\b)?` + // $105,000 / $25k CAD / €5000
+  `(?:${GENERIC_DOLLAR}\\s?${NUM}\\s?[kK]?\\b(?:\\s*${CURRENCY_CODE}\\b)?` + // $105,000 / $25k CAD
+    `|${SPECIFIC_CURRENCY_SYMBOL}\\s?${NUM}\\s?[kK]?\\b` + // HK$900,000 / €5000
     `|\\b${CURRENCY_CODE}\\s?${NUM}\\s?[kK]?\\b` + // USD 105000
     `|\\b${NUM}\\s?[kK]?\\s?${CURRENCY_CODE}\\b` + // 105.000 USD / 105k USD
     `|\\b${NUM}\\s?[kK]\\b)`; // bare 25k / 26.2k -- no currency marker at all
@@ -203,7 +206,11 @@ export function extractVerifiedPriceCurrency(text: string): string | null {
   // A single prefix/suffix currency applies to both endpoints of a range. Without this,
   // "800k-900k HKD" looks like one implicit-USD token plus one HKD token.
   const markedRangePatterns = [
-    new RegExp(`(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)\\s*${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?(?:\\s*\\b${CURRENCY_CODE}\\b)?`, "i"),
+    // Explicit symbols are authoritative and must not absorb later payment wording.
+    new RegExp(`${SPECIFIC_CURRENCY_SYMBOL}\\s*${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?`, "i"),
+    // A bare dollar sign is ambiguous, so a trailing ISO code may disambiguate the range.
+    new RegExp(`${GENERIC_DOLLAR}\\s*${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?(?:\\s*\\b${CURRENCY_CODE}\\b)?`, "i"),
+    new RegExp(`\\b${CURRENCY_CODE}\\b\\s*${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?`, "i"),
     new RegExp(`${NUM}\\s?[kK]?\\s*(?:-|to|–)\\s*(?:${CURRENCY_SYMBOL}\\s*)?${NUM}\\s?[kK]?\\s*(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)`, "i"),
   ];
   for (const pattern of markedRangePatterns) {

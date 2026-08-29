@@ -19,7 +19,8 @@ const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling|ready\s+stock|in\s+stock|avail
 const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|aud|jpy|cny|rmb|chf)";
 // Longest-first prevents the bare "$" branch from splitting HK$/C$/S$/A$, while including euro,
 // pound, yen, and yuan symbols makes symbol-only overseas listings real priced inventory.
-const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[$€£¥])";
+const GENERIC_DOLLAR = "(?<![A-Za-z])\\$";
+const SPECIFIC_CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[€£¥])";
 // Trailing `\s?[kK]?` captures dealer shorthand like "$25.5k" — see normalizePriceShorthand,
 // which does the actual k-multiplication; this pattern just needs to not truncate it away.
 // Must start with an actual digit — a naive `[\d,]+` also matches a BARE comma (no digits at
@@ -30,7 +31,8 @@ const CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[$€£¥])";
 // short-decimal shorthand such as "25.5k". The old single-dot tail truncated €1.250.000.
 const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)\\s?[kK]?";
 const PRICE_PATTERN = new RegExp(
-  `(?:${CURRENCY_SYMBOL})\\s?${NUM}\\b(?:\\s*${CURRENCY_CODE}\\b)?` +
+  `(?:${SPECIFIC_CURRENCY_SYMBOL})\\s?${NUM}\\b` +
+    `|(?:${GENERIC_DOLLAR})\\s?${NUM}\\b(?:\\s*${CURRENCY_CODE}\\b)?` +
     `|\\b${CURRENCY_CODE}\\s?${NUM}\\b` +
     // A reference can sit immediately before a currency-prefixed price, as in
     // "Rolex 126333 RMB 137000". Do not consume "126333 RMB" as a trailing-code

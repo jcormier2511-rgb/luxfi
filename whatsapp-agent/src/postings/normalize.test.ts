@@ -205,7 +205,7 @@ test("normalizeText binds a trailing ISO code to a dollar-prefixed listing price
 });
 
 test("normalizeText binds currency to the price token, not an unrelated payment marker", () => {
-  const normalized = normalizeText("FS Patek 5712G HK$820,000 — USD wire accepted");
+  const normalized = normalizeText("FS Patek 5712G HK$820,000 USD wire accepted");
   assert.equal(normalized.price, 820000);
   assert.equal(normalized.currency, "HKD");
 });

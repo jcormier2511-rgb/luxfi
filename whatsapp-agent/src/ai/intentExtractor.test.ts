@@ -183,7 +183,7 @@ test("the primary intent verifier corrects an AI-mislabeled HKD budget", async (
   t.mock.method(client, "callAiJson", async () =>
     aiResult({ intent: "buy", priceMax: 900000, currency: "USD" })
   );
-  const result = await extractIntent("WTB Patek 5712G under HK$900,000 — USD wire accepted");
+  const result = await extractIntent("WTB Patek 5712G under HK$900,000 USD wire accepted");
   assert.equal(result!.intent.priceMax, 900000);
   assert.equal(result!.intent.currency, "HKD");
   assert.equal(result!.priceUnreliable, false);
