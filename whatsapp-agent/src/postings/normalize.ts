@@ -196,7 +196,7 @@ function priceTokens(text: string): string[] {
       // "Rolex 126333 USD wire only" states payment currency, not a USD 126,333 ask.
       if (!new RegExp(`^${NUM}\\s?${CURRENCY_CODE}\\b`, "i").test(raw)) return true;
       const after = text.slice((match.index ?? 0) + raw.length);
-      return !/^\\s*(?:wire|transfer|payment|settlement|account|accepted|only)\\b/i.test(after);
+      return !/^\s*(?:wire|transfer|payment|settlement|account|accepted|only)\b/i.test(after);
     })
     .map((match) => match[0]);
 }
