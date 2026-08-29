@@ -187,10 +187,22 @@ function currencyFromPriceToken(token: string): string {
   return "USD";
 }
 
-function priceMentions(text: string): PriceMention[] {
-  const matches = text.match(PRICE_PATTERN);
-  if (!matches) return [];
+function priceTokens(text: string): string[] {
+  const matches = [...text.matchAll(new RegExp(PRICE_PATTERN.source, "gi"))];
   return matches
+    .filter((match) => {
+      const raw = match[0];
+      // A watch reference followed by settlement wording is not a trailing-code price:
+      // "Rolex 126333 USD wire only" states payment currency, not a USD 126,333 ask.
+      if (!new RegExp(`^${NUM}\\s?${CURRENCY_CODE}\\b`, "i").test(raw)) return true;
+      const after = text.slice((match.index ?? 0) + raw.length);
+      return !/^\\s*(?:wire|transfer|payment|settlement|account|accepted|only)\\b/i.test(after);
+    })
+    .map((match) => match[0]);
+}
+
+function priceMentions(text: string): PriceMention[] {
+  return priceTokens(text)
     .map((raw) => {
       const amount = normalizePriceShorthand(raw);
       return amount === null ? null : { amount, currency: currencyFromPriceToken(raw) };
@@ -240,7 +252,7 @@ export function extractReference(text: string): string | null {
   // Remove every recognized price token before looking for a reference. A symbol-prefixed
   // amount such as "€100000" has the same numeric shape as a watch reference once the symbol is
   // ignored, so a dollar-only lookbehind cannot safely protect the newly supported currencies.
-  const withoutPrices = text.replace(new RegExp(PRICE_PATTERN.source, "gi"), " ");
+  const withoutPrices = priceTokens(text).reduce((remaining, token) => remaining.replace(token, " "), text);
   const m = withoutPrices.match(REFERENCE_PATTERN);
   return m ? m[1].toUpperCase() : null;
 }

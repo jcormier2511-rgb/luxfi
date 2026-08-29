@@ -258,6 +258,18 @@ test("symbol-only prices are never stored as watch references", () => {
   }
 });
 
+test("a reference followed by settlement currency wording is not treated as a price", () => {
+  for (const text of [
+    "FS Rolex 126333 USD wire only",
+    "FS Rolex 126333 HKD payment accepted",
+    "FS Rolex 126333 EUR settlement account",
+  ]) {
+    const normalized = normalizeText(text);
+    assert.equal(normalized.reference, "126333", text);
+    assert.equal(normalized.price, null, text);
+  }
+});
+
 test("repeated dot thousands separators are consumed as one complete price", () => {
   assert.equal(normalizePriceShorthand("€1.250.000"), 1250000);
   const normalized = normalizeText("FS Patek 5712G €1.250.000");
