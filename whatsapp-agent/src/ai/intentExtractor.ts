@@ -159,6 +159,13 @@ function explicitRangeCurrencies(expression: string): Set<string> {
   }
   return currencies;
 }
+
+/** True only when one explicit range names more than one currency. A range with no currency
+ * marker is not conflicting; callers may retain its numeric bounds and use their normal default. */
+export function hasConflictingPriceCurrencies(text: string): boolean {
+  const range = text.match(NL_PRICE_RANGE_PATTERN)?.[0];
+  return range !== undefined && explicitRangeCurrencies(range).size > 1;
+}
 const GOLD_PURITY_WORD = /^\s*(gold|karat|kt\b|white\s+gold|yellow\s+gold|rose\s+gold)/i;
 const MAX_PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|budget(?:\s+(?:of|is))?)\b`;
 const MIN_PRICE_COMPARATOR = String.raw`\b(?:over|at least|min(?:imum)?|above|more than)\b`;
