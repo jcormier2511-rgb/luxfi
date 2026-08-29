@@ -791,7 +791,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     state.pendingPreferenceCollection = undefined;
     state.pendingNaturalFollowUp = undefined;
     saveState(state);
-    return { state, messages: ["Ready when you are — tell me naturally what you're looking to buy or sell, or ask me anything about your listings."] };
+    return { state, messages: [FI_MENU] };
   }
 
   if (isOptOut(text)) {
@@ -843,7 +843,10 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     saveState(state);
     return { state, messages };
   }
-  if (LISTINGS_COMMAND.test(text.trim())) {
+  // Keep the exact "listings" command deterministic. When general AI chat is enabled,
+  // natural phrases such as "listing summary" remain questions the assistant can answer;
+  // without AI they fall back to the same safe menu.
+  if (LISTINGS_COMMAND.test(text.trim()) && (!isAiChatEnabled() || /^listings$/i.test(text.trim()))) {
     messages.push(LISTINGS_MENU);
     state.pendingListingsMenu = true;
     saveState(state);
