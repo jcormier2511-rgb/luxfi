@@ -68,8 +68,9 @@ test("stepwise budget capture keeps an explicit HK$ symbol despite later USD pay
   await handleIncomingMessage(PHONE_D, "buy: Rolex Daytona 116500LN");
   const result = await handleIncomingMessage(PHONE_D, "under HK$900,000 USD wire accepted");
 
-  assert.equal(result.state.preferences.priceMax, 900000);
-  assert.equal(result.state.preferences.priceCurrency, "HKD");
+  const preferences = result.state.preferences!;
+  assert.equal(preferences.priceMax, 900000);
+  assert.equal(preferences.priceCurrency, "HKD");
   assert.match(result.messages.join("\n"), /location/i, "the interview should advance after storing the HKD budget");
 });
 
