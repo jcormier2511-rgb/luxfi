@@ -1,6 +1,6 @@
 import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
-import { normalizeReference, extractReference, referencesMatch, normalizePriceShorthand, hasMultipleDistinctPrices } from "../postings/normalize";
+import { normalizeReference, extractReference, referencesMatch, hasMultipleDistinctPrices } from "../postings/normalize";
 import { config, isAiMatchingEnabledForPhone } from "../config";
 import { interpretQuery } from "../ai/queryInterpreter";
 import { rerankCandidates } from "../ai/rerank";
@@ -35,12 +35,6 @@ function score(listing: InventoryListing, tokens: string[]): number {
     if (haystack.includes(t)) matches += 1;
   }
   return matches;
-}
-
-/** Parse a stored listing price through the repository's shared normalization path. */
-function parseListingPrice(raw: string): number | undefined {
-  const n = normalizePriceShorthand(raw);
-  return n === null ? undefined : n;
 }
 
 function asCurrency(raw?: string): CurrencyCode {
