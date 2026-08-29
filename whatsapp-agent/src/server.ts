@@ -3,17 +3,18 @@ import fs from "fs";
 import path from "path";
 import { config, isConciergeAdminPhone } from "./config";
 import { extractIncomingMessages, IncomingWebhook, sendText } from "./whapi/client";
-import { alreadyProcessed, getState, resetState } from "./conversation/stateStore";
+import { alreadyProcessed, getState, resetState, markPendingEscrowOffer } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { getActiveListings, getSyncStatus, searchListingsForDiagnostics } from "./watchfacts/inventoryDb";
-import { getEntitlement, setManualOverride } from "./billing/entitlementStore";
+import { getEntitlement, setManualOverride, setPlan } from "./billing/entitlementStore";
+import { isPlanKey } from "./billing/plans";
 import { handleIncomingSellerPhoto } from "./matching/photoRequests";
 import { approveMatch, passMatch, ApprovalOutcome } from "./postings/notify";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
-import { getPosting, extendPosting } from "./postings/postingsStore";
+import { getPosting, extendPosting, getOwnPostingForMatch } from "./postings/postingsStore";
 import { getV4OperationalStatus } from "./postings/status";
 import { initSchema } from "./postings/db";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
@@ -30,18 +31,20 @@ import { listDesignatedGroups, enableGroup, disableGroup, setReferenceRequestsEn
 // Postgres match id, falling through to the ordinary flow if it doesn't resolve to one.
 const V4_DECISION_PATTERN = /^(approve|pass)\s+(\d+)\b/i;
 
-function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number): string {
+export function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number): string {
   switch (outcome.status) {
     case "approved":
       return outcome.counterpart
-        ? `You're connected! ${outcome.counterpart.name}: ${outcome.counterpart.phone}`
+        ? `You're connected! ${outcome.counterpart.name}: ${outcome.counterpart.phone}\n\n${config.fiFlow.escrowSuggestion}`
         : `Match ${matchId} approved.`;
     case "pending_confirmation":
       return `Got it — I'll let you know as soon as the other side confirms too.`;
     case "posting_closed":
       return `That listing has already reached its match limit, so this one can't be approved.`;
     case "locked":
-      return config.fiFlow.declineMessage;
+      return outcome.lockReason === "weekly_cap"
+        ? config.fiFlow.weeklyCapMessage(outcome.plan!, outcome.weeklyLimit!)
+        : config.fiFlow.noPlanMessage;
     case "invalid":
       return `I couldn't find match ${matchId}.`;
   }
@@ -57,6 +60,40 @@ export async function tryHandleV4Decision(phone: string, text: string): Promise<
   if (m[1].toLowerCase() === "approve") {
     const outcome = await approveMatch(matchId, phone);
     if (outcome.status === "invalid") return null; // not a real v4 match id either — fall through
+    if (outcome.status === "approved" && outcome.counterpart) markPendingEscrowOffer(phone);
+    return formatApprovalOutcome(outcome, matchId);
+  }
+
+  const result = await passMatch(matchId, phone);
+  if (result === "invalid") return null;
+  return result === "passed" ? `Passing on match ${matchId}.` : `You already decided on match ${matchId}.`;
+}
+
+/**
+ * A person's own "sell a watch" conversational intake (conversation/flow.ts, source_type=
+ * 'direct') gets matched to buyers even though ENABLE_V4_POSTINGS-gated group-chat monitoring
+ * is off — it's a narrower, always-on, explicit-consent feature, not the broad rollout that
+ * flag controls. So its "approve <matchId>"/"pass <matchId>" replies need their own handler,
+ * deliberately NOT behind that flag — tryHandleV4Decision above stays exactly as it is (and as
+ * server.v4Decision.test.ts requires: it must stay a total no-op while the flag is off) for
+ * every other posting. Scoping is by ownership + source_type: only a match where the sender
+ * owns a 'direct'-sourced side is handled here; anything else falls through (returns null) so
+ * tryHandleV4Decision (when enabled) or the ordinary flow gets a turn at it.
+ */
+export async function tryHandleDirectPostingDecision(phone: string, text: string): Promise<string | null> {
+  if (getState(phone).pendingMatches) return null; // v3 flow owns this reply
+  const m = text.trim().match(V4_DECISION_PATTERN);
+  if (!m) return null;
+  const matchId = parseInt(m[2], 10);
+
+  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const mine = await getOwnPostingForMatch(matchId, canonicalUserId);
+  if (!mine || mine.source_type !== "direct") return null; // not a direct-sourced decision
+
+  if (m[1].toLowerCase() === "approve") {
+    const outcome = await approveMatch(matchId, phone);
+    if (outcome.status === "invalid") return null;
+    if (outcome.status === "approved" && outcome.counterpart) markPendingEscrowOffer(phone);
     return formatApprovalOutcome(outcome, matchId);
   }
 
@@ -271,6 +308,27 @@ export function createServer() {
     if (!phone) return res.status(400).json({ error: "?phone=... required" });
     const enabled = req.query.enabled !== "false"; // ?enabled=false to revoke; anything else (including omitted) enables
     const entitlement = await setManualOverride(phone, enabled);
+    res.json({ ok: true, entitlement });
+  });
+
+  // Flat-fee, weekly-capped Fi membership tiers (billing/plans.ts) — the ONLY way to assign
+  // one is this admin action; no payment processor exists, so this is never self-service and
+  // never a live charge. ?plan=none clears an assigned plan back to locked.
+  app.post("/admin/entitlement/plan", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const phone = String(req.query.phone ?? "");
+    if (!phone) return res.status(400).json({ error: "?phone=... required" });
+    const planParam = String(req.query.plan ?? "");
+    if (planParam === "none") {
+      const entitlement = await setPlan(phone, null);
+      return res.json({ ok: true, entitlement });
+    }
+    if (!isPlanKey(planParam)) {
+      return res.status(400).json({ error: "?plan=... must be one of tier1, tier2, tier3, or none" });
+    }
+    const entitlement = await setPlan(phone, planParam);
     res.json({ ok: true, entitlement });
   });
 

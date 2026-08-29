@@ -5,7 +5,7 @@ import { classifyText, normalizeText, PostingType } from "./normalize";
 export interface PostingRow {
   id: number;
   source_platform: string;
-  source_type: "chat" | "api";
+  source_type: "chat" | "api" | "direct";
   source_chat_id: string | null;
   source_message_id: string | null;
   external_listing_id: string | null;
@@ -162,6 +162,54 @@ export async function ingestChatPosting(input: ChatPostingInput): Promise<Ingest
   });
 }
 
+export interface DirectSellPostingInput {
+  phone: string;
+  senderName?: string;
+  description: string; // the full, human-readable item description collected during intake
+  reference: string | null;
+  price: number | null;
+  imageUrl?: string;
+}
+
+/**
+ * Creates an FS posting straight from Fi's own 1:1 "sell a watch" conversational intake (see
+ * conversation/flow.ts's handleSellIntakeAnswer) — always active, source_type='direct'. Unlike
+ * ingestChatPosting, the caller has ALREADY collected structured fields one at a time (an actual
+ * price, an actual reference), so this trusts them directly rather than re-deriving them by
+ * re-parsing free text with normalizeText — the one exception is brand, which normalizeText's
+ * BRAND_LIST scan over the accumulated description is still the simplest reliable source for.
+ * No chat_id/message_id (there's no group message this originated from) — each intake
+ * completion is its own new listing, never an in-place edit of a previous one.
+ */
+export async function createDirectPosting(input: DirectSellPostingInput): Promise<PostingRow> {
+  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", input.phone);
+  const { brand } = normalizeText(input.description);
+  const expiresAt = new Date(Date.now() + THIRTY_DAYS_MS).toISOString();
+
+  return withSchema(async (pool) => {
+    const insert = await pool.query<PostingRow>(
+      `INSERT INTO postings
+         (source_platform, source_type, canonical_user_id, source_identity,
+          type, original_text, brand, reference, price, currency, contact_name, contact_phone, status, expires_at)
+       VALUES ('whatsapp','direct',$1,$2,'FS',$3,$4,$5,$6,'USD',$7,$8,'active',$9)
+       RETURNING *`,
+      [
+        canonicalUserId,
+        input.phone,
+        input.description,
+        brand,
+        input.reference ?? "",
+        input.price,
+        input.senderName || input.phone,
+        input.phone,
+        expiresAt,
+      ]
+    );
+    await setPostingImagesSafely(insert.rows[0].id, [input.imageUrl]);
+    return insert.rows[0];
+  });
+}
+
 /**
  * Mirrors a live WatchFacts API FS listing into `postings` so the v4 matching engine has one
  * unified source — called from syncInventory.ts after a successful FS sync. Does not touch
@@ -261,6 +309,42 @@ export async function getPosting(id: number): Promise<PostingRow | null> {
   return withSchema(async (pool) => {
     const result = await pool.query<PostingRow>(`SELECT * FROM postings WHERE id=$1`, [id]);
     return result.rows[0] ?? null;
+  });
+}
+
+/**
+ * A canonical user's own live monitors — see conversation/flow.ts's "listings" command
+ * (option 3, "my current WTB/FS listings"). Only ever surfaces chat-originated and 'direct'
+ * (sell-intake) postings that carry a canonical_user_id at all; a v3 on-demand "buy:"/"sell:"
+ * search is never persisted here — it's a one-off search against live inventory, not a
+ * monitored posting (only the sell-intake flow and group-chat WTB/FS messages create one).
+ */
+export async function getActivePostingsForUser(canonicalUserId: number): Promise<PostingRow[]> {
+  return withSchema(async (pool) => {
+    const result = await pool.query<PostingRow>(
+      `SELECT * FROM postings WHERE canonical_user_id=$1 AND status='active' AND expires_at > now() ORDER BY created_at DESC`,
+      [canonicalUserId]
+    );
+    return result.rows;
+  });
+}
+
+/**
+ * Whichever of a match's two postings belongs to `canonicalUserId`, or null if neither does
+ * (not a real match id, or this user isn't a party to it). Used to decide whether a WhatsApp
+ * "approve <matchId>"/"pass <matchId>" reply is about a 'direct'-sourced posting (Fi's own
+ * "sell a watch" intake), which needs none of the group-monitoring ENABLE_V4_POSTINGS gate —
+ * see server.ts's tryHandleDirectPostingDecision, which is the only caller.
+ */
+export async function getOwnPostingForMatch(matchId: number, canonicalUserId: number): Promise<PostingRow | null> {
+  return withSchema(async (pool) => {
+    const matchResult = await pool.query(`SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id=$1`, [matchId]);
+    if (matchResult.rows.length === 0) return null;
+    const { fs_posting_id, wtb_posting_id } = matchResult.rows[0];
+    const postings = await pool.query<PostingRow>(`SELECT * FROM postings WHERE id = ANY($1::int[])`, [
+      [fs_posting_id, wtb_posting_id],
+    ]);
+    return postings.rows.find((p) => p.canonical_user_id === canonicalUserId) ?? null;
   });
 }
 

@@ -106,6 +106,13 @@ async function ensureSchema(): Promise<void> {
         ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS photo_requester_phone TEXT;
         ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS photo_request_match_id TEXT;
         ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS requested_photos JSONB NOT NULL DEFAULT '[]';
+        -- Automatic currency conversion (src/fx/) — the listing's OWN stated price/currency,
+        -- kept separate from the existing price column (which stays the plain numeric string
+        -- every existing filter/display path already relies on) so the original is never
+        -- overwritten by a converted value. Synced data, refreshed on every sync like image_url.
+        ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS native_price_amount DOUBLE PRECISION;
+        ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS native_currency TEXT;
+        ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS original_price_text TEXT;
         `
       )
       .then(() => undefined);
@@ -159,6 +166,9 @@ export interface UpsertRow {
   description: string;
   detailUrl?: string;
   imageUrl?: string;
+  nativePriceAmount?: number;
+  nativeCurrency?: string;
+  originalPriceText?: string;
 }
 
 /** Insert new listings, update existing ones (matched by source+type+external_id). */
@@ -173,15 +183,18 @@ export async function upsertListings(rows: UpsertRow[], syncedAt: string, source
         `
         INSERT INTO inventory_listings
           (source, type, external_id, category, item, brand, ref, condition, price, location,
-           contact_name, contact_phone, rating, description, detail_url, image_url, is_active, first_seen_at, last_seen_at)
+           contact_name, contact_phone, rating, description, detail_url, image_url,
+           native_price_amount, native_currency, original_price_text, is_active, first_seen_at, last_seen_at)
         VALUES
-          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE, $17, $17)
+          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, TRUE, $20, $20)
         ON CONFLICT (source, type, external_id) DO UPDATE SET
           category = excluded.category, item = excluded.item, brand = excluded.brand, ref = excluded.ref,
           condition = excluded.condition, price = excluded.price, location = excluded.location,
           contact_name = excluded.contact_name, contact_phone = excluded.contact_phone,
           rating = excluded.rating, description = excluded.description, detail_url = excluded.detail_url,
-          image_url = excluded.image_url, is_active = TRUE, last_seen_at = excluded.last_seen_at
+          image_url = excluded.image_url, native_price_amount = excluded.native_price_amount,
+          native_currency = excluded.native_currency, original_price_text = excluded.original_price_text,
+          is_active = TRUE, last_seen_at = excluded.last_seen_at
         `,
         [
           source,
@@ -200,6 +213,9 @@ export async function upsertListings(rows: UpsertRow[], syncedAt: string, source
           r.description,
           r.detailUrl ?? "",
           r.imageUrl ?? "",
+          r.nativePriceAmount ?? null,
+          r.nativeCurrency ?? null,
+          r.originalPriceText ?? null,
           syncedAt,
         ]
       );
@@ -251,6 +267,9 @@ interface ListingRow {
   detail_url: string;
   image_url: string;
   external_id: string;
+  native_price_amount: number | string | null;
+  native_currency: string | null;
+  original_price_text: string | null;
 }
 
 function rowToListing(row: ListingRow): InventoryListing {
@@ -271,6 +290,9 @@ function rowToListing(row: ListingRow): InventoryListing {
     description: row.description,
     detailUrl: row.detail_url || undefined,
     imageUrl: row.image_url || undefined,
+    nativePriceAmount: row.native_price_amount === null ? undefined : Number(row.native_price_amount),
+    nativeCurrency: row.native_currency ?? undefined,
+    originalPriceText: row.original_price_text ?? undefined,
   };
 }
 

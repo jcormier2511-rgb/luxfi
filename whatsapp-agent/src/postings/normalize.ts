@@ -5,8 +5,11 @@
  * that risk entirely for the MVP rather than needing to firewall an AI call's output.
  */
 
-const WTB_KEYWORDS = /\b(wtb|iso|lf|looking\s+for|in\s+search\s+of|ntq)\b/i;
-const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling)\b/i;
+const WTB_KEYWORDS = /\b(wtb|iso|lf|looking\s+for|in\s+search\s+of|ntq|wanted|need|buying)\b/i;
+// "ready stock"/"in stock"/"available" are dealer-inventory shorthand — a group post announcing
+// what's on hand is a FS signal exactly like "for sale" is, just phrased as availability rather
+// than an offer to sell.
+const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling|ready\s+stock|in\s+stock|available)\b/i;
 // A price isn't always $-prefixed — overseas dealer price lists (the real-world bug this
 // pattern was extended for: a Hong Kong dealer's "116500ln white 2011 hkd210k" bundle blast)
 // write the currency code directly against the number instead, either before ("hkd210k") or
@@ -16,12 +19,12 @@ const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling)\b/i;
 const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|jpy|cny|rmb|chf)";
 // Trailing `\s?[kK]?` captures dealer shorthand like "$25.5k" — see normalizePriceShorthand,
 // which does the actual k-multiplication; this pattern just needs to not truncate it away.
-const PRICE_PATTERN = new RegExp(
-  `\\$\\s?[\\d,]+(?:\\.\\d+)?\\s?[kK]?\\b` +
-    `|\\b${CURRENCY_CODE}\\s?[\\d,]+(?:\\.\\d+)?\\s?[kK]?\\b` +
-    `|\\b[\\d,]+(?:\\.\\d+)?\\s?[kK]?\\s?${CURRENCY_CODE}\\b`,
-  "gi"
-);
+// Must start with an actual digit — a naive `[\d,]+` also matches a BARE comma (no digits at
+// all), which let a stray ", " right before an unrelated currency code (e.g. "Sold, USD wire
+// only") turn into a phantom price token. Requires either proper thousands-grouped digits or a
+// plain unbroken digit run.
+const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?\\s?[kK]?";
+const PRICE_PATTERN = new RegExp(`\\$\\s?${NUM}\\b` + `|\\b${CURRENCY_CODE}\\s?${NUM}\\b` + `|\\b${NUM}\\s?${CURRENCY_CODE}\\b`, "gi");
 // `(?<!\$\s?)` excludes a digit run directly preceded by a $ sign (with or without a space) —
 // "$20000"/"$ 20000" is unambiguously a price, never a reference, even though bare "20000"
 // alone would otherwise fit the same shape. This is the ONE disambiguation that's actually
@@ -50,11 +53,29 @@ const BRAND_LIST = [
   "omega",
 ];
 
+/** True when `text` names a known maker brand — used to decide whether a "sell" request already
+ *  identifies a specific item or is too vague to search/list on ("a watch" vs "a Rolex"). */
+export function containsKnownBrand(text: string): boolean {
+  const lower = text.toLowerCase();
+  return BRAND_LIST.some((b) => lower.includes(b));
+}
+
 export type PostingType = "FS" | "WTB";
 
+/**
+ * Explicit buying language ALWAYS wins, checked before FS — a post naming WTB/wanted/looking
+ * for/need/buying/ISO is a buyer's request even if stock/for-sale language also appears
+ * somewhere in the same message (dealer-group chatter is messy; the buyer's own signal is what
+ * actually describes what they want). Absent any explicit keyword either way, a message that
+ * names an actual price or reference number still classifies as FS rather than being silently
+ * dropped — most unstructured trading-group chatter IS exactly this (a dealer's stock/price
+ * list with no "for sale" spelled out), and genuine non-listing chatter ("hey how's it going",
+ * "thanks!") never has a price or reference to trigger this fallback on.
+ */
 export function classifyText(text: string): PostingType | null {
-  if (FS_KEYWORDS.test(text)) return "FS";
   if (WTB_KEYWORDS.test(text)) return "WTB";
+  if (FS_KEYWORDS.test(text)) return "FS";
+  if (distinctPriceValues(text).size > 0 || extractReference(text) !== null) return "FS";
   return null;
 }
 

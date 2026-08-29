@@ -8,7 +8,9 @@ process.env.WEBHOOK_TOKEN = "test";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const entitlements = require("./entitlementStore") as typeof import("./entitlementStore");
-const { getEntitlement, setManualOverride, recordBillingRequested, _resetDbForTests, _closePoolForTests } = entitlements;
+const { getEntitlement, setManualOverride, setPlan, recordBillingRequested, _resetDbForTests, _closePoolForTests } = entitlements;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { weeklyLimitFor } = require("./plans") as typeof import("./plans");
 
 after(() => _closePoolForTests());
 
@@ -47,4 +49,41 @@ test("entitlement is per-phone — overriding one account never affects another"
 
   assert.equal((await getEntitlement("15551111111")).manualOverrideEnabled, true);
   assert.equal((await getEntitlement("15552222222")).manualOverrideEnabled, false);
+});
+
+test("a phone with no history has no plan", async () => {
+  await _resetDbForTests();
+  const e = await getEntitlement("15553333333");
+  assert.equal(e.plan, null);
+});
+
+test("setPlan assigns a tier; setPlan(phone, null) clears it back to no plan", async () => {
+  await _resetDbForTests();
+  const phone = "15554444444";
+
+  await setPlan(phone, "tier1");
+  assert.equal((await getEntitlement(phone)).plan, "tier1");
+
+  await setPlan(phone, "tier2");
+  assert.equal((await getEntitlement(phone)).plan, "tier2", "reassigning a plan overwrites the previous one");
+
+  await setPlan(phone, null);
+  assert.equal((await getEntitlement(phone)).plan, null);
+});
+
+test("weeklyLimitFor: flat-fee tiers cap the week; tier3 and the legacy override are unlimited; no plan is locked", async () => {
+  assert.equal(weeklyLimitFor({ plan: null, manualOverrideEnabled: false }), 0, "no active plan and no override = locked");
+  assert.equal(weeklyLimitFor({ plan: "tier1", manualOverrideEnabled: false }), 5);
+  assert.equal(weeklyLimitFor({ plan: "tier2", manualOverrideEnabled: false }), 20);
+  assert.equal(weeklyLimitFor({ plan: "tier3", manualOverrideEnabled: false }), null, "tier3 is unlimited");
+  assert.equal(
+    weeklyLimitFor({ plan: null, manualOverrideEnabled: true }),
+    null,
+    "the legacy admin override still means unlimited, even with no plan assigned"
+  );
+  assert.equal(
+    weeklyLimitFor({ plan: "tier1", manualOverrideEnabled: true }),
+    null,
+    "an override takes precedence over a lower-tier plan"
+  );
 });

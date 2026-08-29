@@ -13,14 +13,30 @@ process.env.TRIAL_MAX_APPROVED_MATCHES = "3";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const postingsDb = require("../postings/db") as typeof import("../postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { getOrCreateCanonicalUser } = require("../postings/identity") as typeof import("../postings/identity");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const whapiClient = require("../whapi/client") as typeof import("../whapi/client");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 
 after(async () => {
   await inventoryDb._closePoolForTests();
+  await postingsDb._closePoolForTests();
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
+
+/** Approval usage now lives in Postgres (canonical_users.total_approved_count — shared with
+ *  the v4 automatic-matching flow, see postings/approvalUsage.ts), not on ConversationState —
+ *  read it the same way notify.fiveApproval.test.ts does. */
+async function totalApproved(phone: string): Promise<number> {
+  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const result = await postingsDb.withSchema((pool) =>
+    pool.query(`SELECT total_approved_count FROM canonical_users WHERE id=$1`, [canonicalUserId])
+  );
+  return result.rows[0].total_approved_count;
+}
 
 const SELLER_A_PHONE = "17775551111";
 const SELLER_B_PHONE = "17775552222";
@@ -84,18 +100,19 @@ test("required: 'photos 1' resolves the correct match and messages that seller, 
 
 test("required: does not consume an approval credit, and the buyer can still approve normally afterward", async (t) => {
   await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("credit-1")], new Date().toISOString());
   t.mock.method(whapiClient, "sendText", async () => {});
 
   const buyerPhone = "19990002222";
   await freshSearch(buyerPhone, "buy: Rolex Daytona 116500LN");
-  const beforePhotos = (await handleIncomingMessage(buyerPhone, "hi")).state.approvedCount;
+  const beforePhotos = await totalApproved(buyerPhone);
   await handleIncomingMessage(buyerPhone, "photos 1");
-  const afterPhotos = (await handleIncomingMessage(buyerPhone, "hi")).state.approvedCount;
-  assert.equal(afterPhotos, beforePhotos, "a photo request must never increment approvedCount");
+  const afterPhotos = await totalApproved(buyerPhone);
+  assert.equal(afterPhotos, beforePhotos, "a photo request must never increment approval usage");
 
   const approveResult = await handleIncomingMessage(buyerPhone, "approve 1");
-  assert.equal(approveResult.state.approvedCount, beforePhotos + 1, "approving afterward still costs exactly one credit");
+  assert.equal(await totalApproved(buyerPhone), beforePhotos + 1, "approving afterward still costs exactly one credit");
   assert.match(approveResult.messages.join("\n"), /Approved #1/);
 });
 
