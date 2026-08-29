@@ -32,6 +32,7 @@ const PHONE_B = "17775553002";
 const PHONE_C = "17775553003";
 const PHONE_D = "17775553004";
 const PHONE_E = "17775553005";
+const PHONE_F = "17775553006";
 
 function fsRow(id: string, overrides: Partial<Parameters<typeof inventoryDb.upsertListings>[0][number]> = {}) {
   return {
@@ -83,6 +84,19 @@ test("stepwise budget capture binds currency to the price token, not unrelated s
   const preferences = result.state.preferences!;
   assert.equal(preferences.priceMax, 100000);
   assert.equal(preferences.priceCurrency, "USD");
+});
+
+test("stepwise budget capture rejects conflicting currencies and asks again", async () => {
+  await handleIncomingMessage(PHONE_F, "hi");
+  await handleIncomingMessage(PHONE_F, "buy: Rolex Daytona 116500LN");
+  const result = await handleIncomingMessage(PHONE_F, "HK$800k-US$100k");
+
+  const preferences = result.state.preferences!;
+  assert.equal(preferences.priceMin, undefined);
+  assert.equal(preferences.priceMax, undefined);
+  assert.equal(preferences.priceCurrency, undefined);
+  assert.equal(result.state.pendingPreferenceCollection!.step, "price");
+  assert.match(result.messages.join("\n"), /more than one currency/i);
 });
 
 test("required: 'Show prices in EUR' is accepted and confirmed", async () => {
