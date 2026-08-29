@@ -35,9 +35,10 @@ export function setExchangeRateProviderForTests(provider?: ExchangeRateProvider)
 }
 
 export function detectCurrency(raw: string, fallback: CurrencyCode = "USD"): CurrencyCode | null {
-  const upper = raw.toUpperCase();
-  if (/\b(?:CNY|RMB)\b|CN¥/i.test(raw)) return "CNY";
-  for (const code of SUPPORTED_CURRENCIES) if (new RegExp(`\\b${code}\\b`, "i").test(upper)) return code;
+  // A symbol attached to the price is stronger evidence than an unrelated currency code later
+  // in the sentence (for example, "under HK$900,000 USD wire accepted"). Keep a bare "$"
+  // ambiguous until after the ISO scan so "$100,000 CAD" can still be disambiguated as CAD.
+  if (/CN¥/i.test(raw)) return "CNY";
   if (/HK\$/i.test(raw)) return "HKD";
   if (/C\$/i.test(raw)) return "CAD";
   if (/US\$/i.test(raw)) return "USD";
@@ -47,6 +48,10 @@ export function detectCurrency(raw: string, fallback: CurrencyCode = "USD"): Cur
   if (/£/.test(raw)) return "GBP";
   if (/د\.?إ|دإ/.test(raw)) return "AED";
   if (/¥/.test(raw)) return "JPY";
+
+  const upper = raw.toUpperCase();
+  if (/\b(?:CNY|RMB)\b/i.test(raw)) return "CNY";
+  for (const code of SUPPORTED_CURRENCIES) if (new RegExp(`\\b${code}\\b`, "i").test(upper)) return code;
   if (/\$/.test(raw)) return "USD";
   return fallback;
 }

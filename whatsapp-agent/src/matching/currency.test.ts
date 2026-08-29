@@ -18,6 +18,25 @@ test("recognizes every required currency and preserves grouped amounts", () => {
   }
 });
 
+test("explicit price symbols take precedence over unrelated payment-currency wording", () => {
+  const examples = [
+    ["under HK$900,000 USD wire accepted", "HKD"],
+    ["under US$110,000 HKD wire accepted", "USD"],
+    ["under C$100,000 USD wire accepted", "CAD"],
+    ["under S$100,000 USD wire accepted", "SGD"],
+    ["under A$100,000 USD wire accepted", "AUD"],
+    ["under €100,000 USD wire accepted", "EUR"],
+    ["under £100,000 USD wire accepted", "GBP"],
+    ["under ¥100,000 USD wire accepted", "JPY"],
+    ["under CN¥100,000 USD wire accepted", "CNY"],
+  ] as const;
+
+  for (const [raw, currency] of examples) {
+    assert.equal(detectCurrency(raw), currency);
+  }
+  assert.equal(detectCurrency("under $100,000 CAD"), "CAD", "a bare dollar sign may be disambiguated by an ISO code");
+});
+
 test("converts to USD and caches the mocked provider rate", async () => {
   let calls = 0;
   setExchangeRateProviderForTests(async (currency) => {

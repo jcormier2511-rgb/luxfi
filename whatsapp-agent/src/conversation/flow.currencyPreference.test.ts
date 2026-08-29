@@ -30,6 +30,7 @@ beforeEach(() => {
 const PHONE_A = "17775553001";
 const PHONE_B = "17775553002";
 const PHONE_C = "17775553003";
+const PHONE_D = "17775553004";
 
 function fsRow(id: string, overrides: Partial<Parameters<typeof inventoryDb.upsertListings>[0][number]> = {}) {
   return {
@@ -61,6 +62,16 @@ async function freshSearch(phone: string, query: string): Promise<string[]> {
   push(await handleIncomingMessage(phone, "any"));
   return collected;
 }
+
+test("stepwise budget capture keeps an explicit HK$ symbol despite later USD payment wording", async () => {
+  await handleIncomingMessage(PHONE_D, "hi");
+  await handleIncomingMessage(PHONE_D, "buy: Rolex Daytona 116500LN");
+  const result = await handleIncomingMessage(PHONE_D, "under HK$900,000 USD wire accepted");
+
+  assert.equal(result.state.preferences.priceMax, 900000);
+  assert.equal(result.state.preferences.priceCurrency, "HKD");
+  assert.match(result.messages.join("\n"), /location/i, "the interview should advance after storing the HKD budget");
+});
 
 test("required: 'Show prices in EUR' is accepted and confirmed", async () => {
   const result = await handleIncomingMessage(PHONE_A, "Show prices in EUR");
