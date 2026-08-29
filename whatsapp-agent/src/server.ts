@@ -125,6 +125,38 @@ export async function tryHandleV4Extend(phone: string, text: string): Promise<st
   return `Extended — active for 30 more days.`;
 }
 
+/** Processes the payload received by the live /webhook route after its immediate ACK. */
+export async function handleWebhookPayload(body: IncomingWebhook): Promise<void> {
+  const incoming = extractIncomingMessages(body).filter((m) => !alreadyProcessed(m.id));
+
+  for (const message of incoming) {
+    try {
+      if (message.isGroup) {
+        await handleGroupMessage(message.id, message.groupId!, message.phone, message.senderName, message.text, message.imageUrl);
+        continue;
+      }
+      if (message.imageUrl && await handleIncomingSellerPhoto(message.phone, message.imageUrl)) continue;
+
+      const v4Reply = await tryHandleV4Decision(message.phone, message.text);
+      if (v4Reply !== null) {
+        await sendText(message.phone, v4Reply);
+        continue;
+      }
+      const v4ExtendReply = await tryHandleV4Extend(message.phone, message.text);
+      if (v4ExtendReply !== null) {
+        await sendText(message.phone, v4ExtendReply);
+        continue;
+      }
+
+      const contact = getTierABContacts().find((c) => c.phone === message.phone);
+      const { messages } = await handleIncomingMessage(message.phone, message.text, contact);
+      for (const reply of messages) await sendText(message.phone, reply);
+    } catch (err) {
+      console.error(`[webhook] failed handling message from ${message.phone}:`, err);
+    }
+  }
+}
+
 export function createServer() {
   const app = express();
   app.use(express.json());
@@ -142,58 +174,7 @@ export function createServer() {
     // Ack immediately — Whapi retries on slow/failed responses.
     res.status(200).json({ ok: true });
 
-    const body = req.body as IncomingWebhook;
-    const incoming = extractIncomingMessages(body).filter((m) => !alreadyProcessed(m.id));
-
-    for (const message of incoming) {
-      try {
-        if (message.isGroup) {
-          // Silent by design — never reply into a group, only ingest WTB/FS-looking posts.
-          await handleGroupMessage(message.id, message.groupId!, message.phone, message.senderName, message.text, message.imageUrl);
-          continue;
-        }
-
-        // Private "request photos before approval" workflow (matching/photoRequests.ts):
-        // an incoming image from a phone with an open photo request is routed there directly,
-        // never reaching the ordinary conversation flow — a seller answering "please send 3-6
-        // photos" is not searching or deciding on anything themselves. Falls through to the
-        // normal flow (below) when this phone has no matching request, e.g. an ordinary buyer/
-        // seller who just happens to send a photo unprompted.
-        if (message.imageUrl) {
-          const handledAsPhotoReply = await handleIncomingSellerPhoto(message.phone, message.imageUrl);
-          if (handledAsPhotoReply) continue;
-        }
-
-        const directReply = await tryHandleDirectPostingDecision(message.phone, message.text);
-        if (directReply !== null) {
-          await sendText(message.phone, directReply);
-          continue;
-        }
-
-        const v4Reply = await tryHandleV4Decision(message.phone, message.text);
-        if (v4Reply !== null) {
-          await sendText(message.phone, v4Reply);
-          continue;
-        }
-
-        const v4ExtendReply = await tryHandleV4Extend(message.phone, message.text);
-        if (v4ExtendReply !== null) {
-          await sendText(message.phone, v4ExtendReply);
-          continue;
-        }
-
-        const contact = getTierABContacts().find((c) => c.phone === message.phone);
-        // imageUrl threaded through for the sell-intake photo step (matching/photoRequests.ts's
-        // seller-photo-request reply is already routed away above, before this point, so this
-        // is only ever an ordinary buyer/seller sending a photo unprompted).
-        const { messages } = await handleIncomingMessage(message.phone, message.text, contact, message.imageUrl);
-        for (const reply of messages) {
-          await sendText(message.phone, reply);
-        }
-      } catch (err) {
-        console.error(`[webhook] failed handling message from ${message.phone}:`, err);
-      }
-    }
+    await handleWebhookPayload(req.body as IncomingWebhook);
   });
 
   // Manual trigger to kick off the Tier A/B blast over HTTP instead of the CLI script.

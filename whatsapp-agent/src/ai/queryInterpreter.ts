@@ -1,6 +1,34 @@
 import { callAiJson } from "./client";
 import { InterpretedQuery } from "./types";
 import { SearchPreferences } from "../types";
+import { parsePriceRange } from "../conversation/preferences";
+import { detectCurrency } from "../matching/currency";
+
+export interface ConfirmedNaturalLanguageIntent {
+  intent: "buy" | "sell" | null;
+  brand: string | null;
+  reference: string | null;
+  priceMax: number | null;
+  currency: string | null;
+}
+
+/**
+ * Deterministic extraction for explicit, safety-critical constraints. The AI still handles
+ * fuzzy attributes, but cannot shrink a comma-formatted price ceiling (for example $110,000
+ * to $110). This also provides one inspectable representation of the fields the webhook uses.
+ */
+export function extractConfirmedNaturalLanguageIntent(text: string): ConfirmedNaturalLanguageIntent {
+  const intent = /\b(sell|selling|fs|for sale|wts)\b/i.test(text)
+    ? "sell"
+    : /\b(buy|buying|looking for|want|need|wtb|iso)\b/i.test(text)
+      ? "buy"
+      : null;
+  const brand = /\bpatek(?:\s+philippe)?\b/i.test(text) ? "Patek Philippe" : null;
+  const reference = text.match(/\b\d{3,}[A-Z][A-Z0-9-]*\b/i)?.[0].toUpperCase() ?? null;
+  const priceMax = parsePriceRange(text)?.max ?? null;
+  const currency = priceMax === null ? null : detectCurrency(text);
+  return { intent, brand, reference, priceMax, currency };
+}
 
 const INTERPRET_SYSTEM = `You convert a WhatsApp message into structured shopping intent for a luxury watch marketplace.
 Rules:
@@ -16,6 +44,12 @@ export async function interpretQuery(text: string): Promise<InterpretedQuery | n
   if (!trimmed) return null;
   const result = await callAiJson<InterpretedQuery>({ system: INTERPRET_SYSTEM, user: trimmed, maxTokens: 512 });
   if (!result || (result.action !== "buy" && result.action !== "sell")) return null;
+  const confirmed = extractConfirmedNaturalLanguageIntent(trimmed);
+  if (confirmed.intent) result.action = confirmed.intent;
+  if (confirmed.brand) result.brand = confirmed.brand;
+  if (confirmed.reference) result.referenceFamily = confirmed.reference;
+  if (confirmed.priceMax !== null) result.maxPrice = confirmed.priceMax;
+  if (confirmed.currency) result.currency = confirmed.currency;
   return result;
 }
 
@@ -29,6 +63,7 @@ export function toSearchPreferences(interpreted: InterpretedQuery): SearchPrefer
   const prefs: SearchPreferences = {};
   if (interpreted.minPrice !== null) prefs.priceMin = interpreted.minPrice;
   if (interpreted.maxPrice !== null) prefs.priceMax = interpreted.maxPrice;
+  if (interpreted.currency) prefs.priceCurrency = interpreted.currency;
   if (interpreted.location !== null) prefs.location = interpreted.location;
   if (interpreted.dialColor !== null) prefs.dialColor = interpreted.dialColor;
   if (interpreted.condition !== null) prefs.condition = interpreted.condition;

@@ -62,6 +62,7 @@ export type ConversationStage = "new" | "active" | "opted_out";
 export interface SearchPreferences {
   priceMin?: number;
   priceMax?: number;
+  priceCurrency?: string;
   location?: string;
   dialColor?: string;
   condition?: string;

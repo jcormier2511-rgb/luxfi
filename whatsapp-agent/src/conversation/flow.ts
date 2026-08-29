@@ -1,3 +1,6 @@
+import { config, isAiChatEnabled, isAiMatchingEnabledForPhone } from "../config";
+import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences } from "../types";
+import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals } from "../matching/engine";
 import { config, isAiMatchingEnabledForPhone } from "../config";
 import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences, MatchDecision, PendingSellIntake } from "../types";
 import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals, attachCurrencyDisplay, CurrencyDisplay } from "../matching/engine";
@@ -14,6 +17,9 @@ import { getActivePostingsForUser } from "../postings/postingsStore";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
+import { detectCurrency } from "../matching/currency";
+
+const OPT_OUT_WORDS = ["stop", "unsubscribe", "cancel", "opt out", "optout"];
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
 import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
@@ -108,7 +114,9 @@ function classify(segment: string): ItemRequest | null {
 
 export function parseItemRequests(text: string): ItemRequest[] {
   const segments = text
-    .split(/\n|,|;|\band\b/i)
+    // A comma inside a formatted number is data, not an item separator. Splitting
+    // "$110,000" here used to turn the request into "...under $110" plus "000".
+    .split(/\n|,(?!\d)|;|\band\b/i)
     .map((s) => s.trim())
     .filter(Boolean);
   const items: ItemRequest[] = [];
@@ -505,6 +513,7 @@ async function handlePreferenceAnswer(state: ConversationState, text: string, me
     const range = parsePriceRange(text);
     state.preferences.priceMin = range?.min;
     state.preferences.priceMax = range?.max;
+    state.preferences.priceCurrency = range ? detectCurrency(text) ?? undefined : undefined;
     pending.step = "location";
     messages.push(LOCATION_QUESTION);
     return;
@@ -580,6 +589,7 @@ function mergeFollowUpPreferences(partial: SearchPreferences, fromReply: SearchP
   return {
     priceMin: partial.priceMin ?? fromReply.priceMin,
     priceMax: partial.priceMax ?? fromReply.priceMax,
+    priceCurrency: partial.priceCurrency ?? fromReply.priceCurrency,
     location: partial.location ?? fromReply.location,
     dialColor: partial.dialColor ?? fromReply.dialColor,
     condition: partial.condition ?? fromReply.condition,
@@ -776,6 +786,18 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   const messages: string[] = [];
   const firstName = contact?.name?.trim().split(/\s+/)[0] || "there";
 
+  // START is a universal conversational reset, not only an opt-out recovery command. A user
+  // with old pending matches must be able to begin again instead of being trapped behind the
+  // approve/pass reminder shown in the reported live conversation.
+  if (normalize(text) === "start") {
+    state.stage = "active";
+    state.pendingMatches = undefined;
+    state.pendingPreferenceCollection = undefined;
+    state.pendingNaturalFollowUp = undefined;
+    saveState(state);
+    return { state, messages: ["Ready when you are — tell me naturally what you're looking to buy or sell, or ask me anything about your listings."] };
+  }
+
   if (isOptOut(text)) {
     state.stage = "opted_out";
     saveState(state);
@@ -952,6 +974,14 @@ export async function handleIncomingMessage(phone: string, text: string, contact
       // anything (already ruled out as a decision above, if matches were pending). AI here only
       // ever supplies the reply TEXT (see ai/chatReply.ts); it cannot search, approve, or touch
       // any state, so the canned fallback is a fully safe default whenever AI is off/unavailable
+      // General chat is enabled for all contacts once the operator explicitly enables AI and
+      // configures credentials; matching and decisions keep their stricter phone allowlist.
+      const canned = state.pendingMatches
+        ? 'Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.'
+        : 'Try "buy: Rolex Daytona" or "selling: Hermes Birkin".';
+      const aiReply = isAiChatEnabled()
+        ? await generateGeneralChatReply(text, state.pendingMatches?.matches.length ?? 0)
+        : null;
       // — and it's the ONLY thing every non-test-phone contact ever sees, unchanged.
       //
       // Real reported bug: state.pendingMatches stays set even after every entry in it has

@@ -53,14 +53,23 @@ test("required regression: when AI is unavailable, the test phone still falls ba
   assert.ok(result.messages.some((m) => m.includes('Try "buy:')), "an AI failure must never leave the user with no reply at all");
 });
 
-test("a non-test phone always gets the canned fallback, never an AI call", async (t) => {
+test("general chat uses natural language for a non-test phone when AI is enabled", async (t) => {
   resetState(OTHER_PHONE);
-  const spy = t.mock.method(chatReplyModule, "generateGeneralChatReply", async () => {
-    throw new Error("must never be called for a non-test phone");
-  });
+  const spy = t.mock.method(chatReplyModule, "generateGeneralChatReply", async () => "Here’s a quick summary of your open matches.");
 
   await handleIncomingMessage(OTHER_PHONE, "hi");
-  const result = await handleIncomingMessage(OTHER_PHONE, "how's it going");
-  assert.ok(result.messages.some((m) => m.includes('Try "buy:')));
-  assert.equal(spy.mock.callCount(), 0);
+  const result = await handleIncomingMessage(OTHER_PHONE, "listing summary");
+  assert.deepEqual(result.messages, ["Here’s a quick summary of your open matches."]);
+  assert.equal(spy.mock.callCount(), 1);
+});
+
+test("START clears conversational work and never repeats the approve/pass dead end", async () => {
+  resetState(TEST_PHONE);
+  await handleIncomingMessage(TEST_PHONE, "hi");
+  const result = await handleIncomingMessage(TEST_PHONE, "start");
+  assert.equal(result.state.pendingMatches, undefined);
+  assert.equal(result.state.pendingPreferenceCollection, undefined);
+  assert.equal(result.state.pendingNaturalFollowUp, undefined);
+  assert.match(result.messages[0], /tell me naturally/i);
+  assert.doesNotMatch(result.messages[0], /approve|pass/i);
 });

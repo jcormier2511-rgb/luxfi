@@ -6,6 +6,7 @@ import { interpretQuery } from "../ai/queryInterpreter";
 import { rerankCandidates } from "../ai/rerank";
 import { computePriceSignal, PriceSignal } from "./priceSignal";
 import { isPartsOrAccessoryListing } from "./partsFilter";
+import { CurrencyCode, convertMoneyToUsd, formatOriginalAndUsd, parseMoney, SUPPORTED_CURRENCIES } from "./currency";
 import { convertAmount } from "../fx/convert";
 import { formatCurrency } from "../fx/currency";
 
@@ -36,11 +37,36 @@ function score(listing: InventoryListing, tokens: string[]): number {
   return matches;
 }
 
-/** Single shared price-parsing path (see normalizePriceShorthand) — a stored listing's price
- *  string is never re-parsed a second, different way at filter/display time. */
-function parseListingPrice(raw: string): number | undefined {
-  const n = normalizePriceShorthand(raw);
-  return n === null ? undefined : n;
+function asCurrency(raw?: string): CurrencyCode {
+  const normalized = raw?.toUpperCase() === "RMB" ? "CNY" : raw?.toUpperCase();
+  return SUPPORTED_CURRENCIES.includes(normalized as CurrencyCode) ? normalized as CurrencyCode : "USD";
+}
+
+async function normalizePrices(
+  listings: InventoryListing[], preferences?: SearchPreferences
+): Promise<{ listings: InventoryListing[]; preferences?: SearchPreferences; conversionAvailable: boolean }> {
+  const normalizedListings = await Promise.all(listings.map(async (listing) => {
+    const money = parseMoney(listing.price);
+    if (!money) return listing;
+    const priceUsd = await convertMoneyToUsd(money);
+    return { ...listing, priceAmount: money.amount, priceCurrency: money.currency, priceUsd: priceUsd ?? undefined };
+  }));
+  if (!preferences || (preferences.priceMin === undefined && preferences.priceMax === undefined)) {
+    return { listings: normalizedListings, preferences, conversionAvailable: true };
+  }
+  const currency = asCurrency(preferences.priceCurrency);
+  const rate = await convertMoneyToUsd({ amount: 1, currency });
+  if (rate === null) return { listings: normalizedListings, preferences, conversionAvailable: false };
+  return {
+    listings: normalizedListings,
+    preferences: {
+      ...preferences,
+      priceMin: preferences.priceMin === undefined ? undefined : preferences.priceMin * rate,
+      priceMax: preferences.priceMax === undefined ? undefined : preferences.priceMax * rate,
+      priceCurrency: "USD",
+    },
+    conversionAvailable: true,
+  };
 }
 
 /**
@@ -343,13 +369,22 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   const wantType = interpreted.action === "buy" ? "FS" : "WTB";
   // Excludes multi-item price-list dumps and standalone part/accessory listings before AI ever
   // sees the pool — see isUnambiguousListing/isCompleteWatchListing.
-  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
+  const rawCandidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
   // The reference safety gate below must never depend solely on the AI correctly parsing the
   // reference out of the message — if interpretQuery's own extraction misses/garbles it (a real
   // model failure mode, not hypothetical), falling back to null here would let EVERY listing
   // through the eligible filter, leaving relevance entirely up to the AI reranker's judgment.
   // extractRequestedReference is the same deterministic regex-based extractor the plain
   // findMatches() path already relies on — reused here as a backstop, never a replacement.
+  const rawPreferences: SearchPreferences = {
+    ...preferences,
+    priceMax: interpreted.maxPrice ?? preferences?.priceMax,
+    priceCurrency: interpreted.currency ?? preferences?.priceCurrency,
+  };
+  const normalized = await normalizePrices(rawCandidates, rawPreferences);
+  if (!normalized.conversionAvailable) return [];
+  const candidates = normalized.listings;
+  const normalizedPreferences = normalized.preferences;
   const requestedFamily = interpreted.referenceFamily
     ? normalizeReference(interpreted.referenceFamily)
     : extractRequestedReference(request.query);
@@ -363,7 +398,7 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   // never applied only "if something would otherwise be left." A listing whose price is
   // missing/ambiguous (ASK, or unparseable) is excluded when a ceiling is stated, rather than
   // presented as a confirmed match with an unverified price.
-  const priceCeiling = interpreted.maxPrice ?? preferences?.priceMax;
+  const priceCeiling = normalizedPreferences?.priceMax;
   // Same mandatory-location principle as findMatches (see matchesLocation) — a stated "US only"
   // is never relaxed just because the AI's own pool happens to be thin without it.
   const requestedLocation = interpreted.location ?? preferences?.location;
