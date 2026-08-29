@@ -1,0 +1,30 @@
+name: Validate WhatsApp agent
+
+on:
+  pull_request:
+    paths:
+      - "whatsapp-agent/**"
+      - ".github/workflows/whatsapp-agent-validation.yml"
+  workflow_dispatch:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: whatsapp-agent
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: whatsapp-agent/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run full test suite
+        run: npm test
+      - name: Run production build
+        run: npm run build
