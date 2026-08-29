@@ -14,6 +14,7 @@ export interface PostingRow {
   type: PostingType;
   original_text: string;
   brand: string;
+  model: string;
   reference: string;
   condition: string;
   price: string | null; // NUMERIC comes back as string from pg
@@ -28,7 +29,7 @@ export interface PostingRow {
   reminder_sent_for_expires_at: string | null;
 }
 
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const REQUEST_LIFETIME_MS = 15 * 24 * 60 * 60 * 1000;
 
 function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === null || a === undefined || a === "") return b === null || b === undefined || b === "";
@@ -108,7 +109,7 @@ export async function ingestChatPosting(input: ChatPostingInput): Promise<Ingest
 
   const canonicalUserId = await getOrCreateCanonicalUser(input.platform, input.senderIdentity);
   const normalized = normalizeText(input.text);
-  const expiresAt = new Date(Date.now() + THIRTY_DAYS_MS).toISOString();
+  const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
 
   return withSchema(async (pool) => {
     const existing = await pool.query<PostingRow>(
@@ -184,7 +185,7 @@ export interface DirectSellPostingInput {
 export async function createDirectPosting(input: DirectSellPostingInput): Promise<PostingRow> {
   const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", input.phone);
   const { brand } = normalizeText(input.description);
-  const expiresAt = new Date(Date.now() + THIRTY_DAYS_MS).toISOString();
+  const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
 
   return withSchema(async (pool) => {
     const insert = await pool.query<PostingRow>(
@@ -248,7 +249,7 @@ export interface MirrorFsResult {
 export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorFsResult> {
   const priceNum = Number(listing.price.replace(/[^0-9.]/g, ""));
   const price = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
-  const expiresAt = new Date(Date.now() + THIRTY_DAYS_MS).toISOString();
+  const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
   const originalText = listing.description || listing.item;
 
   const result = await withSchema(async (pool) => {
@@ -278,7 +279,7 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
 
     const update = await pool.query<PostingRow>(
       `UPDATE postings SET original_text=$1, brand=$2, reference=$3, condition=$4, price=$5,
-         contact_name=$6, contact_phone=$7, detail_url=$8, status='active', updated_at=now(), last_seen_at=now()
+         contact_name=$6, contact_phone=$7, detail_url=$8, updated_at=now(), last_seen_at=now()
        WHERE id=$9 RETURNING *`,
       [originalText, listing.brand, listing.ref, listing.condition, price, listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
     );
@@ -365,7 +366,7 @@ export async function findOppositeSideCandidates(posting: PostingRow): Promise<P
 export async function extendPosting(id: number): Promise<PostingRow | null> {
   return withSchema(async (pool) => {
     const result = await pool.query<PostingRow>(
-      `UPDATE postings SET expires_at = expires_at + INTERVAL '30 days', updated_at = now()
+      `UPDATE postings SET expires_at = now() + INTERVAL '15 days', renewed_at = now(), updated_at = now()
        WHERE id = $1 AND status = 'active' RETURNING *`,
       [id]
     );

@@ -161,6 +161,16 @@ export const config = {
     // exists. Configurable so a later ops decision (e.g. 7 days) doesn't need a code change.
     reminderDaysBeforeExpiry: Number(process.env.V4_REMINDER_DAYS_BEFORE_EXPIRY ?? 3),
   },
+  marketUpdates: {
+    // Deliberately off until Railway is explicitly configured. The scheduler and schema are
+    // harmless while disabled; no customer-facing message can be sent by default.
+    enabled: (process.env.ENABLE_MARKET_UPDATES ?? "false").toLowerCase() === "true",
+    morningTime: process.env.MARKET_UPDATE_MORNING_TIME ?? "09:00",
+    afternoonTime: process.env.MARKET_UPDATE_AFTERNOON_TIME ?? "16:00",
+    timezone: process.env.MARKET_UPDATE_TIMEZONE ?? "America/New_York",
+    allowUnchanged: (process.env.MARKET_UPDATE_ALLOW_UNCHANGED ?? "false").toLowerCase() === "true",
+    minimumObservations: Number(process.env.MARKET_UPDATE_MIN_OBSERVATIONS ?? 3),
+  },
   // Hybrid AI-assisted matching (src/ai/) — layers NL query interpretation and AI reranking
   // on top of the existing deterministic engine; never replaces it. Off by default, and even
   // once enabled, only ever active for AI_MATCHING_TEST_PHONE — every other contact keeps

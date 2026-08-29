@@ -22,7 +22,7 @@ after(async () => {
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
 
-test("extend <id> pushes the posting's expiry forward by 30 days for its own owner", async () => {
+test("extend <id> explicitly renews the posting for 15 days for its own owner", async () => {
   await db._resetDbForTests();
   const posting = await store.ingestChatPosting({
     platform: "whatsapp",
@@ -31,13 +31,13 @@ test("extend <id> pushes the posting's expiry forward by 30 days for its own own
     senderIdentity: "buyer-extend-1",
     text: "WTB Rolex Daytona 116500LN budget $30,000",
   });
-  const before = new Date(posting.posting!.expires_at).getTime();
+  const renewedAt = Date.now();
 
   const reply = await tryHandleV4Extend("buyer-extend-1", `extend ${posting.posting!.id}`);
-  assert.match(reply!, /Extended/i);
+  assert.match(reply!, /Renewed/i);
 
   const after = await store.getPosting(posting.posting!.id);
-  assert.ok(new Date(after!.expires_at).getTime() - before >= 29 * 24 * 60 * 60 * 1000);
+  assert.ok(Math.abs(new Date(after!.expires_at).getTime() - renewedAt - 15 * 86400_000) < 5_000);
 });
 
 test("extend <id> is refused (falls through as null) for a posting that isn't the requester's own", async () => {

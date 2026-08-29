@@ -218,14 +218,26 @@ test("findOppositeSideCandidates returns active opposite-type postings from othe
   assert.equal(candidates[0].type, "FS");
 });
 
-test("extendPosting pushes expires_at forward by 30 days for an active posting", async () => {
+test("requests expire at 15 days and explicit renewal resets the exact 15-day window", async () => {
   await db._resetDbForTests();
+  const createdAt = Date.now();
   const created = await ingestChatPosting(chatInput());
-  const before = new Date(created.posting!.expires_at).getTime();
+  assert.ok(Math.abs(new Date(created.posting!.expires_at).getTime() - createdAt - 15 * 86400_000) < 5_000);
+  await db.withSchema((pool) => pool.query(`UPDATE postings SET expires_at=now() + interval '1 day' WHERE id=$1`, [created.posting!.id]));
+  const renewedAt = Date.now();
   const extended = await extendPosting(created.posting!.id);
   assert.ok(extended);
   const after = new Date(extended!.expires_at).getTime();
-  assert.ok(after - before >= 29 * 24 * 60 * 60 * 1000, "expiry should move forward by roughly 30 days");
+  assert.ok(Math.abs(after - renewedAt - 15 * 86400_000) < 5_000, "renewal starts a fresh 15-day window");
+});
+
+test("an ordinary edit does not renew or move a request's expiry", async () => {
+  await db._resetDbForTests();
+  const created = await ingestChatPosting(chatInput());
+  const expiry = created.posting!.expires_at;
+  const edited = await ingestChatPosting(chatInput({ text: "WTB Rolex Daytona 116500LN budget $31,000" }));
+  assert.equal(edited.created, false);
+  assert.equal(new Date(edited.posting!.expires_at).getTime(), new Date(expiry).getTime());
 });
 
 test("extendPosting is a no-op for a posting that isn't active", async () => {

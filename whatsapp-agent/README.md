@@ -61,6 +61,23 @@ from WatchFacts' own API into a Postgres database (`DATABASE_URL`). See
 npm run dev
 ```
 
+### Personalized market-update digests
+
+The optional market-update scheduler combines every active WTB/FS request for a WhatsApp
+user into one digest at 09:00 and 16:00 America/New_York by default. It is disabled unless
+`ENABLE_MARKET_UPDATES=true`. Configure the wall-clock windows with
+`MARKET_UPDATE_MORNING_TIME`, `MARKET_UPDATE_AFTERNOON_TIME`, and the IANA
+`MARKET_UPDATE_TIMEZONE`; daylight-saving changes are handled by `Intl`. Set
+`MARKET_UPDATE_ALLOW_UNCHANGED=true` to permit unchanged/no-activity updates, and
+`MARKET_UPDATE_MIN_OBSERVATIONS` (default 3) to control when sentiment has enough evidence.
+
+Sentiment is deterministic: below the minimum total observation count it is insufficient;
+otherwise one side must be both at least 50% larger and at least two observations ahead to
+be described as exceeding the other side. All other samples are reported as balanced.
+Delivery claims are persisted by canonical user, local date, morning/afternoon period and
+timezone, so overlapping replicas and restarts cannot normally send the same window twice.
+Only a confirmed Whapi send is marked delivered; failures remain retryable.
+
 Configure the Whapi.Cloud channel's webhook URL (Settings → Webhooks, with the `messages`
 event enabled) to:
 

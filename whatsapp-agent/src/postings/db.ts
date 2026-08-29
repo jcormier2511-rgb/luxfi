@@ -212,6 +212,7 @@ async function ensureSchema(): Promise<void> {
         -- exists, so a column added later needs its own idempotent ADD COLUMN IF NOT EXISTS
         -- to actually reach a database that already has an older version of these tables.
         ALTER TABLE postings ADD COLUMN IF NOT EXISTS reminder_sent_for_expires_at TIMESTAMPTZ;
+        ALTER TABLE postings ADD COLUMN IF NOT EXISTS renewed_at TIMESTAMPTZ;
         ALTER TABLE matches ADD COLUMN IF NOT EXISTS connected_at TIMESTAMPTZ;
 
         -- Lets the v3 on-demand flow's own approvals share this table (see the CREATE TABLE
@@ -230,6 +231,26 @@ async function ensureSchema(): Promise<void> {
         ALTER TABLE approvals ADD COLUMN IF NOT EXISTS listing_description TEXT;
         ALTER TABLE approvals ADD COLUMN IF NOT EXISTS counterpart_name TEXT;
         ALTER TABLE approvals ADD COLUMN IF NOT EXISTS counterpart_phone TEXT;
+
+        -- One row is the durable idempotency key for one user's local delivery window.
+        -- The sending state is a short lease; delivered rows are immutable and failed/abandoned
+        -- leases can be reclaimed by any replica.
+        CREATE TABLE IF NOT EXISTS market_update_deliveries (
+          id BIGSERIAL PRIMARY KEY,
+          canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id),
+          period TEXT NOT NULL CHECK (period IN ('morning', 'afternoon')),
+          local_date DATE NOT NULL,
+          timezone TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('sending', 'delivered', 'failed')),
+          activity_signature TEXT NOT NULL DEFAULT '',
+          claimed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          delivered_at TIMESTAMPTZ,
+          error TEXT,
+          UNIQUE (canonical_user_id, period, local_date, timezone)
+        );
+        CREATE INDEX IF NOT EXISTS market_update_delivery_history
+          ON market_update_deliveries (canonical_user_id, delivered_at DESC)
+          WHERE status='delivered';
 
         -- Widens source_type for the private "sell a watch" conversational intake
         -- (conversation/flow.ts's sell-intake flow, see postingsStore.ts's createDirectPosting):
@@ -285,7 +306,7 @@ export async function _resetDbForTests(): Promise<void> {
   await getPool().query(`
     DROP TABLE IF EXISTS
       reconciliation_runs, postings_meta, billing_ledger, approvals, match_recipients, matches,
-      posting_images, postings, linked_identities, canonical_users
+      market_update_deliveries, posting_images, postings, linked_identities, canonical_users
     CASCADE
   `);
   schemaReady = null;
