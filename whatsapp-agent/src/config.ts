@@ -168,6 +168,8 @@ export const config = {
     morningTime: process.env.MARKET_UPDATE_MORNING_TIME ?? "09:00",
     afternoonTime: process.env.MARKET_UPDATE_AFTERNOON_TIME ?? "16:00",
     timezone: process.env.MARKET_UPDATE_TIMEZONE ?? "America/New_York",
+    // Capped by duePeriod at 60 minutes so a bad Railway value can never send a digest hours late.
+    graceMinutes: Number(process.env.MARKET_UPDATE_GRACE_MINUTES ?? 60),
     allowUnchanged: (process.env.MARKET_UPDATE_ALLOW_UNCHANGED ?? "false").toLowerCase() === "true",
     minimumObservations: Number(process.env.MARKET_UPDATE_MIN_OBSERVATIONS ?? 3),
   },

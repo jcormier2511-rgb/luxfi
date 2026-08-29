@@ -68,6 +68,9 @@ user into one digest at 09:00 and 16:00 America/New_York by default. It is disab
 `ENABLE_MARKET_UPDATES=true`. Configure the wall-clock windows with
 `MARKET_UPDATE_MORNING_TIME`, `MARKET_UPDATE_AFTERNOON_TIME`, and the IANA
 `MARKET_UPDATE_TIMEZONE`; daylight-saving changes are handled by `Intl`. Set
+`MARKET_UPDATE_GRACE_MINUTES` (default and maximum 60) to recover a scheduled delivery
+missed during a short Railway restart; the cap prevents a morning digest being sent hours late.
+Set it to zero to require the exact scheduled minute. Set
 `MARKET_UPDATE_ALLOW_UNCHANGED=true` to permit unchanged/no-activity updates, and
 `MARKET_UPDATE_MIN_OBSERVATIONS` (default 3) to control when sentiment has enough evidence.
 

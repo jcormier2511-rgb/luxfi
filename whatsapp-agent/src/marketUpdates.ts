@@ -54,11 +54,29 @@ export function duePeriod(
   at: Date,
   timezone: string,
   morningTime: string,
-  afternoonTime: string
+  afternoonTime: string,
+  graceMinutes = 0
 ): { period: MarketUpdatePeriod; localDate: string } | null {
   const clock = localClock(at, timezone);
-  if (clock.time === morningTime) return { period: "morning", localDate: clock.date };
-  if (clock.time === afternoonTime) return { period: "afternoon", localDate: clock.date };
+  const toMinutes = (time: string): number | null => {
+    const match = /^(\d{2}):(\d{2})$/.exec(time);
+    if (!match) return null;
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    return hours <= 23 && minutes <= 59 ? hours * 60 + minutes : null;
+  };
+  const nowMinutes = toMinutes(clock.time)!;
+  // Operators may shorten/disable recovery, but never widen it past one hour: this safety
+  // bound prevents a typo from turning a morning update into a digest sent many hours late.
+  const grace = Math.min(60, Math.max(0, Number.isFinite(graceMinutes) ? Math.floor(graceMinutes) : 0));
+  const isDue = (scheduled: string) => {
+    const scheduledMinutes = toMinutes(scheduled);
+    if (scheduledMinutes === null) return false;
+    const elapsed = nowMinutes - scheduledMinutes;
+    return elapsed >= 0 && elapsed <= grace;
+  };
+  if (isDue(morningTime)) return { period: "morning", localDate: clock.date };
+  if (isDue(afternoonTime)) return { period: "afternoon", localDate: clock.date };
   return null;
 }
 
@@ -247,7 +265,13 @@ export function runMarketUpdateScheduler(): void {
   if (schedulerStarted) return;
   schedulerStarted = true;
   const tick = async () => {
-    const due = duePeriod(new Date(), config.marketUpdates.timezone, config.marketUpdates.morningTime, config.marketUpdates.afternoonTime);
+    const due = duePeriod(
+      new Date(),
+      config.marketUpdates.timezone,
+      config.marketUpdates.morningTime,
+      config.marketUpdates.afternoonTime,
+      config.marketUpdates.graceMinutes
+    );
     if (!due) return;
     const outcome = await runMarketUpdates(due.period, due.localDate);
     if (outcome.sent || outcome.failed) console.log(`[market-updates] ${due.period}: ${outcome.sent} sent, ${outcome.skipped} skipped, ${outcome.failed} failed`);

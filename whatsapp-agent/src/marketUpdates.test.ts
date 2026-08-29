@@ -57,6 +57,29 @@ test("both local schedules and DST are calculated in America/New_York", () => {
   assert.equal(duePeriod(new Date("2026-07-15T19:59:00Z"), "America/New_York", "09:00", "16:00"), null);
 });
 
+test("scheduler restart recovery is limited to the configurable one-hour grace window", () => {
+  assert.deepEqual(
+    duePeriod(new Date("2026-01-15T14:01:00Z"), "America/New_York", "09:00", "16:00", 60),
+    { period: "morning", localDate: "2026-01-15" },
+    "a restart at 09:01 recovers the morning digest"
+  );
+  assert.deepEqual(
+    duePeriod(new Date("2026-01-15T14:59:00Z"), "America/New_York", "09:00", "16:00", 60),
+    { period: "morning", localDate: "2026-01-15" },
+    "a restart within the grace window recovers the digest"
+  );
+  assert.equal(
+    duePeriod(new Date("2026-01-15T15:01:00Z"), "America/New_York", "09:00", "16:00", 60),
+    null,
+    "a morning digest is never sent outside the one-hour grace window"
+  );
+  assert.equal(
+    duePeriod(new Date("2026-01-15T14:01:00Z"), "America/New_York", "09:00", "16:00", 0),
+    null,
+    "operators can disable restart recovery"
+  );
+});
+
 test("multiple watches are combined with aggregate-only, 15-day-safe copy", () => {
   const text = formatDigest([
     { postingId: 1, type: "FS", brand: "Patek Philippe", model: "", reference: "5712G", buyers: 8, sellers: 3, newMatches: 2 },

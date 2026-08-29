@@ -25,6 +25,20 @@ import { config } from "../config";
 let pool: Pool | null = null;
 let schemaReady: Promise<void> | null = null;
 
+// One-time migration and permanently idempotent invariant repair for records created by the
+// old 30-day implementation. LEAST means this can only shorten an active request; it never
+// extends a record that already expires sooner. Terminal/closed statuses are untouched.
+const CAP_ACTIVE_POSTING_EXPIRATIONS_SQL = `
+  UPDATE postings
+  SET expires_at = LEAST(expires_at, COALESCE(renewed_at, created_at) + INTERVAL '15 days'),
+      updated_at = CASE
+        WHEN expires_at > COALESCE(renewed_at, created_at) + INTERVAL '15 days' THEN now()
+        ELSE updated_at
+      END
+  WHERE status = 'active'
+    AND expires_at > COALESCE(renewed_at, created_at) + INTERVAL '15 days';
+`;
+
 function getPool(): Pool {
   if (!pool) {
     pool = new Pool({ connectionString: config.database.url });
@@ -213,6 +227,7 @@ async function ensureSchema(): Promise<void> {
         -- to actually reach a database that already has an older version of these tables.
         ALTER TABLE postings ADD COLUMN IF NOT EXISTS reminder_sent_for_expires_at TIMESTAMPTZ;
         ALTER TABLE postings ADD COLUMN IF NOT EXISTS renewed_at TIMESTAMPTZ;
+        ${CAP_ACTIVE_POSTING_EXPIRATIONS_SQL}
         ALTER TABLE matches ADD COLUMN IF NOT EXISTS connected_at TIMESTAMPTZ;
 
         -- Lets the v3 on-demand flow's own approvals share this table (see the CREATE TABLE
@@ -284,6 +299,13 @@ export async function withSchema<T>(fn: (pool: Pool) => Promise<T>): Promise<T> 
  */
 export async function initSchema(): Promise<void> {
   await ensureSchema();
+}
+
+/** Exported for an explicit maintenance rerun and migration regression tests. */
+export async function capActivePostingExpirations(): Promise<number> {
+  await ensureSchema();
+  const result = await getPool().query(CAP_ACTIVE_POSTING_EXPIRATIONS_SQL);
+  return result.rowCount ?? 0;
 }
 
 export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
