@@ -25,7 +25,6 @@ export function getState(phone: string): ConversationState {
     all[phone] ?? {
       phone,
       stage: "new",
-      approvedCount: 0,
       hired: false,
       preferencesCollected: false,
       updatedAt: new Date().toISOString(),

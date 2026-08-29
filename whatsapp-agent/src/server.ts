@@ -8,7 +8,8 @@ import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { getActiveListings, getSyncStatus, searchListingsForDiagnostics } from "./watchfacts/inventoryDb";
-import { getEntitlement, setManualOverride } from "./billing/entitlementStore";
+import { getEntitlement, setManualOverride, setPlan } from "./billing/entitlementStore";
+import { isPlanKey } from "./billing/plans";
 import { handleIncomingSellerPhoto } from "./matching/photoRequests";
 import { approveMatch, passMatch, ApprovalOutcome } from "./postings/notify";
 import { runReconciliation } from "./postings/matching";
@@ -41,7 +42,9 @@ function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number): strin
     case "posting_closed":
       return `That listing has already reached its match limit, so this one can't be approved.`;
     case "locked":
-      return config.fiFlow.declineMessage;
+      return outcome.lockReason === "weekly_cap"
+        ? config.fiFlow.weeklyCapMessage(outcome.plan!, outcome.weeklyLimit!)
+        : config.fiFlow.noPlanMessage;
     case "invalid":
       return `I couldn't find match ${matchId}.`;
   }
@@ -322,6 +325,27 @@ export function createServer() {
     if (!phone) return res.status(400).json({ error: "?phone=... required" });
     const enabled = req.query.enabled !== "false"; // ?enabled=false to revoke; anything else (including omitted) enables
     const entitlement = await setManualOverride(phone, enabled);
+    res.json({ ok: true, entitlement });
+  });
+
+  // Flat-fee, weekly-capped Fi membership tiers (billing/plans.ts) — the ONLY way to assign
+  // one is this admin action; no payment processor exists, so this is never self-service and
+  // never a live charge. ?plan=none clears an assigned plan back to locked.
+  app.post("/admin/entitlement/plan", async (req, res) => {
+    if (req.query.token !== config.server.webhookToken) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const phone = String(req.query.phone ?? "");
+    if (!phone) return res.status(400).json({ error: "?phone=... required" });
+    const planParam = String(req.query.plan ?? "");
+    if (planParam === "none") {
+      const entitlement = await setPlan(phone, null);
+      return res.json({ ok: true, entitlement });
+    }
+    if (!isPlanKey(planParam)) {
+      return res.status(400).json({ error: "?plan=... must be one of tier1, tier2, tier3, or none" });
+    }
+    const entitlement = await setPlan(phone, planParam);
     res.json({ ok: true, entitlement });
   });
 

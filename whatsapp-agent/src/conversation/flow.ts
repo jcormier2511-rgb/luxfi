@@ -6,7 +6,9 @@ import { requestPhotosForMatch } from "../matching/photoRequests";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
-import { getEntitlement, recordBillingRequested } from "../billing/entitlementStore";
+import { recordBillingRequested } from "../billing/entitlementStore";
+import { MEMBERSHIP_PLANS } from "../billing/plans";
+import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone } from "../postings/approvalUsage";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
@@ -196,13 +198,24 @@ const FI_MENU = [
   '"help" — show this menu',
 ].join("\n");
 
-/** "status" — a quick, honest snapshot of trial usage and anything still awaiting a decision. */
+/** "status" — a quick, honest snapshot of trial/plan usage and anything still awaiting a
+ *  decision. Reads live from the same canonical Postgres counter both the on-demand (v3) and
+ *  automatic-matching (v4) approve paths share (see postings/approvalUsage.ts) — never a
+ *  locally-cached count that could drift from what actually gated the last approval. */
 async function handleStatusCommand(state: ConversationState, messages: string[]): Promise<void> {
   const pendingCount = state.pendingMatches?.decisions.filter((d) => d === "pending").length ?? 0;
-  const entitlement = await getEntitlement(state.phone);
-  const approvalLine = entitlement.manualOverrideEnabled
-    ? `Approved matches: ${state.approvedCount} (unlimited — your account is unlocked)`
-    : `Approved matches: ${state.approvedCount}/${config.trial.maxApprovedMatches}`;
+  const usage = await getApprovalUsage(state.phone);
+  let approvalLine: string;
+  if (usage.isComplimentary) {
+    approvalLine = `Approved matches: ${usage.totalApproved}/${config.trial.maxApprovedMatches} (complimentary trial)`;
+  } else if (usage.weeklyLimit === null) {
+    approvalLine = `Approved matches: unlimited (your plan has no weekly cap)`;
+  } else if (usage.weeklyLimit === 0) {
+    approvalLine = `Approved matches: locked — no active Fi membership. Message "join" to get started.`;
+  } else {
+    const planLabel = MEMBERSHIP_PLANS[usage.entitlement.plan!].label;
+    approvalLine = `Approved matches this week: ${usage.weeklyUsed}/${usage.weeklyLimit} (${planLabel} plan)`;
+  }
   const pendingLine =
     pendingCount > 0
       ? `Pending decisions: ${pendingCount} match${pendingCount === 1 ? "" : "es"} awaiting approve/pass`
@@ -301,15 +314,6 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
   console.log(`[router] new_search=true pending_match_preserved=${hadExistingPending}`);
 }
 
-/**
- * Handles an "approve <n>" / "pass <n>" reply against the currently pending match set.
- *
- * Fi Build Spec v4 §11: after the 3rd complimentary approval, further approvals are locked
- * until Fi billing is authorized. No payment processor exists yet, so the entitlement check
- * is against `account_entitlements.manual_override_enabled` (Postgres) — the ONLY way to
- * unlock further approvals is an admin action (POST /admin/entitlement/override), never a
- * self-service command and never a live charge. Passing/monitoring stay unrestricted either way.
- */
 /** The highest-indexed still-"pending" entry — spec: "approve/pass without a number applies to
  *  the latest unresolved match." Null when every entry has already been decided. */
 function findLatestPendingIndex(pending: { decisions: MatchDecision[] }): number | null {
@@ -319,6 +323,19 @@ function findLatestPendingIndex(pending: { decisions: MatchDecision[] }): number
   return null;
 }
 
+/**
+ * Handles an "approve <n>" / "pass <n>" reply against the currently pending match set.
+ *
+ * After the 3rd complimentary approval, further approvals are gated by the SAME shared
+ * canonical-account usage v4's automatic-matching flow uses (postings/approvalUsage.ts) —
+ * no plan assigned locks approving outright; a tier1/tier2 plan allows up to its rolling
+ * 7-day weekly cap; tier3 or the legacy admin override is unlimited. This on-demand flow has
+ * no real Postgres match row of its own (it's an ephemeral search result, not a persisted
+ * posting pair), so its approvals are recorded with a NULL match_id — see
+ * recordApprovalEventForPhone. No payment processor exists, so this is never a live charge;
+ * an admin assigns the plan (POST /admin/entitlement/plan), never self-service. Passing/
+ * monitoring stay unrestricted either way.
+ */
 async function handleDecision(state: ConversationState, decision: DecisionCommand, messages: string[], firstName: string): Promise<void> {
   const pending = state.pendingMatches!;
 
@@ -351,29 +368,28 @@ async function handleDecision(state: ConversationState, decision: DecisionComman
     return;
   }
 
-  // Approving is the only thing metered against the trial.
-  if (state.approvedCount >= config.trial.maxApprovedMatches) {
-    const entitlement = await getEntitlement(state.phone);
-    if (!entitlement.manualOverrideEnabled) {
-      messages.push(config.fiFlow.declineMessage);
-      return;
-    }
+  // Approving is the only thing metered against the trial/plan.
+  const usage = await getApprovalUsage(state.phone);
+  const gate = evaluateApprovalGate(usage);
+  if (!gate.allowed) {
+    messages.push(gate.reason === "no_plan" ? config.fiFlow.noPlanMessage : config.fiFlow.weeklyCapMessage(gate.plan, gate.weeklyLimit));
+    return;
   }
 
+  await recordApprovalEventForPhone(usage.canonicalUserId, gate.isComplimentary);
   pending.decisions[idx] = "approved";
-  state.approvedCount += 1;
   messages.push(formatMatchApproved(pending.matches[idx], idx));
 
-  if (state.approvedCount === config.trial.maxApprovedMatches) {
+  if (gate.isComplimentary && usage.totalApproved + 1 === config.trial.maxApprovedMatches) {
     messages.push(config.fiFlow.conversionPitch(firstName));
   }
 }
 
 /**
  * "photos <n>" / "photo <n>" / "request photos <n>" — private side traffic on a pending FS/
- * seller match, never a decision: doesn't touch state.approvedCount (nothing here is metered
- * against the trial) and never closes or passes the match — the buyer can still approve or
- * pass at any time, before or after photos arrive. See matching/photoRequests.ts.
+ * seller match, never a decision: never touches approval usage (nothing here is metered
+ * against the trial or weekly plan cap) and never closes or passes the match — the buyer can
+ * still approve or pass at any time, before or after photos arrive. See matching/photoRequests.ts.
  */
 async function handlePhotoRequest(state: ConversationState, index: number, messages: string[]): Promise<void> {
   const pending = state.pendingMatches!;

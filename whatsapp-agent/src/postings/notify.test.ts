@@ -171,7 +171,7 @@ test("an admin manual override unlocks approvals past the third — and every le
   );
   assert.deepEqual(
     ledger.rows.map((r) => r.billing_status),
-    ["complimentary", "complimentary", "complimentary", "admin_override_pending_billing"]
+    ["complimentary", "complimentary", "complimentary", "plan_included"]
   );
 });
 

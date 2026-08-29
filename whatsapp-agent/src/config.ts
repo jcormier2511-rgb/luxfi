@@ -1,5 +1,6 @@
 import "dotenv/config";
 import path from "path";
+import { MEMBERSHIP_PLANS, PlanKey } from "./billing/plans";
 
 function required(name: string, fallback?: string): string {
   const v = process.env[name] ?? fallback;
@@ -72,20 +73,38 @@ export const config = {
     maxApprovedMatches: Number(process.env.TRIAL_MAX_APPROVED_MATCHES ?? process.env.TRIAL_MAX_ITEMS ?? 3),
     maxOptionsPerItem: Number(process.env.TRIAL_MAX_OPTIONS_PER_ITEM ?? 5),
   },
-  // Fi Conversation Flow Spec (v3) copy. Billing is tracked only (approvedCount / hired on
-  // ConversationState) — no payment processor is wired in, so "join" just unlocks unlimited
-  // approvals going forward rather than charging anything.
+  // Fi Conversation Flow Spec (v3) copy. Billing is tracked in Postgres only (canonical_users.
+  // total_approved_count / account_entitlements — see postings/approvalUsage.ts and
+  // billing/entitlementStore.ts) — no payment processor is wired in, so "join" records intent
+  // for an admin to review rather than charging or unlocking anything itself.
   fiFlow: {
     introMessage:
       process.env.FI_INTRO_MESSAGE ??
       "Hi, I'm Fi — your personal luxury concierge.\nI'm here to help you:\n1. Find a buyer\n2. Find a seller\n3. Check pricing and market trends\n4. Check dealer reputation / references\n\nI'll automatically work on your first 3 matches so you can see what I can do.",
+    // Flat-fee, weekly-capped tiers (billing/plans.ts) — no per-approval charge. Fired exactly
+    // once, on the 3rd complimentary approval.
     conversionPitch: (firstName: string) =>
       `Hi ${firstName}, I hope you've enjoyed having me work for you.\nI can keep monitoring the market and working on your behalf automatically.\n\n` +
-      `Fi Membership — $50/month (free with WatchFacts membership)\n- $2 per approved match/task\n\n` +
+      `Fi Membership — flat ${MEMBERSHIP_PLANS.tier1.priceLabel}\n- ${MEMBERSHIP_PLANS.tier1.weeklyLimit} WTB/FS introductions per week, no per-match fees\n\n` +
+      `Need more room? Upgrade anytime — ${MEMBERSHIP_PLANS.tier2.weeklyLimit}/week for ${MEMBERSHIP_PLANS.tier2.priceLabel}, or unlimited for ${MEMBERSHIP_PLANS.tier3.priceLabel}.\n\n` +
       `I'll continuously help you find buyers, find sellers, check pricing, and verify dealer reputation.\n\n` +
       `Reply "join" to keep Fi working for you.`,
-    declineMessage:
+    // Locked with no plan at all (never joined, or joined and was never assigned one).
+    noPlanMessage:
       'No problem — I\'ll still flag matches for you, but approving one going forward means becoming a Fi member first.\nMessage me "join" anytime you\'re ready.',
+    // Locked with an active plan, but this week's introductions are used up.
+    weeklyCapMessage: (plan: PlanKey, weeklyLimit: number) => {
+      const current = MEMBERSHIP_PLANS[plan];
+      const upgrades = (Object.values(MEMBERSHIP_PLANS) as (typeof MEMBERSHIP_PLANS)[PlanKey][])
+        .filter((p) => p.key !== plan && (p.weeklyLimit === null || p.weeklyLimit > weeklyLimit))
+        .map((p) => (p.weeklyLimit === null ? `unlimited for ${p.priceLabel}` : `${p.weeklyLimit}/week for ${p.priceLabel}`))
+        .join(", or ");
+      return (
+        `You've used all ${weeklyLimit} of your introductions this week on the ${current.label} plan (${current.priceLabel}).\n` +
+        (upgrades ? `Reply "upgrade" to raise your limit — ${upgrades}.\n` : "") +
+        `It resets on a rolling 7-day basis, or message "upgrade" anytime.`
+      );
+    },
   },
   // Optional: personalizes each contact's intro with their own most recent WatchFacts
   // listing. Requires Playwright + a Chromium install in whatever environment actually
