@@ -45,6 +45,20 @@ export function resetState(phone: string): void {
   writeAll(all);
 }
 
+/**
+ * Arms the one-shot "did they want the escrow/inspection offer" check (see
+ * ConversationState.pendingEscrowOffer and conversation/flow.ts's handling of it) for a phone
+ * that just received an escrow suggestion — used by the v4 automatic-matching reveal points
+ * (server.ts's formatApprovalOutcome-based replies, postings/notify.ts's one-time introduction
+ * push) that don't otherwise touch this JSON conversation state at all, so a bare "yes" from
+ * either flow's suggestion is recognized the same way.
+ */
+export function markPendingEscrowOffer(phone: string): void {
+  const state = getState(phone);
+  state.pendingEscrowOffer = true;
+  saveState(state);
+}
+
 /** De-dupe Whapi webhook retries by remembering processed message ids. */
 const processedIdsPath = path.join(config.storageDir, "processed-messages.json");
 

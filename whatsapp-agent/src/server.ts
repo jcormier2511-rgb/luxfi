@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { config, isConciergeAdminPhone } from "./config";
 import { extractIncomingMessages, IncomingWebhook, sendText } from "./whapi/client";
-import { alreadyProcessed, getState, resetState } from "./conversation/stateStore";
+import { alreadyProcessed, getState, resetState, markPendingEscrowOffer } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
@@ -31,11 +31,11 @@ import { listDesignatedGroups, enableGroup, disableGroup, setReferenceRequestsEn
 // Postgres match id, falling through to the ordinary flow if it doesn't resolve to one.
 const V4_DECISION_PATTERN = /^(approve|pass)\s+(\d+)\b/i;
 
-function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number): string {
+export function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number): string {
   switch (outcome.status) {
     case "approved":
       return outcome.counterpart
-        ? `You're connected! ${outcome.counterpart.name}: ${outcome.counterpart.phone}`
+        ? `You're connected! ${outcome.counterpart.name}: ${outcome.counterpart.phone}\n\n${config.fiFlow.escrowSuggestion}`
         : `Match ${matchId} approved.`;
     case "pending_confirmation":
       return `Got it — I'll let you know as soon as the other side confirms too.`;
@@ -60,6 +60,7 @@ export async function tryHandleV4Decision(phone: string, text: string): Promise<
   if (m[1].toLowerCase() === "approve") {
     const outcome = await approveMatch(matchId, phone);
     if (outcome.status === "invalid") return null; // not a real v4 match id either — fall through
+    if (outcome.status === "approved" && outcome.counterpart) markPendingEscrowOffer(phone);
     return formatApprovalOutcome(outcome, matchId);
   }
 
@@ -92,6 +93,7 @@ export async function tryHandleDirectPostingDecision(phone: string, text: string
   if (m[1].toLowerCase() === "approve") {
     const outcome = await approveMatch(matchId, phone);
     if (outcome.status === "invalid") return null;
+    if (outcome.status === "approved" && outcome.counterpart) markPendingEscrowOffer(phone);
     return formatApprovalOutcome(outcome, matchId);
   }
 

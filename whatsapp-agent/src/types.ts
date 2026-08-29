@@ -124,6 +124,13 @@ export interface ConversationState {
   pendingPreferenceCollection?: PendingPreferenceCollection;
   pendingNaturalFollowUp?: PendingNaturalFollowUp;
   pendingSellIntake?: PendingSellIntake;
+  // Set right after a real connection reveal suggests escrow/inspection partners (see
+  // config.fiFlow.escrowSuggestion) — checked once, on the contact's very next reply, so a
+  // bare "yes" is recognized as accepting the offer (see conversation/flow.ts's handling and
+  // stateStore.ts's markPendingEscrowOffer, used by both this flow and the v4 automatic-
+  // matching flow's own reveal points in server.ts/postings/notify.ts). Cleared after that one
+  // reply regardless of what it was — never nags on a later, unrelated message.
+  pendingEscrowOffer?: boolean;
   // Automatic currency conversion (src/fx/) — set via "Show prices in USD" / "Use HKD as my
   // preferred currency" (see conversation/flow.ts). ISO 4217 code. Undefined means the
   // config-wide DEFAULT_DISPLAY_CURRENCY is used instead.

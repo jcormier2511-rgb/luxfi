@@ -7,6 +7,7 @@ import { weeklyLimitFor, PlanKey } from "../billing/plans";
 import { getWeeklyApprovalCount, recordApprovalEvent } from "./approvalUsage";
 import { sendText } from "../whapi/client";
 import { config, isPostingChatEnabled } from "../config";
+import { markPendingEscrowOffer } from "../conversation/stateStore";
 
 async function getPhoneForCanonicalUser(canonicalUserId: number): Promise<string | null> {
   return withSchema(async (pool) => {
@@ -368,7 +369,11 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
     const phone = await getPhoneForCanonicalUser(result.notify.canonicalUserId);
     if (phone) {
       try {
-        await sendText(phone, `You're connected! ${result.notify.myContact.name}: ${result.notify.myContact.phone}`);
+        await sendText(
+          phone,
+          `You're connected! ${result.notify.myContact.name}: ${result.notify.myContact.phone}\n\n${config.fiFlow.escrowSuggestion}`
+        );
+        markPendingEscrowOffer(phone);
       } catch (err) {
         console.error(`[postings] failed to deliver connection introduction for match ${matchId} to ${phone}:`, err);
         await recordNotificationFailure((err as Error).message);

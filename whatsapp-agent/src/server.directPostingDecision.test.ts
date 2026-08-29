@@ -31,7 +31,7 @@ const server = require("./server") as typeof import("./server");
 
 const { ingestChatPosting } = postingsStore;
 const { ingestDirectSellPosting } = ingestModule;
-const { tryHandleDirectPostingDecision, tryHandleV4Decision } = server;
+const { tryHandleDirectPostingDecision, tryHandleV4Decision, formatApprovalOutcome } = server;
 
 after(async () => {
   await db._closePoolForTests();
@@ -109,6 +109,21 @@ test("tryHandleV4Decision (the group-chat monitoring surface) stays a no-op for 
 
   const reply = await tryHandleV4Decision(sellerPhone, `approve ${matchId}`);
   assert.equal(reply, null, "the flag-gated v4 surface must remain untouched by the direct-posting feature");
+});
+
+test("required: formatApprovalOutcome suggests escrow/inspection partners on a real connection reveal, never on any other outcome", () => {
+  const suggestion = /escrow and inspection partners/i;
+
+  assert.match(formatApprovalOutcome({ status: "approved", counterpart: { name: "Alex", phone: "111" } }, 1), suggestion);
+  assert.doesNotMatch(
+    formatApprovalOutcome({ status: "approved" }, 1),
+    suggestion,
+    "no counterpart contact means nothing was actually revealed — no escrow suggestion to attach it to"
+  );
+  assert.doesNotMatch(formatApprovalOutcome({ status: "pending_confirmation" }, 1), suggestion, "nothing revealed yet");
+  assert.doesNotMatch(formatApprovalOutcome({ status: "posting_closed" }, 1), suggestion);
+  assert.doesNotMatch(formatApprovalOutcome({ status: "invalid" }, 1), suggestion);
+  assert.doesNotMatch(formatApprovalOutcome({ status: "locked", lockReason: "no_plan" }, 1), suggestion);
 });
 
 test("tryHandleDirectPostingDecision falls through (returns null) for a phone with no direct-sourced posting on the match", async (t) => {

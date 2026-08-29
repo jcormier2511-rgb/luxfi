@@ -379,6 +379,8 @@ async function handleDecision(state: ConversationState, decision: DecisionComman
   await recordApprovalEventForPhone(usage.canonicalUserId, gate.isComplimentary);
   pending.decisions[idx] = "approved";
   messages.push(formatMatchApproved(pending.matches[idx], idx));
+  messages.push(config.fiFlow.escrowSuggestion);
+  state.pendingEscrowOffer = true;
 
   if (gate.isComplimentary && usage.totalApproved + 1 === config.trial.maxApprovedMatches) {
     messages.push(config.fiFlow.conversionPitch(firstName));
@@ -771,6 +773,23 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     await handlePhotoRequest(state, photoRequestIndex, messages);
     saveState(state);
     return { state, messages };
+  }
+
+  // One-shot: only the reply immediately after an escrow/inspection suggestion is checked for
+  // a "yes" — cleared regardless of what they said, so it never nags on a later, unrelated
+  // message, and so this can't misfire against natural-language decision interpretation
+  // further down (a bare "yes" with a still-open pendingMatches set would otherwise be
+  // ambiguous between "yes, I want the escrow code" and "yes, approve the last one").
+  if (state.pendingEscrowOffer) {
+    state.pendingEscrowOffer = false;
+    if (/^(yes|yeah|yep|yup|sure|ok|okay)\b/i.test(text.trim())) {
+      messages.push(
+        `Great — use code ${config.fiFlow.escrowPromoCode} for your first escrow/inspection service free, and 50% off future services with a Fi membership.`
+      );
+      saveState(state);
+      return { state, messages };
+    }
+    // Not an affirmative reply — fall through so this message is still handled normally.
   }
 
   if (state.pendingSellIntake) {

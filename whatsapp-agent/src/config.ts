@@ -105,6 +105,20 @@ export const config = {
         `It resets on a rolling 7-day basis, or message "upgrade" anytime.`
       );
     },
+    // Sent right after a real connection reveal (never on "pending_confirmation" — nothing's
+    // been revealed yet, so there's no counterparty to inspect or escrow anything with). Same
+    // text everywhere it's used (v3's on-demand approval, v4's approver-side reveal, and v4's
+    // one-time push to the side that was left waiting) — kept name-free since v4 has no
+    // reliable first name to personalize with, unlike conversionPitch/introMessage.
+    escrowSuggestion:
+      process.env.FI_ESCROW_SUGGESTION_MESSAGE ??
+      "If you don't already know this contact, I also have escrow and inspection partners who can help verify the item and handle payment safely — just ask and I can connect you.",
+    // Offered when either party replies "yes" to the escrow suggestion above (see
+    // conversation/flow.ts's pendingEscrowOffer handling) — first service free, then a
+    // recurring discount with membership. Not itself a live charge/discount system: redeeming
+    // this code is on the escrow/inspection partner's own side, same as every other price in
+    // this app that has no payment processor behind it yet.
+    escrowPromoCode: process.env.FI_ESCROW_PROMO_CODE ?? "FI727",
   },
   // Optional: personalizes each contact's intro with their own most recent WatchFacts
   // listing. Requires Playwright + a Chromium install in whatever environment actually
