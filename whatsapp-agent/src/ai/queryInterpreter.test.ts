@@ -40,6 +40,25 @@ test("confirmed buyer budgets retain their stated non-USD currency", () => {
   });
 });
 
+test("fallback interpreter rejects ranges with conflicting currencies", async (t) => {
+  assert.deepEqual(
+    extractConfirmedNaturalLanguageIntent("WTB Patek 5712G budget HK$800k-US$100k"),
+    {
+      intent: "buy", brand: "Patek Philippe", reference: "5712G",
+      priceMin: null, priceMax: null, currency: null,
+    }
+  );
+
+  t.mock.method(client, "callAiJson", async () => ({
+    action: "buy", brand: "Patek", referenceFamily: "5712G",
+    minPrice: 800000, maxPrice: 100000, location: null, dialColor: null,
+    condition: null, hardRequirements: [], preferences: [],
+  }));
+  const interpreted = await interpretQuery("WTB Patek 5712G budget HK$800k-US$100k");
+  assert.equal(interpreted!.minPrice, null);
+  assert.equal(interpreted!.maxPrice, null);
+});
+
 test("confirmed currency comes from the price expression, not unrelated payment text", () => {
   assert.deepEqual(
     extractConfirmedNaturalLanguageIntent("WTB Patek 5712G under HK$900,000 USD wire accepted"),
