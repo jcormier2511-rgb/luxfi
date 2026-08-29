@@ -229,6 +229,7 @@ test("a reference before a currency-prefixed amount is never mistaken for the as
 
 test("symbol-only EUR, GBP, JPY, and CNY listings retain their asking price", () => {
   const cases = [
+    ["FS Patek 5712G US$100,000", 100000, "USD"],
     ["FS Patek 5712G €95,000", 95000, "EUR"],
     ["FS Rolex 116500LN £80,000", 80000, "GBP"],
     ["FS Patek 5712G ¥15,000,000", 15000000, "JPY"],

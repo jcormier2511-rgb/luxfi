@@ -14,7 +14,26 @@ export interface ConfirmedNaturalLanguageIntent {
   currency: string | null;
 }
 
-const CURRENCY_MARKER = String.raw`(?:HK\$|C\$|S\$|A\$|CN¥|[$€£¥]|\b(?:USD|HKD|EUR|GBP|AED|CHF|CAD|SGD|AUD|JPY|CNY|RMB)\b)`;
+const CURRENCY_CODE = String.raw`\b(?:USD|HKD|EUR|GBP|AED|CHF|CAD|SGD|AUD|JPY|CNY|RMB)\b`;
+const GENERIC_DOLLAR = String.raw`(?<![A-Za-z])\import { callAiJson } from "./client";
+import { InterpretedQuery } from "./types";
+import { SearchPreferences } from "../types";
+import { parsePriceRange } from "../conversation/preferences";
+import { detectCurrency } from "../matching/currency";
+import { extractReference } from "../postings/normalize";
+
+export interface ConfirmedNaturalLanguageIntent {
+  intent: "buy" | "sell" | null;
+  brand: string | null;
+  reference: string | null;
+  priceMin: number | null;
+  priceMax: number | null;
+  currency: string | null;
+}
+
+;
+const SPECIFIC_CURRENCY_SYMBOL = String.raw`(?:US\$|HK\$|C\$|S\$|A\$|CN¥|[€£¥])`;
+const CURRENCY_MARKER = `(?:${SPECIFIC_CURRENCY_SYMBOL}|${GENERIC_DOLLAR}|${CURRENCY_CODE})`;
 const PRICE_NUMBER = String.raw`[\d][\d.,]*(?:\s*[kK]\b)?`;
 const PRICE_COMPARATOR = String.raw`\b(?:under|up to|max(?:imum)?|below|less than|over|at least|min(?:imum)?|above|more than|budget(?:\s+(?:of|is))?|around|about)\b`;
 
@@ -84,7 +103,10 @@ export function extractConfirmedNaturalLanguageIntent(text: string): ConfirmedNa
   const priceRange = priceExpression ? parsePriceRange(priceExpression) : undefined;
   const priceMin = priceRange?.min ?? null;
   const priceMax = priceRange?.max ?? null;
-  const currency = priceMin === null && priceMax === null ? null : detectCurrency(priceExpression ?? "");
+  const explicitSymbol = priceExpression?.match(new RegExp(SPECIFIC_CURRENCY_SYMBOL, "i"))?.[0];
+  const currency = priceMin === null && priceMax === null
+    ? null
+    : detectCurrency(explicitSymbol ?? priceExpression ?? "");
   return { intent, brand, reference, priceMin, priceMax, currency };
 }
 

@@ -20,7 +20,7 @@ const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|aud|jpy|cny|rmb|chf)";
 // Longest-first prevents the bare "$" branch from splitting HK$/C$/S$/A$, while including euro,
 // pound, yen, and yuan symbols makes symbol-only overseas listings real priced inventory.
 const GENERIC_DOLLAR = "(?<![A-Za-z])\\$";
-const SPECIFIC_CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[€£¥])";
+const SPECIFIC_CURRENCY_SYMBOL = "(?:US\\$|HK\\$|C\\$|S\\$|A\\$|CN¥|[€£¥])";
 // Trailing `\s?[kK]?` captures dealer shorthand like "$25.5k" — see normalizePriceShorthand,
 // which does the actual k-multiplication; this pattern just needs to not truncate it away.
 // Must start with an actual digit — a naive `[\d,]+` also matches a BARE comma (no digits at
@@ -175,6 +175,7 @@ interface PriceMention {
 function currencyFromPriceToken(token: string): string {
   const named = token.match(/\b(USD|CAD|HKD|EUR|GBP|AED|SGD|AUD|JPY|CNY|RMB|CHF)\b/i)?.[1].toUpperCase();
   if (named) return named === "RMB" ? "CNY" : named;
+  if (/US\$/i.test(token)) return "USD";
   if (/HK\$/i.test(token)) return "HKD";
   if (/C\$/i.test(token)) return "CAD";
   if (/S\$/i.test(token)) return "SGD";

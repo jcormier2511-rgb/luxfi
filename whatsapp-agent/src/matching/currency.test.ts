@@ -6,7 +6,7 @@ afterEach(() => setExchangeRateProviderForTests());
 
 test("recognizes every required currency and preserves grouped amounts", () => {
   const examples = [
-    ["$110,000", "USD"], ["HKD 110,000", "HKD"], ["€110,000", "EUR"], ["£110,000", "GBP"],
+    ["$110,000", "USD"], ["US$110,000", "USD"], ["HKD 110,000", "HKD"], ["€110,000", "EUR"], ["£110,000", "GBP"],
     ["AED 110,000", "AED"], ["CHF 110,000", "CHF"], ["CAD 110,000", "CAD"],
     ["SGD 110,000", "SGD"], ["S$110,000", "SGD"],
     ["AUD 110,000", "AUD"], ["A$110,000", "AUD"],

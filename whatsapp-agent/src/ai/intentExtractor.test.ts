@@ -151,6 +151,16 @@ test("euro and pound symbols are recognized as price markers", async (t) => {
   assert.equal(gbp!.priceUnreliable, false);
 });
 
+test("the primary intent verifier recognizes US$ as USD rather than SGD", async (t) => {
+  t.mock.method(client, "callAiJson", async () =>
+    aiResult({ intent: "buy", priceMax: 100000, currency: "USD" })
+  );
+  const result = await extractIntent("WTB Patek 5712G under US$100,000");
+  assert.equal(result!.intent.priceMax, 100000);
+  assert.equal(result!.intent.currency, "USD");
+  assert.equal(result!.priceUnreliable, false);
+});
+
 test("the primary intent verifier retains every supported non-USD currency", async (t) => {
   let current = { amount: 0, currency: "USD" };
   t.mock.method(client, "callAiJson", async () =>

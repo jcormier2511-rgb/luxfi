@@ -40,6 +40,7 @@ export function detectCurrency(raw: string, fallback: CurrencyCode = "USD"): Cur
   for (const code of SUPPORTED_CURRENCIES) if (new RegExp(`\\b${code}\\b`, "i").test(upper)) return code;
   if (/HK\$/i.test(raw)) return "HKD";
   if (/C\$/i.test(raw)) return "CAD";
+  if (/US\$/i.test(raw)) return "USD";
   if (/S\$/i.test(raw)) return "SGD";
   if (/A\$/i.test(raw)) return "AUD";
   if (/€/.test(raw)) return "EUR";

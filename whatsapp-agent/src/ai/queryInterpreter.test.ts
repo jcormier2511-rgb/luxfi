@@ -42,7 +42,7 @@ test("confirmed buyer budgets retain their stated non-USD currency", () => {
 
 test("confirmed currency comes from the price expression, not unrelated payment text", () => {
   assert.deepEqual(
-    extractConfirmedNaturalLanguageIntent("WTB Patek 5712G under HK$900,000 — USD wire accepted"),
+    extractConfirmedNaturalLanguageIntent("WTB Patek 5712G under HK$900,000 USD wire accepted"),
     {
       intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMin: null,
       priceMax: 900000, currency: "HKD",
@@ -137,6 +137,12 @@ test("a shorthand budget is never promoted to the watch reference", () => {
 test("reference and shorthand price remain distinct when both are present", () => {
   assert.deepEqual(extractConfirmedNaturalLanguageIntent("I need a Daytona 116500 under 25k"), {
     intent: "buy", brand: null, reference: "116500", priceMin: null, priceMax: 25000, currency: "USD",
+  });
+});
+
+test("confirmed US$ budgets remain USD rather than matching the S$ suffix", () => {
+  assert.deepEqual(extractConfirmedNaturalLanguageIntent("WTB Patek 5712G under US$100,000"), {
+    intent: "buy", brand: "Patek Philippe", reference: "5712G", priceMin: null, priceMax: 100000, currency: "USD",
   });
 });
 

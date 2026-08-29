@@ -125,7 +125,7 @@ function isValidIntent(value: unknown): value is Intent {
 // contain, otherwise "HK$" could be read as a generic "$" price.
 const CURRENCY_CODE = `(?:${[...SUPPORTED_CURRENCIES, "RMB"].join("|")})`;
 const GENERIC_DOLLAR = "(?<![A-Za-z])\\$";
-const SPECIFIC_CURRENCY_SYMBOL = "(?:HK\\$|C\\$|S\\$|A\\$|CN¥|[€£¥])";
+const SPECIFIC_CURRENCY_SYMBOL = "(?:US\\$|HK\\$|C\\$|S\\$|A\\$|CN¥|[€£¥])";
 const CURRENCY_SYMBOL = `(?:${SPECIFIC_CURRENCY_SYMBOL}|${GENERIC_DOLLAR})`;
 const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)";
 const NL_PRICE_TOKEN =
