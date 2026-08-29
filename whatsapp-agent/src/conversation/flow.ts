@@ -151,10 +151,16 @@ function parsePhotoRequestCommand(text: string): number | null {
   return m[1] ? parseInt(m[1], 10) : 1;
 }
 
-const MENU_COMMAND = /^(help|menu)\b/i;
+// "start" is folded in here too (for anyone not currently opted-out — see isOptOut/the
+// opted_out branch above, checked first and separately) — a real reported gap: someone who
+// got lost mid-conversation naturally reached for "start" expecting it to reorient them, and
+// got the generic "reply approve/pass..." reminder instead.
+const MENU_COMMAND = /^(help|menu|start)\b/i;
 const CANCEL_COMMAND = /^cancel\b/i;
 const STATUS_COMMAND = /^status\b/i;
-const LISTINGS_COMMAND = /^(my\s+)?listings\b/i;
+// Broadened past the exact word "listings" for the same reason — "listing summary", "my
+// listing", and "summary" are all natural ways to ask for the same thing.
+const LISTINGS_COMMAND = /^(my\s+)?(listings?(\s+summary)?|summary)\b/i;
 
 /** "Show prices in EUR" / "Use HKD as my preferred currency" — automatic currency conversion
  *  (src/fx/) display preference. Returns the requested ISO code (uppercased, NOT yet validated

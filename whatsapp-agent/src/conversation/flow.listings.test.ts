@@ -84,6 +84,50 @@ test('required: "listings" shows a 1/2/3 menu, and an unrecognized reply falls t
   assert.doesNotMatch(stale.messages.join("\n"), /Your approved matches/);
 });
 
+test('required (live-reported bug): natural phrasings like "listing summary" and "my listing" trigger the same menu as "listings"', async () => {
+  const phone = "19992230008";
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
+
+  const a = await handleIncomingMessage(phone, "listing summary");
+  assert.match(a.messages.join("\n"), /1\. Matches I've approved/);
+
+  const b = await handleIncomingMessage(phone, "my listing");
+  assert.match(b.messages.join("\n"), /1\. Matches I've approved/);
+
+  const c = await handleIncomingMessage(phone, "summary");
+  assert.match(c.messages.join("\n"), /1\. Matches I've approved/);
+});
+
+test('required (live-reported bug): "start" (for a contact who was never opted out) shows the full menu instead of a generic fallback reminder', async () => {
+  const phone = "19992230009";
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("start-1")], new Date().toISOString());
+
+  // Leave a match pending, exactly like the live-reported scenario — a bare "start" used to
+  // just repeat "reply approve/pass... or tell me a new item to search" here.
+  await freshRequest(phone, "buy: Rolex Daytona 116500LN");
+
+  const result = await handleIncomingMessage(phone, "start");
+  assert.match(result.messages.join("\n"), /here's what I can do/i);
+});
+
+test('"start" still reactivates an actually-opted-out contact (unaffected by folding it into the menu command)', async () => {
+  const phone = "19992230010";
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
+
+  const stopped = await handleIncomingMessage(phone, "stop");
+  assert.equal(stopped.state.stage, "opted_out");
+
+  const result = await handleIncomingMessage(phone, "start");
+  assert.notEqual(result.state.stage, "opted_out", "start must still reactivate an opted-out contact");
+});
+
 test("required: option 1 shows an approved match's real contact info (v3 has no confirmation gate — always revealed immediately)", async () => {
   const phone = "19992230002";
   resetState(phone);
