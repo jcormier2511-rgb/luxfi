@@ -140,7 +140,7 @@ const NL_PRICE_PATTERN = new RegExp(NL_PRICE_TOKEN, "gi");
 const NL_PRICE_RANGE_PATTERN = new RegExp(
   `(?:${CURRENCY_SYMBOL}\\s*|\\b${CURRENCY_CODE}\\b\\s*)?` +
     `\\b(${NUM}\\s?[kK]?)\\s*(?:-|to|–)\\s*` +
-    `(?:${CURRENCY_SYMBOL}\\s*)?\\b(${NUM}\\s?[kK]?)` +
+    `(?:(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b)\\s*)?\\b(${NUM}\\s?[kK]?)` +
     `(?:\\s*(?:${CURRENCY_SYMBOL}|\\b${CURRENCY_CODE}\\b))?`,
   "i"
 );
