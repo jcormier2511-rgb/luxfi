@@ -8,7 +8,9 @@ import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
 import { recordBillingRequested } from "../billing/entitlementStore";
 import { MEMBERSHIP_PLANS } from "../billing/plans";
-import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone } from "../postings/approvalUsage";
+import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, getApprovedMatchesSummary } from "../postings/approvalUsage";
+import { getOrCreateCanonicalUser } from "../postings/identity";
+import { getActivePostingsForUser } from "../postings/postingsStore";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
@@ -152,6 +154,7 @@ function parsePhotoRequestCommand(text: string): number | null {
 const MENU_COMMAND = /^(help|menu)\b/i;
 const CANCEL_COMMAND = /^cancel\b/i;
 const STATUS_COMMAND = /^status\b/i;
+const LISTINGS_COMMAND = /^(my\s+)?listings\b/i;
 
 /** "Show prices in EUR" / "Use HKD as my preferred currency" — automatic currency conversion
  *  (src/fx/) display preference. Returns the requested ISO code (uppercased, NOT yet validated
@@ -194,9 +197,63 @@ const FI_MENU = [
   '"pass <number>" — skip a match',
   '"cancel" — clear your current matches',
   '"status" — check your account status',
+  '"listings" — see your approved matches, pending matches, or your own WTB/FS listings',
   '"Show prices in EUR" (or USD/GBP/HKD/etc.) — set your preferred display currency',
   '"help" — show this menu',
 ].join("\n");
+
+const LISTINGS_MENU = [
+  "What would you like to see?",
+  "1. Matches I've approved",
+  "2. Matches still pending my decision",
+  "3. My current WTB/FS listings",
+  "",
+  "Reply with a number.",
+].join("\n");
+
+/** Option 1 — durable across searches (unlike v3's own pendingMatches, which a new search
+ *  replaces): reads live from Postgres (approvalUsage.ts), the same store both the v3 and v4
+ *  approve paths write to. A still-pending mutual confirmation shows as "waiting on the other
+ *  side to confirm" rather than a contact — never surfaced before it's actually safe to. */
+async function formatApprovedListingsSummary(phone: string): Promise<string> {
+  const summary = await getApprovedMatchesSummary(phone);
+  if (summary.length === 0) return "You haven't approved any matches yet.";
+  const lines = summary.map((s, i) => {
+    const contact = s.counterpartName && s.counterpartPhone ? `${s.counterpartName}: ${s.counterpartPhone}` : "waiting on the other side to confirm";
+    return `${i + 1}. ${s.listingDescription} — ${contact}`;
+  });
+  return "Your approved matches:\n\n" + lines.join("\n");
+}
+
+/** Option 2 — the CURRENT search's own numbered list, filtered to what's still undecided.
+ *  Numbering matches the original Match Cards (not re-indexed), so "approve <number>" still
+ *  works against it directly. */
+function formatPendingListingsSummary(state: ConversationState): string {
+  const pending = state.pendingMatches;
+  const lines = pending
+    ? pending.matches
+        .map((m, i) => (pending.decisions[i] === "pending" ? `${i + 1}. ${m.item} — $${m.price}` : null))
+        .filter((l): l is string => l !== null)
+    : [];
+  if (lines.length === 0) return "Nothing is currently awaiting your approve/pass.";
+  return `Matches still awaiting your decision:\n\n${lines.join("\n")}\n\nReply "approve <number>" or "pass <number>".`;
+}
+
+/** Option 3 — a canonical user's own live monitors (postingsStore.ts's getActivePostingsForUser).
+ *  A v3 on-demand "buy:"/"sell:" search never shows up here — only the sell-intake flow and
+ *  group-chat WTB/FS messages persist an actual monitored posting; a plain search is a one-off
+ *  lookup against live inventory, not something Fi is actively watching on your behalf. */
+async function formatMyListingsSummary(phone: string): Promise<string> {
+  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const postings = await getActivePostingsForUser(canonicalUserId);
+  if (postings.length === 0) return "You don't have any active WTB or FS listings being monitored right now.";
+  const lines = postings.map((p, i) => {
+    const label = p.reference ? `${p.brand || ""} ${p.reference}`.trim() : p.original_text.slice(0, 80);
+    const priceLine = p.price ? ` — $${p.price}` : "";
+    return `${i + 1}. [${p.type}] ${label}${priceLine}`;
+  });
+  return "Your active listings:\n\n" + lines.join("\n");
+}
 
 /** "status" — a quick, honest snapshot of trial/plan usage and anything still awaiting a
  *  decision. Reads live from the same canonical Postgres counter both the on-demand (v3) and
@@ -235,6 +292,8 @@ function handleCancelCommand(state: ConversationState, messages: string[]): void
   state.pendingPreferenceCollection = undefined;
   state.pendingNaturalFollowUp = undefined;
   state.pendingSellIntake = undefined;
+  state.pendingEscrowOffer = false;
+  state.pendingListingsMenu = false;
   messages.push(
     hadSomethingToCancel
       ? "Okay, I've cleared your current matches. Send a new buy/sell request anytime."
@@ -376,7 +435,11 @@ async function handleDecision(state: ConversationState, decision: DecisionComman
     return;
   }
 
-  await recordApprovalEventForPhone(usage.canonicalUserId, gate.isComplimentary);
+  const approvedListing = pending.matches[idx];
+  await recordApprovalEventForPhone(usage.canonicalUserId, gate.isComplimentary, approvedListing.item || approvedListing.description, {
+    name: approvedListing.contactName || "them",
+    phone: approvedListing.contactPhone,
+  });
   pending.decisions[idx] = "approved";
   messages.push(formatMatchApproved(pending.matches[idx], idx));
   messages.push(config.fiFlow.escrowSuggestion);
@@ -756,6 +819,12 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     saveState(state);
     return { state, messages };
   }
+  if (LISTINGS_COMMAND.test(text.trim())) {
+    messages.push(LISTINGS_MENU);
+    state.pendingListingsMenu = true;
+    saveState(state);
+    return { state, messages };
+  }
   const currencyPreference = parseCurrencyPreferenceCommand(text);
   if (currencyPreference) {
     handleCurrencyPreferenceCommand(state, currencyPreference, messages);
@@ -790,6 +859,29 @@ export async function handleIncomingMessage(phone: string, text: string, contact
       return { state, messages };
     }
     // Not an affirmative reply — fall through so this message is still handled normally.
+  }
+
+  // One-shot: only the reply immediately after the "listings" menu is checked for 1/2/3.
+  // Cleared regardless of what they said, matching the same pattern as pendingEscrowOffer.
+  if (state.pendingListingsMenu) {
+    state.pendingListingsMenu = false;
+    const choice = text.trim();
+    if (choice === "1") {
+      messages.push(await formatApprovedListingsSummary(state.phone));
+      saveState(state);
+      return { state, messages };
+    }
+    if (choice === "2") {
+      messages.push(formatPendingListingsSummary(state));
+      saveState(state);
+      return { state, messages };
+    }
+    if (choice === "3") {
+      messages.push(await formatMyListingsSummary(state.phone));
+      saveState(state);
+      return { state, messages };
+    }
+    // Not 1/2/3 — fall through so this message is still handled normally.
   }
 
   if (state.pendingSellIntake) {

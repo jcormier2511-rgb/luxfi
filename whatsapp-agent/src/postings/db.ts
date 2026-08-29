@@ -219,6 +219,18 @@ async function ensureSchema(): Promise<void> {
         -- NOT NULL from before this column was widened.
         ALTER TABLE approvals ALTER COLUMN match_id DROP NOT NULL;
 
+        -- Durable "my approved matches" summary (see postings/approvalUsage.ts's
+        -- getApprovedMatchesSummary, conversation/flow.ts's "listings" command) — the watch
+        -- itself (never sensitive, safe to store at decision time) plus whichever counterpart
+        -- contact this approver has actually been shown. counterpart_name/counterpart_phone
+        -- are deliberately NULL until markApprovalRevealed runs — never populated at insert
+        -- time for a v4 approval whose mutual confirmation isn't complete yet, so this summary
+        -- can never leak a contact before the same rules that gate the live reveal allow it.
+        -- v3's own approvals (no confirmation gate at all) populate all three immediately.
+        ALTER TABLE approvals ADD COLUMN IF NOT EXISTS listing_description TEXT;
+        ALTER TABLE approvals ADD COLUMN IF NOT EXISTS counterpart_name TEXT;
+        ALTER TABLE approvals ADD COLUMN IF NOT EXISTS counterpart_phone TEXT;
+
         -- Widens source_type for the private "sell a watch" conversational intake
         -- (conversation/flow.ts's sell-intake flow, see postingsStore.ts's createDirectPosting):
         -- a person telling Fi directly what they're selling, as distinct from 'chat' (a passively

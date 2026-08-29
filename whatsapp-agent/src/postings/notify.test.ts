@@ -276,6 +276,33 @@ test("once both sides approve, the second approver is revealed immediately and t
   assert.ok(matchRow.rows[0].connected_at, "the match must record a connected status once both sides have confirmed");
 });
 
+test("required (privacy): getApprovedMatchesSummary never shows a counterpart before mutual confirmation, then shows it correctly for both sides once revealed", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => {
+    sent.push({ phone, message });
+  });
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { getApprovedMatchesSummary } = require("./approvalUsage") as typeof import("./approvalUsage");
+
+  const { matchId } = await createChatVsChatMatch("buyer-privacy-1", "seller-privacy-1");
+
+  await approveMatch(matchId, "buyer-privacy-1");
+  const buyerSummaryBefore = await getApprovedMatchesSummary("buyer-privacy-1");
+  assert.equal(buyerSummaryBefore.length, 1, "the approval itself is recorded immediately");
+  assert.equal(buyerSummaryBefore[0].counterpartName, null, "must not reveal the counterpart before the seller has also confirmed");
+  assert.equal(buyerSummaryBefore[0].counterpartPhone, null);
+  assert.match(buyerSummaryBefore[0].listingDescription, /Rolex/, "the watch itself is never sensitive — safe to show immediately");
+
+  await approveMatch(matchId, "seller-privacy-1");
+
+  const buyerSummaryAfter = await getApprovedMatchesSummary("buyer-privacy-1");
+  assert.equal(buyerSummaryAfter[0].counterpartPhone, "seller-privacy-1", "now safe to reveal — the seller has also confirmed");
+
+  const sellerSummary = await getApprovedMatchesSummary("seller-privacy-1");
+  assert.equal(sellerSummary[0].counterpartPhone, "buyer-privacy-1", "the completing approver's own summary is revealed immediately too");
+});
+
 test("repeated clicks after mutual confirmation never re-send the introduction or re-reveal redundantly", async (t) => {
   await resetAll();
   const sent: { phone: string; message: string }[] = [];

@@ -4,7 +4,7 @@ import { PostingRow, getPrimaryImageUrl } from "./postingsStore";
 import { recordNotificationFailure } from "./status";
 import { getEntitlement } from "../billing/entitlementStore";
 import { weeklyLimitFor, PlanKey } from "../billing/plans";
-import { getWeeklyApprovalCount, recordApprovalEvent } from "./approvalUsage";
+import { getWeeklyApprovalCount, recordApprovalEvent, markApprovalRevealed } from "./approvalUsage";
 import { sendText } from "../whapi/client";
 import { config, isPostingChatEnabled } from "../config";
 import { markPendingEscrowOffer } from "../conversation/stateStore";
@@ -302,8 +302,12 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
       }
 
       // Idempotency key: match_id + approving_canonical_user_id. A duplicate/racing click hits
-      // this conflict and is treated as a no-op rather than double-counting.
-      const approved = await recordApprovalEvent(client, canonicalUserId, matchId, isComplimentary);
+      // this conflict and is treated as a no-op rather than double-counting. No counterpart
+      // passed here — mutual confirmation may still be pending; markApprovalRevealed below
+      // fills it in the moment it's actually safe to.
+      const fsPostingForDescription = await client.query(`SELECT * FROM postings WHERE id=$1`, [fs_posting_id]);
+      const listingDescription = watchLabel(fsPostingForDescription.rows[0]);
+      const approved = await recordApprovalEvent(client, canonicalUserId, matchId, isComplimentary, listingDescription);
       if (approved) {
         if (ownPostingId !== null) {
           const updated = await client.query(
@@ -336,6 +340,9 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
     // duplicate click or the counterpart's own later approval.
     await client.query(`UPDATE match_recipients SET connected_at = now() WHERE id=$1 AND connected_at IS NULL`, [recipient.id]);
     await client.query(`UPDATE matches SET connected_at = now() WHERE id=$1 AND connected_at IS NULL`, [matchId]);
+    // Exactly the moment my own "my approved matches" summary (approvalUsage.ts) becomes
+    // allowed to show this counterpart — never before.
+    await markApprovalRevealed(client, canonicalUserId, matchId, { name: counterpart.name, phone: counterpart.phone });
 
     let notify: { canonicalUserId: number; myContact: { name: string; phone: string } } | null = null;
     if (counterpartRecipient && !counterpartRecipient.connected_at) {
@@ -355,6 +362,9 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
         if (claimCounterpart.rows.length > 0) {
           const myContact = await getCounterpartContact(client, matchId, counterpart.canonicalUserId!);
           notify = { canonicalUserId: counterpart.canonicalUserId!, myContact: { name: myContact.name, phone: myContact.phone } };
+          // The counterpart's own approvals row (inserted when THEY first approved and got
+          // left on "pending_confirmation") only now becomes safe to reveal too.
+          await markApprovalRevealed(client, counterpart.canonicalUserId!, matchId, { name: myContact.name, phone: myContact.phone });
         }
       }
     }

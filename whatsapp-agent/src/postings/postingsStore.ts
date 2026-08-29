@@ -313,6 +313,23 @@ export async function getPosting(id: number): Promise<PostingRow | null> {
 }
 
 /**
+ * A canonical user's own live monitors — see conversation/flow.ts's "listings" command
+ * (option 3, "my current WTB/FS listings"). Only ever surfaces chat-originated and 'direct'
+ * (sell-intake) postings that carry a canonical_user_id at all; a v3 on-demand "buy:"/"sell:"
+ * search is never persisted here — it's a one-off search against live inventory, not a
+ * monitored posting (only the sell-intake flow and group-chat WTB/FS messages create one).
+ */
+export async function getActivePostingsForUser(canonicalUserId: number): Promise<PostingRow[]> {
+  return withSchema(async (pool) => {
+    const result = await pool.query<PostingRow>(
+      `SELECT * FROM postings WHERE canonical_user_id=$1 AND status='active' AND expires_at > now() ORDER BY created_at DESC`,
+      [canonicalUserId]
+    );
+    return result.rows;
+  });
+}
+
+/**
  * Whichever of a match's two postings belongs to `canonicalUserId`, or null if neither does
  * (not a real match id, or this user isn't a party to it). Used to decide whether a WhatsApp
  * "approve <matchId>"/"pass <matchId>" reply is about a 'direct'-sourced posting (Fi's own

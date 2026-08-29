@@ -131,6 +131,9 @@ export interface ConversationState {
   // matching flow's own reveal points in server.ts/postings/notify.ts). Cleared after that one
   // reply regardless of what it was — never nags on a later, unrelated message.
   pendingEscrowOffer?: boolean;
+  // "listings" command — set while waiting for the contact to pick 1/2/3 off the menu (see
+  // conversation/flow.ts). One-shot: cleared after that one reply regardless of what it was.
+  pendingListingsMenu?: boolean;
   // Automatic currency conversion (src/fx/) — set via "Show prices in USD" / "Use HKD as my
   // preferred currency" (see conversation/flow.ts). ISO 4217 code. Undefined means the
   // config-wide DEFAULT_DISPLAY_CURRENCY is used instead.
