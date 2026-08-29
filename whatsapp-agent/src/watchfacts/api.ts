@@ -1,4 +1,4 @@
-import { Page } from "playwright";
+import type { Page } from "playwright";
 import { InventoryListing, ListingType } from "../types";
 import { extractReference, extractUnambiguousPrice } from "../postings/normalize";
 

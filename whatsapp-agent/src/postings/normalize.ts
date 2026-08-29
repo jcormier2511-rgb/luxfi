@@ -13,7 +13,7 @@ const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling)\b/i;
 // after ("25,5usd", already handled by normalizePriceShorthand's "first currency wins" rule —
 // see below). Recognizing these here (not just $-amounts) is what lets hasMultipleDistinctPrices
 // actually detect that kind of listing as the multi-item dump it is.
-const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|jpy|cny|chf)";
+const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|jpy|cny|rmb|chf)";
 // Trailing `\s?[kK]?` captures dealer shorthand like "$25.5k" — see normalizePriceShorthand,
 // which does the actual k-multiplication; this pattern just needs to not truncate it away.
 const PRICE_PATTERN = new RegExp(
@@ -188,10 +188,12 @@ export function referencesMatch(a: string, b: string): boolean {
 export function normalizeText(text: string): NormalizedFields {
   const lower = text.toLowerCase();
   const brand = BRAND_LIST.find((b) => lower.includes(b)) ?? "";
+  const namedCurrency = text.match(/\b(USD|CAD|HKD|EUR|GBP|AED|JPY|CNY|RMB|CHF)\b/i)?.[1].toUpperCase();
+  const currency = namedCurrency === "RMB" ? "CNY" : namedCurrency ?? (/€/.test(text) ? "EUR" : /£/.test(text) ? "GBP" : /¥/.test(text) ? "JPY" : "USD");
   return {
     brand,
     reference: extractReference(text) ?? "",
     price: extractUnambiguousPrice(text),
-    currency: "USD",
+    currency,
   };
 }

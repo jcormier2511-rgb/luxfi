@@ -1,11 +1,12 @@
 import { getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
-import { normalizeReference, extractReference, referencesMatch, normalizePriceShorthand, hasMultipleDistinctPrices } from "../postings/normalize";
+import { normalizeReference, extractReference, referencesMatch, hasMultipleDistinctPrices } from "../postings/normalize";
 import { isAiMatchingEnabledForPhone } from "../config";
 import { interpretQuery } from "../ai/queryInterpreter";
 import { rerankCandidates } from "../ai/rerank";
 import { computePriceSignal, PriceSignal } from "./priceSignal";
 import { isPartsOrAccessoryListing } from "./partsFilter";
+import { CurrencyCode, convertMoneyToUsd, formatOriginalAndUsd, parseMoney, SUPPORTED_CURRENCIES } from "./currency";
 
 // Shares extractReference/REFERENCE_PATTERN with postings/normalize.ts (v4) — one reference-
 // extraction rule for both, not two hand-synced copies. A reference number in the free-text
@@ -34,11 +35,36 @@ function score(listing: InventoryListing, tokens: string[]): number {
   return matches;
 }
 
-/** Single shared price-parsing path (see normalizePriceShorthand) — a stored listing's price
- *  string is never re-parsed a second, different way at filter/display time. */
-function parseListingPrice(raw: string): number | undefined {
-  const n = normalizePriceShorthand(raw);
-  return n === null ? undefined : n;
+function asCurrency(raw?: string): CurrencyCode {
+  const normalized = raw?.toUpperCase() === "RMB" ? "CNY" : raw?.toUpperCase();
+  return SUPPORTED_CURRENCIES.includes(normalized as CurrencyCode) ? normalized as CurrencyCode : "USD";
+}
+
+async function normalizePrices(
+  listings: InventoryListing[], preferences?: SearchPreferences
+): Promise<{ listings: InventoryListing[]; preferences?: SearchPreferences; conversionAvailable: boolean }> {
+  const normalizedListings = await Promise.all(listings.map(async (listing) => {
+    const money = parseMoney(listing.price);
+    if (!money) return listing;
+    const priceUsd = await convertMoneyToUsd(money);
+    return { ...listing, priceAmount: money.amount, priceCurrency: money.currency, priceUsd: priceUsd ?? undefined };
+  }));
+  if (!preferences || (preferences.priceMin === undefined && preferences.priceMax === undefined)) {
+    return { listings: normalizedListings, preferences, conversionAvailable: true };
+  }
+  const currency = asCurrency(preferences.priceCurrency);
+  const rate = await convertMoneyToUsd({ amount: 1, currency });
+  if (rate === null) return { listings: normalizedListings, preferences, conversionAvailable: false };
+  return {
+    listings: normalizedListings,
+    preferences: {
+      ...preferences,
+      priceMin: preferences.priceMin === undefined ? undefined : preferences.priceMin * rate,
+      priceMax: preferences.priceMax === undefined ? undefined : preferences.priceMax * rate,
+      priceCurrency: "USD",
+    },
+    conversionAvailable: true,
+  };
 }
 
 /**
@@ -64,7 +90,7 @@ function isCompleteWatchListing(listing: InventoryListing): boolean {
 /** True if a listing's price falls inside the preference range, or no range was set. */
 function inPriceRange(listing: InventoryListing, preferences?: SearchPreferences): boolean {
   if (!preferences || (preferences.priceMin === undefined && preferences.priceMax === undefined)) return true;
-  const price = parseListingPrice(listing.price);
+  const price = listing.priceUsd;
   if (price === undefined) return false; // "ASK"/unknown price can't be judged against a range
   if (preferences.priceMin !== undefined && price < preferences.priceMin) return false;
   if (preferences.priceMax !== undefined && price > preferences.priceMax) return false;
@@ -74,7 +100,7 @@ function inPriceRange(listing: InventoryListing, preferences?: SearchPreferences
 /** How far outside the preferred range a listing's price sits — used to sort the fallback pool. */
 function priceDistance(listing: InventoryListing, preferences?: SearchPreferences): number {
   if (!preferences || (preferences.priceMin === undefined && preferences.priceMax === undefined)) return 0;
-  const price = parseListingPrice(listing.price);
+  const price = listing.priceUsd;
   if (price === undefined) return Infinity;
   if (preferences.priceMin !== undefined && price < preferences.priceMin) return preferences.priceMin - price;
   if (preferences.priceMax !== undefined && price > preferences.priceMax) return price - preferences.priceMax;
@@ -167,7 +193,11 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   const wantType = request.action === "buy" ? "FS" : "WTB";
   // Excludes multi-item price-list dumps and standalone part/accessory listings before they
   // ever reach the reference/token branches below — see isUnambiguousListing/isCompleteWatchListing.
-  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
+  const rawCandidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
+  const normalized = await normalizePrices(rawCandidates, preferences);
+  if (!normalized.conversionAvailable) return [];
+  const candidates = normalized.listings;
+  preferences = normalized.preferences;
   const requestedRef = extractRequestedReference(request.query);
 
   if (requestedRef) {
@@ -268,13 +298,22 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   const wantType = interpreted.action === "buy" ? "FS" : "WTB";
   // Excludes multi-item price-list dumps and standalone part/accessory listings before AI ever
   // sees the pool — see isUnambiguousListing/isCompleteWatchListing.
-  const candidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
+  const rawCandidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
   // The reference safety gate below must never depend solely on the AI correctly parsing the
   // reference out of the message — if interpretQuery's own extraction misses/garbles it (a real
   // model failure mode, not hypothetical), falling back to null here would let EVERY listing
   // through the eligible filter, leaving relevance entirely up to the AI reranker's judgment.
   // extractRequestedReference is the same deterministic regex-based extractor the plain
   // findMatches() path already relies on — reused here as a backstop, never a replacement.
+  const rawPreferences: SearchPreferences = {
+    ...preferences,
+    priceMax: interpreted.maxPrice ?? preferences?.priceMax,
+    priceCurrency: interpreted.currency ?? preferences?.priceCurrency,
+  };
+  const normalized = await normalizePrices(rawCandidates, rawPreferences);
+  if (!normalized.conversionAvailable) return [];
+  const candidates = normalized.listings;
+  const normalizedPreferences = normalized.preferences;
   const requestedFamily = interpreted.referenceFamily
     ? normalizeReference(interpreted.referenceFamily)
     : extractRequestedReference(request.query);
@@ -288,13 +327,13 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   // never applied only "if something would otherwise be left." A listing whose price is
   // missing/ambiguous (ASK, or unparseable) is excluded when a ceiling is stated, rather than
   // presented as a confirmed match with an unverified price.
-  const priceCeiling = interpreted.maxPrice ?? preferences?.priceMax;
+  const priceCeiling = normalizedPreferences?.priceMax;
   // Same mandatory-location principle as findMatches (see matchesLocation) — a stated "US only"
   // is never relaxed just because the AI's own pool happens to be thin without it.
   const requestedLocation = interpreted.location ?? preferences?.location;
   const withinBudget = eligible.filter((l) => {
     if (priceCeiling !== undefined && priceCeiling !== null) {
-      const price = parseListingPrice(l.price);
+      const price = l.priceUsd;
       if (price === undefined || price > priceCeiling) return false;
     }
     if (requestedLocation && !matchesLocation(l, { location: requestedLocation })) return false;
@@ -322,7 +361,7 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
     if (!listing) continue; // re-verified against the safety-gated pool, not just what was sent to AI
     if (requestedFamily && listing.ref && !referencesMatch(listing.ref, requestedFamily)) continue; // belt & suspenders
     if (priceCeiling !== undefined && priceCeiling !== null) {
-      const price = parseListingPrice(listing.price);
+      const price = listing.priceUsd;
       if (price === undefined || price > priceCeiling) continue; // belt & suspenders — never surface an over-budget or unverifiable price under a stated ceiling
     }
     if (requestedLocation && !matchesLocation(listing, { location: requestedLocation })) continue; // belt & suspenders — never surface a listing outside a stated location requirement
@@ -368,7 +407,17 @@ export function formatMatchCard(
 ): string {
   const roleLabel = action === "buy" ? "Seller" : "Buyer";
   const priceLabel = action === "buy" ? "Asking" : "Bid";
-  const priceText = listing.price === "ASK" ? "price on ask" : `$${listing.price}`;
+  const parsedMoney = listing.priceAmount !== undefined && listing.priceCurrency
+    ? { amount: listing.priceAmount, currency: listing.priceCurrency as CurrencyCode }
+    : parseMoney(listing.price);
+  const displayUsd = listing.priceUsd ?? (parsedMoney?.currency === "USD" ? parsedMoney.amount : undefined);
+  const priceText = listing.price === "ASK"
+    ? "price on ask"
+    : parsedMoney && displayUsd !== undefined
+      ? formatOriginalAndUsd(parsedMoney, displayUsd)
+      : parsedMoney
+        ? `${parsedMoney.currency} ${Math.round(parsedMoney.amount).toLocaleString("en-US")} (USD conversion unavailable)`
+        : listing.price;
   const watchLine = listing.ref ? `${watchName(listing)} (Ref. ${listing.ref})` : watchName(listing);
   const lines = [
     `Potential Match #${index + 1}`,

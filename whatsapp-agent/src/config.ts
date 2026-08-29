@@ -186,11 +186,20 @@ export const config = {
  * defaulting to "enabled for all."
  */
 export function isAiMatchingEnabledForPhone(phone: string): boolean {
+  return isAiChatEnabled() && config.aiMatching.testPhones.includes(phone);
+}
+
+/**
+ * General conversation is safe to enable for every contact once the operator has explicitly
+ * enabled AI and configured provider credentials. Unlike matching/decisions, chat replies can
+ * only supply text and cannot mutate search, approval, billing, or inventory state.
+ */
+export function isAiChatEnabled(): boolean {
   const hasProviderCredentials =
     config.aiMatching.provider === "openai"
       ? !!config.aiMatching.openaiApiKey && !!config.aiMatching.openaiModel
       : !!config.aiMatching.apiKey;
-  return config.aiMatching.enabled && hasProviderCredentials && config.aiMatching.testPhones.includes(phone);
+  return config.aiMatching.enabled && hasProviderCredentials;
 }
 
 /** Pure — the actual chat-id/allowlist matching logic, unit-testable without env/config wiring. */
