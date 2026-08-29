@@ -58,7 +58,7 @@ test("general chat uses natural language for a non-test phone when AI is enabled
   const spy = t.mock.method(chatReplyModule, "generateGeneralChatReply", async () => "Here’s a quick summary of your open matches.");
 
   await handleIncomingMessage(OTHER_PHONE, "hi");
-  const result = await handleIncomingMessage(OTHER_PHONE, "listing summary");
+  const result = await handleIncomingMessage(OTHER_PHONE, "what's happening in the watch market?");
   assert.deepEqual(result.messages, ["Here’s a quick summary of your open matches."]);
   assert.equal(spy.mock.callCount(), 1);
 });
