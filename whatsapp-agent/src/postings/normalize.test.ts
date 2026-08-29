@@ -244,6 +244,20 @@ test("symbol-only EUR, GBP, JPY, and CNY listings retain their asking price", ()
   }
 });
 
+test("symbol-only prices are never stored as watch references", () => {
+  for (const text of [
+    "FS Omega Speedmaster €100000",
+    "FS Omega Speedmaster £100000",
+    "FS Omega Speedmaster ¥100000",
+    "FS Omega Speedmaster HK$100000",
+    "FS Omega Speedmaster C$100000",
+  ]) {
+    const normalized = normalizeText(text);
+    assert.equal(normalized.price, 100000, text);
+    assert.equal(normalized.reference, "", text);
+  }
+});
+
 test("repeated dot thousands separators are consumed as one complete price", () => {
   assert.equal(normalizePriceShorthand("€1.250.000"), 1250000);
   const normalized = normalizeText("FS Patek 5712G €1.250.000");

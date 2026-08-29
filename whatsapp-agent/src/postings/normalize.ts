@@ -237,7 +237,11 @@ export function hasMultipleDistinctPrices(text: string): boolean {
 
 /** Shared by v3 (matching/engine.ts) and v4 (this file) — one reference-extraction rule, not two hand-synced copies. */
 export function extractReference(text: string): string | null {
-  const m = text.match(REFERENCE_PATTERN);
+  // Remove every recognized price token before looking for a reference. A symbol-prefixed
+  // amount such as "€100000" has the same numeric shape as a watch reference once the symbol is
+  // ignored, so a dollar-only lookbehind cannot safely protect the newly supported currencies.
+  const withoutPrices = text.replace(new RegExp(PRICE_PATTERN.source, "gi"), " ");
+  const m = withoutPrices.match(REFERENCE_PATTERN);
   return m ? m[1].toUpperCase() : null;
 }
 

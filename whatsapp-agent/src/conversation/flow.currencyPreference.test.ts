@@ -31,6 +31,7 @@ const PHONE_A = "17775553001";
 const PHONE_B = "17775553002";
 const PHONE_C = "17775553003";
 const PHONE_D = "17775553004";
+const PHONE_E = "17775553005";
 
 function fsRow(id: string, overrides: Partial<Parameters<typeof inventoryDb.upsertListings>[0][number]> = {}) {
   return {
@@ -72,6 +73,16 @@ test("stepwise budget capture keeps an explicit HK$ symbol despite later USD pay
   assert.equal(preferences.priceMax, 900000);
   assert.equal(preferences.priceCurrency, "HKD");
   assert.match(result.messages.join("\n"), /location/i, "the interview should advance after storing the HKD budget");
+});
+
+test("stepwise budget capture binds currency to the price token, not unrelated settlement text", async () => {
+  await handleIncomingMessage(PHONE_E, "hi");
+  await handleIncomingMessage(PHONE_E, "buy: Rolex Daytona 116500LN");
+  const result = await handleIncomingMessage(PHONE_E, "under USD 100k; settlement account is HK$");
+
+  const preferences = result.state.preferences!;
+  assert.equal(preferences.priceMax, 100000);
+  assert.equal(preferences.priceCurrency, "USD");
 });
 
 test("required: 'Show prices in EUR' is accepted and confirmed", async () => {

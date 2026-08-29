@@ -10,7 +10,6 @@ import { getEntitlement, recordBillingRequested } from "../billing/entitlementSt
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
-import { detectCurrency } from "../matching/currency";
 import { extractIntent, extractVerifiedPriceCurrency, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
 import { extractReference, containsKnownBrand, normalizePriceShorthand } from "../postings/normalize";
@@ -419,7 +418,10 @@ async function handlePreferenceAnswer(state: ConversationState, text: string, me
     const range = parsePriceRange(text);
     state.preferences.priceMin = range?.min;
     state.preferences.priceMax = range?.max;
-    state.preferences.priceCurrency = range ? detectCurrency(text) ?? undefined : undefined;
+    // Bind currency to the same verified token(s) that supplied the parsed bound. Scanning the
+    // whole reply would let unrelated settlement text (for example, "USD 100k; account is HK$")
+    // overwrite the actual price currency.
+    state.preferences.priceCurrency = range ? extractVerifiedPriceCurrency(text) ?? undefined : undefined;
     pending.step = "location";
     messages.push(LOCATION_QUESTION);
     return;
