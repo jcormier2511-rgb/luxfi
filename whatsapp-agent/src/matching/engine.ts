@@ -37,6 +37,12 @@ function score(listing: InventoryListing, tokens: string[]): number {
   return matches;
 }
 
+/** Parse a stored listing price through the repository's shared normalization path. */
+function parseListingPrice(raw: string): number | undefined {
+  const n = normalizePriceShorthand(raw);
+  return n === null ? undefined : n;
+}
+
 function asCurrency(raw?: string): CurrencyCode {
   const normalized = raw?.toUpperCase() === "RMB" ? "CNY" : raw?.toUpperCase();
   return SUPPORTED_CURRENCIES.includes(normalized as CurrencyCode) ? normalized as CurrencyCode : "USD";
