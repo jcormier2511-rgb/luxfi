@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Fi monitors your WhatsApp and Telegram dealer groups and matches you the moment the right piece appears. $50/month, no per-match fees.">
+<title>LuxFi — Meet Fi, your AI dealer matchmaker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=Space+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --parchment:#EFE8D6;
+    --parchment-2:#E6DCC4;
+    --ink:#1E1B16;
+    --ink-soft:#4A4438;
+    --brass:#A6793E;
+    --brass-deep:#8C6530;
+    --emerald:#2C4A3E;
+    --emerald-soft:#EAF0EC;
+    --card:#FBF8F0;
+    --line:rgba(30,27,22,0.12);
+    --shadow:0 20px 50px -25px rgba(30,27,22,0.35);
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:var(--parchment);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  img{max-width:100%; display:block;}
+  a{color:inherit; text-decoration:none;}
+  .wrap{max-width:1160px; margin:0 auto; padding:0 28px;}
+  h1,h2,h3{font-family:'Fraunces',serif; font-weight:500; letter-spacing:-0.01em; color:var(--ink);}
+  .eyebrow{
+    font-family:'Space Mono',monospace; font-size:12px; letter-spacing:0.14em;
+    text-transform:uppercase; color:var(--brass-deep); display:flex; align-items:center; gap:8px;
+  }
+  .eyebrow::before{content:''; width:16px; height:1px; background:var(--brass-deep);}
+  :focus-visible{outline:2px solid var(--emerald); outline-offset:3px;}
+
+  /* NAV */
+  header.nav{
+    position:sticky; top:0; z-index:40;
+    background:rgba(239,232,214,0.86); backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  .nav-inner{display:flex; align-items:center; justify-content:space-between; padding:18px 28px; max-width:1160px; margin:0 auto;}
+  .logo{font-family:'Fraunces',serif; font-weight:600; font-size:20px; letter-spacing:-0.01em;}
+  .logo span{color:var(--brass);}
+  nav.links{display:flex; gap:32px; font-size:14px; font-weight:500;}
+  nav.links a{color:var(--ink-soft); transition:color .15s;}
+  nav.links a:hover{color:var(--ink);}
+  .btn{
+    display:inline-flex; align-items:center; gap:8px; font-weight:600; font-size:14px;
+    padding:11px 20px; border-radius:100px; transition:transform .15s, box-shadow .15s;
+  }
+  .btn-primary{background:var(--ink); color:var(--parchment);}
+  .btn-primary:hover{transform:translateY(-1px); box-shadow:var(--shadow);}
+  .btn-line{border:1px solid var(--line); color:var(--ink);}
+  .btn-line:hover{border-color:var(--ink);}
+  @media(max-width:820px){ nav.links{display:none;} }
+
+  /* HERO */
+  .hero{padding:76px 0 40px;}
+  .hero-grid{display:grid; grid-template-columns:1.05fr 0.95fr; gap:56px; align-items:center;}
+  @media(max-width:960px){ .hero-grid{grid-template-columns:1fr;} }
+  .badge-live{
+    display:inline-flex; align-items:center; gap:8px; font-family:'Space Mono',monospace;
+    font-size:12px; color:var(--emerald); background:var(--emerald-soft);
+    padding:6px 12px; border-radius:100px; margin-bottom:22px;
+  }
+  .dot{width:6px; height:6px; border-radius:50%; background:var(--emerald); animation:pulse 2s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;} 50%{opacity:.35;}}
+  .hero h1{font-size:clamp(38px,5.2vw,58px); line-height:1.04;}
+  .hero h1 .soft{color:var(--ink-soft); font-style:italic;}
+  .hero p.lede{font-size:18px; color:var(--ink-soft); margin:22px 0 30px; max-width:480px;}
+  .hero p.lede em{color:var(--ink); font-style:normal; font-weight:600;}
+  .hero-ctas{display:flex; gap:14px; flex-wrap:wrap;}
+
+  /* PHONE MOCK */
+  .phone{
+    background:var(--card); border:1px solid var(--line); border-radius:24px;
+    box-shadow:var(--shadow); overflow:hidden; max-width:400px; margin-left:auto;
+  }
+  .phone-bar{
+    background:var(--ink); color:var(--parchment); font-family:'Space Mono',monospace;
+    font-size:11px; padding:10px 18px; display:flex; justify-content:space-between; align-items:center;
+  }
+  .phone-head{display:flex; align-items:center; gap:10px; padding:14px 18px; border-bottom:1px solid var(--line);}
+  .avatar{width:34px; height:34px; border-radius:50%; background:var(--emerald); color:#fff; display:flex; align-items:center; justify-content:center; font-family:'Fraunces',serif; font-weight:600;}
+  .phone-head .who{font-weight:600; font-size:14px;}
+  .phone-head .status{font-size:11px; color:var(--emerald);}
+  .phone-body{padding:18px; display:flex; flex-direction:column; gap:12px; background:linear-gradient(180deg,var(--card),#F6F2E7);}
+  .bubble{background:#fff; border:1px solid var(--line); border-radius:14px 14px 14px 4px; padding:12px 14px; font-size:13.5px; max-width:86%; box-shadow:0 6px 16px -12px rgba(0,0,0,.3);}
+  .match-card{
+    background:#fff; border:1px solid var(--brass); border-radius:14px; padding:14px 16px;
+    box-shadow:0 10px 24px -16px rgba(166,121,62,.5);
+  }
+  .match-tag{font-family:'Space Mono',monospace; font-size:10.5px; color:var(--brass-deep); text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px;}
+  .match-title{font-family:'Fraunces',serif; font-weight:600; font-size:16px; margin-bottom:2px;}
+  .match-sub{font-size:12.5px; color:var(--ink-soft); margin-bottom:10px;}
+  .match-cta{
+    display:flex; align-items:center; justify-content:space-between;
+    background:var(--emerald-soft); border-radius:10px; padding:9px 12px; font-size:12.5px;
+  }
+  .match-cta b{color:var(--emerald); font-weight:700;}
+  .plan-note{text-align:center; font-size:11.5px; color:var(--ink-soft); font-style:italic;}
+
+  .ticker-wrap{overflow:hidden; margin-top:22px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:14px 0;}
+  .ticker{display:flex; gap:26px; white-space:nowrap; animation:scroll 34s linear infinite; width:max-content;}
+  @keyframes scroll{from{transform:translateX(0);} to{transform:translateX(-50%);}}
+  .tick{font-family:'Space Mono',monospace; font-size:12.5px; color:var(--ink-soft); display:flex; align-items:center; gap:6px;}
+  .tick b{color:var(--ink); font-weight:700;}
+  .tick .up{color:var(--emerald);} .tick .down{color:#9C3B2E;}
+
+  /* STATS */
+  .stats{padding:54px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line);}
+  .stats-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:24px;}
+  @media(max-width:760px){ .stats-grid{grid-template-columns:repeat(2,1fr);} }
+  .stat b{font-family:'Fraunces',serif; font-size:clamp(28px,3.4vw,40px); display:block; color:var(--brass-deep);}
+  .stat span{font-size:13px; color:var(--ink-soft);}
+
+  section{padding:88px 0;}
+  .section-head{max-width:600px; margin-bottom:52px;}
+  .section-head h2{font-size:clamp(28px,3.4vw,38px); margin-top:14px;}
+  .section-head p{color:var(--ink-soft); margin-top:14px; font-size:16px;}
+
+  /* HOW IT WORKS */
+  .steps{display:grid; grid-template-columns:repeat(3,1fr); gap:28px;}
+  @media(max-width:820px){ .steps{grid-template-columns:1fr;} }
+  .step{background:var(--card); border:1px solid var(--line); border-radius:18px; padding:28px;}
+  .step .num{font-family:'Space Mono',monospace; font-size:12px; color:var(--brass-deep); margin-bottom:16px;}
+  .step h3{font-size:20px; margin-bottom:10px;}
+  .step p{color:var(--ink-soft); font-size:14.5px;}
+
+  /* WHY */
+  .why-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:22px;}
+  @media(max-width:760px){ .why-grid{grid-template-columns:1fr;} }
+  .why-card{padding:26px 0; border-top:1px solid var(--line);}
+  .why-card h3{font-size:18px; margin-bottom:8px;}
+  .why-card p{color:var(--ink-soft); font-size:14.5px;}
+
+  /* PARTNERS */
+  .partner-grid{display:grid; grid-template-columns:1fr 1fr; gap:22px;}
+  @media(max-width:760px){ .partner-grid{grid-template-columns:1fr;} }
+  .partner-card{background:var(--card); border:1px solid var(--line); border-radius:18px; padding:30px;}
+  .partner-card.founding{border-color:var(--brass);}
+  .ptag{font-family:'Space Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--brass-deep); margin-bottom:12px;}
+  .partner-card h3{font-size:22px; margin-bottom:8px;}
+  .partner-card p.desc{color:var(--ink-soft); font-size:14px; margin-bottom:18px;}
+  .rate{font-family:'Fraunces',serif; font-size:22px; color:var(--emerald);}
+  .rate small{font-family:'Inter',sans-serif; font-size:12px; color:var(--ink-soft); font-weight:500;}
+  .become{margin-top:26px; font-size:14.5px; color:var(--ink-soft);}
+  .become a{color:var(--ink); font-weight:600; border-bottom:1px solid var(--brass);}
+
+  /* PRICING */
+  .pricing-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:22px;}
+  @media(max-width:920px){ .pricing-grid{grid-template-columns:1fr;} }
+  .plan{
+    background:var(--card); border:1px solid var(--line); border-radius:20px; padding:32px 28px;
+    display:flex; flex-direction:column; position:relative;
+  }
+  .plan.featured{border:1.5px solid var(--brass); box-shadow:var(--shadow);}
+  .plan .flag{
+    position:absolute; top:-13px; left:28px; background:var(--brass); color:#fff;
+    font-family:'Space Mono',monospace; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
+    padding:5px 12px; border-radius:100px;
+  }
+  .plan .pname{font-family:'Space Mono',monospace; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); margin-bottom:14px;}
+  .plan .cap{font-family:'Fraunces',serif; font-size:20px; margin-bottom:18px;}
+  .plan .price{font-family:'Fraunces',serif; font-size:44px; line-height:1;}
+  .plan .price sup{font-family:'Inter',sans-serif; font-size:16px; font-weight:600; vertical-align:super;}
+  .plan .per{font-size:13px; color:var(--ink-soft); margin:6px 0 22px;}
+  .plan ul{list-style:none; display:flex; flex-direction:column; gap:11px; margin-bottom:26px; flex:1;}
+  .plan li{font-size:14px; color:var(--ink-soft); padding-left:22px; position:relative;}
+  .plan li::before{content:'—'; position:absolute; left:0; color:var(--brass);}
+  .plan .btn{justify-content:center; width:100%;}
+  .math{
+    margin-top:40px; background:var(--emerald-soft); border-radius:18px; padding:26px 30px;
+    font-size:15px; color:var(--ink); line-height:1.7;
+  }
+  .math b{color:var(--emerald);}
+
+  /* CTA */
+  .cta{background:var(--ink); color:var(--parchment); border-radius:28px; padding:64px 44px; text-align:center; margin:0 28px;}
+  .cta h2{color:var(--parchment); font-size:clamp(28px,4vw,42px);}
+  .cta p{color:#C8C1AF; margin:16px 0 30px; font-size:15px;}
+  .cta .btn-primary{background:var(--brass); color:var(--ink);}
+
+  footer{padding:64px 0 32px;}
+  .foot-grid{display:grid; grid-template-columns:1.4fr 1fr 1fr; gap:40px; padding-bottom:36px; border-bottom:1px solid var(--line);}
+  @media(max-width:700px){ .foot-grid{grid-template-columns:1fr;} }
+  .foot-grid h4{font-family:'Space Mono',monospace; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); margin-bottom:14px;}
+  .foot-grid a, .foot-grid p{font-size:14px; color:var(--ink-soft); display:block; margin-bottom:8px;}
+  .foot-bottom{padding-top:24px; display:flex; justify-content:space-between; font-size:12.5px; color:var(--ink-soft); flex-wrap:wrap; gap:10px;}
+</style>
+</head>
+<body>
+
+<header class="nav" id="top">
+  <div class="nav-inner">
+    <div class="logo">Lux<span>Fi</span></div>
+    <nav class="links">
+      <a href="#how">How it works</a>
+      <a href="#why">Why LuxFi</a>
+      <a href="#partners">Partners</a>
+      <a href="#pricing">Pricing</a>
+    </nav>
+    <a class="btn btn-primary" href="https://wa.me/13057846663?text=Hi%2C%20I%20want%20to%20join%20LuxFi%20network">Message Fi</a>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <div class="badge-live"><span class="dot"></span> Fi is live — 1.3M+ listings captured</div>
+      <h1>Hey, I'm Fi.<br>I find the deal <span class="soft">before anyone else.</span></h1>
+      <p class="lede">I monitor your WhatsApp and Telegram dealer groups — watches, handbags, jewelry — and surface the match the moment it posts. <em>$50/month. No per-match fees, ever.</em></p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="https://wa.me/13057846663?text=Hi%2C%20I%20want%20to%20join%20LuxFi%20network">Message Fi</a>
+        <a class="btn btn-line" href="https://wa.me/13057846663?text=Hi%20Fi%20%E2%80%94%20I%20want%20to%20add%20you%20to%20my%20dealer%20group">Add Fi to my group ↗</a>
+      </div>
+    </div>
+
+    <div class="phone">
+      <div class="phone-bar"><span>9:41</span><span>LuxFi</span></div>
+      <div class="phone-head">
+        <div class="avatar">Fi</div>
+        <div><div class="who">Fi</div><div class="status">● watching 6 groups</div></div>
+      </div>
+      <div class="phone-body">
+        <div class="bubble">Good morning — I've been listening overnight. One came in that matches your standing WTB.</div>
+        <div class="match-card">
+          <div class="match-tag">● New match</div>
+          <div class="match-title">Patek Philippe 5711/1A</div>
+          <div class="match-sub">Tiffany Blue dial · Asking $185,000 · Verified dealer · Tokyo</div>
+          <div class="match-cta"><span>Tap to connect</span><b>included in your plan</b></div>
+        </div>
+        <div class="plan-note">No match, no charge. Ever.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="ticker-wrap">
+      <div class="ticker" id="ticker"></div>
+    </div>
+  </div>
+</section>
+
+<section class="stats">
+  <div class="wrap">
+    <div class="section-head" style="margin-bottom:36px;">
+      <div class="eyebrow">My network, by the numbers</div>
+      <p style="color:var(--ink-soft); margin-top:12px; font-size:15px; max-width:520px;">Real outcomes from the groups I monitor, the matches I make, and the inventory moving through the network right now.</p>
+    </div>
+    <div class="stats-grid">
+      <div class="stat"><b>30K+</b><span>Verified dealers</span></div>
+      <div class="stat"><b>1.3M+</b><span>Listings captured</span></div>
+      <div class="stat"><b id="intro-counter">2,415</b><span>Introductions made</span></div>
+      <div class="stat"><b>&lt;1min</b><span>Time to notify on match</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">How it works</div>
+      <h2>Three steps. Zero new habits.</h2>
+      <p>You keep posting the way you already do. I do the rest.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="num">01 — Monitor</div>
+        <h3>Fi monitors your groups</h3>
+        <p>Add me to any participating WhatsApp dealer group. Every WTB and FS posted is captured and indexed automatically.</p>
+      </div>
+      <div class="step">
+        <div class="num">02 — Match</div>
+        <h3>You get matched</h3>
+        <p>When a listing matches your criteria — right ref, condition, price range — I notify you instantly. See the details before you decide.</p>
+      </div>
+      <div class="step">
+        <div class="num">03 — Connect</div>
+        <h3>Introduce, on your plan</h3>
+        <p>Tap connect on a match you want. Unlock direct contact instantly — it counts toward your weekly plan, nothing more.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Why dealers use LuxFi</div>
+      <h2>Built for how you already work.</h2>
+    </div>
+    <div class="why-grid">
+      <div class="why-card">
+        <h3>Nothing to post manually</h3>
+        <p>Your dealers are already posting in groups. I capture it automatically. No double-entry, no new workflow, no friction.</p>
+      </div>
+      <div class="why-card">
+        <h3>Real-time across every group</h3>
+        <p>A piece posted in a Tokyo group at 3am matches your standing WTB before you wake up. I never sleep.</p>
+      </div>
+      <div class="why-card">
+        <h3>Partner network verified</h3>
+        <p>Every dealer is verified through their partner network. Ratings visible before you connect. Block users or countries you don't want to deal with.</p>
+      </div>
+      <div class="why-card">
+        <h3>Private. Always.</h3>
+        <p>Listings stay inside the network. Real dealer pricing never surfaces publicly. Chrono24 and eBay don't see it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="partners">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Partner network</div>
+      <h2>An open platform.</h2>
+      <p>Dealer networks that partner with LuxFi unlock member pricing for their subscribers — automatically. No codes, no signup, no friction.</p>
+    </div>
+    <div class="partner-grid">
+      <div class="partner-card founding">
+        <div class="ptag">Founding partner</div>
+        <h3>WatchFacts</h3>
+        <p class="desc">The largest verified luxury watch dealer network. Creator of the CPO program at Amazon, eBay, Walmart, and Signet.</p>
+        <div class="rate">Free <small>Fi membership included for WatchFacts subscribers</small></div>
+      </div>
+      <div class="partner-card">
+        <div class="ptag">Coming soon</div>
+        <h3>Your network</h3>
+        <p class="desc">LuxFi is open to dealer networks across watches, handbags, jewelry, and beyond.</p>
+        <div class="rate">from $50<small>/month, member pricing</small></div>
+      </div>
+    </div>
+    <div class="become">Are you a dealer network operator? Bring your members to LuxFi. <a href="https://wa.me/13053897000?text=Hi%20%E2%80%94%20I%20am%20interested%20in%20becoming%20a%20LuxFi%20partner">Become a partner ↗</a></div>
+  </div>
+</section>
+
+<section id="pricing">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Pricing</div>
+      <h2>One flat fee. No surprises.</h2>
+      <p>No credits, no per-match charges. Pick the weekly introduction limit that fits how you deal.</p>
+    </div>
+
+    <div class="pricing-grid">
+      <div class="plan">
+        <div class="pname">Base</div>
+        <div class="cap">5 intros / week</div>
+        <div class="price">$50<sup>/mo</sup></div>
+        <div class="per">Flat fee, billed monthly</div>
+        <ul>
+          <li>Fi group monitoring, free</li>
+          <li>Match notifications, free</li>
+          <li>5 WTB/WTS introductions weekly</li>
+          <li>No per-match fees</li>
+        </ul>
+        <a class="btn btn-line" href="https://wa.me/13057846663?text=Hi%2C%20I%20want%20to%20join%20LuxFi%20on%20the%20Base%20plan">Message Fi</a>
+      </div>
+
+      <div class="plan featured">
+        <div class="flag">Package 1</div>
+        <div class="pname">Package 1</div>
+        <div class="cap">20 intros / week</div>
+        <div class="price">$150<sup>/mo</sup></div>
+        <div class="per">Flat fee, billed monthly</div>
+        <ul>
+          <li>Everything in Base</li>
+          <li>20 WTB/WTS introductions weekly</li>
+          <li>Upgrade or downgrade any time</li>
+          <li>No per-match fees</li>
+        </ul>
+        <a class="btn btn-primary" href="https://wa.me/13057846663?text=Hi%2C%20I%20want%20to%20join%20LuxFi%20on%20Package%201">Message Fi</a>
+      </div>
+
+      <div class="plan">
+        <div class="pname">Package 2</div>
+        <div class="cap">Unlimited intros / week</div>
+        <div class="price">$300<sup>/mo</sup></div>
+        <div class="per">Flat fee, billed monthly</div>
+        <ul>
+          <li>Everything in Package 1</li>
+          <li>Unlimited WTB/WTS introductions</li>
+          <li>No weekly cap</li>
+          <li>No per-match fees</li>
+        </ul>
+        <a class="btn btn-line" href="https://wa.me/13057846663?text=Hi%2C%20I%20want%20to%20join%20LuxFi%20on%20Package%202">Message Fi</a>
+      </div>
+    </div>
+
+    <div class="math"><b>The math:</b> a dealer sourcing a $20K piece across 10 group chats spends hours, burns relationship capital, and risks dealing with someone unvetted. Fi delivers the right counterparty starting at $50/month — flat, whether you make one introduction or five that week.</div>
+  </div>
+</section>
+
+<section>
+  <div class="cta">
+    <div class="eyebrow" style="justify-content:center; color:#C8C1AF;">Currently live for WatchFacts subscribers</div>
+    <h2>Your next deal is already in a group somewhere.</h2>
+    <p>I find it before anyone else does.</p>
+    <a class="btn btn-primary" href="https://wa.me/13057846663?text=Hi%20Fi%20%E2%80%94%20I%20want%20to%20add%20you%20to%20my%20dealer%20group">Add Fi to your group — it's free</a>
+    <p style="margin-top:18px; font-size:12.5px; color:#8A8370;">WhatsApp only · Telegram: @Fi_Aibot (coming soon)</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <div class="logo" style="margin-bottom:14px;">Lux<span>Fi</span></div>
+        <p>Fi is the AI dealer matchmaker. I find the deal — you decide.</p>
+      </div>
+      <div>
+        <h4>Product</h4>
+        <a href="#how">How it works</a>
+        <a href="#why">Why LuxFi</a>
+        <a href="#pricing">Pricing</a>
+      </div>
+      <div>
+        <h4>Network</h4>
+        <a href="#partners">Partners</a>
+        <a href="https://wa.me/13057846663?text=Hi%2C%20I%20want%20to%20join%20LuxFi%20network">Message Fi</a>
+      </div>
+    </div>
+    <div class="wrap foot-bottom" style="padding:0;">
+      <span>© 2026 LuxFi. All rights reserved.</span>
+      <span>Built on the WatchFacts dealer network.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  var tickerItems = [
+    {name:'ROLEX', dir:'up', tag:'412 WTB'},
+    {name:'PATEK PHILIPPE', dir:'up', tag:'88 FS'},
+    {name:'A. LANGE & SÖHNE', dir:'down', tag:'19 FS'},
+    {name:'RICHARD MILLE', dir:'up', tag:'54 WTB'},
+    {name:'AUDEMARS PIGUET', dir:'up', tag:'201 WTB'},
+    {name:'VACHERON CONSTANTIN', dir:'down', tag:'12 FS'},
+    {name:'CHANEL', dir:'up', tag:'76 FS'},
+    {name:'HERMÈS', dir:'up', tag:'143 WTB'},
+    {name:'CARTIER', dir:'up', tag:'95 FS'}
+  ];
+  var el = document.getElementById('ticker');
+  var html = '';
+  for (var r = 0; r < 2; r++) {
+    tickerItems.forEach(function(t){
+      html += '<span class="tick"><b>'+t.name+'</b><span class="'+t.dir+'">'+(t.dir==='up'?'▲':'▼')+'</span>'+t.tag+'</span>';
+    });
+  }
+  el.innerHTML = html;
+
+  // Live-incrementing introductions counter — 16.37 introductions/day
+  (function(){
+    var counterEl = document.getElementById('intro-counter');
+    var base = 2415;
+    var ratePerMs = 16.37 / (24 * 60 * 60 * 1000);
+    var start = Date.now();
+    function render(){
+      var elapsed = Date.now() - start;
+      var value = base + ratePerMs * elapsed;
+      counterEl.textContent = Math.floor(value).toLocaleString('en-US');
+    }
+    render();
+    setInterval(render, 1000);
+  })();
+</script>
+
+</body>
+</html>
