@@ -261,6 +261,7 @@ test("symbol-only prices are never stored as watch references", () => {
 test("a reference followed by settlement currency wording is not treated as a price", () => {
   for (const text of [
     "FS Rolex 126333 USD wire only",
+    "FS Rolex 126333 USD, wire only",
     "FS Rolex 126333 HKD payment accepted",
     "FS Rolex 126333 EUR settlement account",
   ]) {
