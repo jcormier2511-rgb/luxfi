@@ -791,7 +791,10 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     state.pendingPreferenceCollection = undefined;
     state.pendingNaturalFollowUp = undefined;
     saveState(state);
-    return { state, messages: [FI_MENU] };
+    return {
+      state,
+      messages: ["Hi, I'm Fi — here's what I can do: tell me naturally what you're looking to buy or sell, or ask me anything about your listings."],
+    };
   }
 
   if (isOptOut(text)) {
