@@ -3,7 +3,7 @@ import { InterpretedQuery } from "./types";
 import { SearchPreferences } from "../types";
 import { parsePriceRange } from "../conversation/preferences";
 import { extractReference } from "../postings/normalize";
-import { extractVerifiedPriceCurrency } from "./intentExtractor";
+import { extractVerifiedPriceCurrency, hasConflictingPriceCurrencies } from "./intentExtractor";
 
 export interface ConfirmedNaturalLanguageIntent {
   intent: "buy" | "sell" | null;
@@ -86,10 +86,10 @@ export function extractConfirmedNaturalLanguageIntent(text: string): ConfirmedNa
   const priceExpression = extractExplicitPriceExpression(text);
   const priceRange = priceExpression ? parsePriceRange(priceExpression) : undefined;
   const verifiedCurrency = priceExpression ? extractVerifiedPriceCurrency(priceExpression) : null;
-  // A syntactically valid range is still unsafe when its endpoints name different currencies.
-  // In that case discard the entire budget instead of relabeling both numbers with the first
-  // marker and enforcing invalid/reversed bounds.
-  const priceVerified = priceRange !== undefined && verifiedCurrency !== null;
+  // A range without a currency marker is still a valid numeric budget and follows the existing
+  // default-currency behavior. Only contradictory explicit markers invalidate the bounds.
+  const priceVerified = priceRange !== undefined &&
+    !(priceExpression && hasConflictingPriceCurrencies(priceExpression));
   const priceMin = priceVerified ? priceRange.min ?? null : null;
   const priceMax = priceVerified ? priceRange.max ?? null : null;
   const currency = priceMin === null && priceMax === null ? null : verifiedCurrency;
