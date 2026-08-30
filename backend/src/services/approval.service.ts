@@ -191,6 +191,21 @@ export async function passMatch(pool: Pool, matchId: string, recipientCanonicalU
   }
 }
 
+/**
+ * Finds the account's single most recently delivered still-pending match --
+ * used by channels with no button/interactive-reply mechanism (SMS) so a bare
+ * "approve"/"pass" text reply has an unambiguous match to resolve against.
+ */
+export async function findMostRecentPendingMatchForUser(pool: Pool, canonicalUserId: string): Promise<string | null> {
+  const { rows } = await pool.query(
+    `SELECT match_id FROM match_recipients
+     WHERE recipient_canonical_user_id = $1 AND decision = 'pending'
+     ORDER BY delivered_at DESC NULLS LAST, created_at DESC LIMIT 1`,
+    [canonicalUserId]
+  );
+  return rows[0]?.match_id ?? null;
+}
+
 function contactReleasable(contactMethods: ContactMethod[], confirmed: boolean): boolean {
   return contactMethods.some((m) => m.authorizedForSharing) || confirmed;
 }

@@ -166,3 +166,50 @@ test('merge-into route links a provisional identity into a target account', asyn
   const { rows } = await pool.query('SELECT merged_into_id FROM canonical_users WHERE id = $1', [from.canonicalUserId]);
   expect(rows[0].merged_into_id).toBe(to.canonicalUserId);
 });
+
+test('platform-identity route attaches a new channel identity, is idempotent, and rejects stealing one already linked elsewhere', async () => {
+  const app = createApp(pool);
+  idCounter += 1;
+  const owner = await resolveCanonicalUserForPlatformIdentity(pool, {
+    platform: 'whatsapp',
+    platformUserId: `platform-identity-owner-${idCounter}`,
+  });
+  const other = await resolveCanonicalUserForPlatformIdentity(pool, {
+    platform: 'whatsapp',
+    platformUserId: `platform-identity-other-${idCounter}`,
+  });
+
+  const badRequest = await request(app)
+    .post(`/admin/users/${owner.canonicalUserId}/platform-identity`)
+    .set('x-admin-token', ADMIN_TOKEN)
+    .send({ platform: 'carrier-pigeon', platformUserId: 'x' });
+  expect(badRequest.status).toBe(400);
+
+  const email = `member-${idCounter}@example.com`;
+  const added = await request(app)
+    .post(`/admin/users/${owner.canonicalUserId}/platform-identity`)
+    .set('x-admin-token', ADMIN_TOKEN)
+    .send({ platform: 'email', platformUserId: email });
+  expect(added.status).toBe(200);
+  expect(added.body).toEqual({ status: 'added' });
+
+  const idempotent = await request(app)
+    .post(`/admin/users/${owner.canonicalUserId}/platform-identity`)
+    .set('x-admin-token', ADMIN_TOKEN)
+    .send({ platform: 'email', platformUserId: email });
+  expect(idempotent.status).toBe(200);
+  expect(idempotent.body).toEqual({ status: 'already_linked' });
+
+  const conflict = await request(app)
+    .post(`/admin/users/${other.canonicalUserId}/platform-identity`)
+    .set('x-admin-token', ADMIN_TOKEN)
+    .send({ platform: 'email', platformUserId: email });
+  expect(conflict.status).toBe(409);
+  expect(conflict.body.existingCanonicalUserId).toBe(owner.canonicalUserId);
+
+  const { rows } = await pool.query(
+    "SELECT canonical_user_id FROM platform_identities WHERE platform = 'email' AND platform_user_id = $1",
+    [email]
+  );
+  expect(rows[0].canonical_user_id).toBe(owner.canonicalUserId);
+});

@@ -47,6 +47,42 @@ export async function resolveCanonicalUserForPlatformIdentity(
   return { canonicalUserId, isProvisional: true };
 }
 
+export type AddPlatformIdentityResult =
+  | { status: 'added' }
+  | { status: 'already_linked' }
+  | { status: 'conflict'; existingCanonicalUserId: string };
+
+/**
+ * Attaches a new platform identity to an existing canonical user -- e.g.
+ * recording a member's email address so the email channel (which has no
+ * inbound webhook of its own, see adapters/email.client.ts) has somewhere to
+ * send to. Refuses to silently steal an identity that's already linked to a
+ * different account; use mergeCanonicalUsers for that (spec 5.2), which
+ * carries the history reassignment a plain identity move would skip.
+ */
+export async function addPlatformIdentityToCanonicalUser(
+  pool: Pool,
+  canonicalUserId: string,
+  params: { platform: Platform; platformUserId: string; chatId?: string; displayName?: string }
+): Promise<AddPlatformIdentityResult> {
+  const existing = await pool.query<{ canonical_user_id: string }>(
+    'SELECT canonical_user_id FROM platform_identities WHERE platform = $1 AND platform_user_id = $2',
+    [params.platform, params.platformUserId]
+  );
+  if (existing.rows.length > 0) {
+    const existingCanonicalUserId = existing.rows[0].canonical_user_id;
+    if (existingCanonicalUserId === canonicalUserId) return { status: 'already_linked' };
+    return { status: 'conflict', existingCanonicalUserId };
+  }
+
+  await pool.query(
+    `INSERT INTO platform_identities (canonical_user_id, platform, platform_user_id, chat_id, display_name, is_provisional)
+     VALUES ($1, $2, $3, $4, $5, false)`,
+    [canonicalUserId, params.platform, params.platformUserId, params.chatId ?? null, params.displayName ?? null]
+  );
+  return { status: 'added' };
+}
+
 /** Follows merged_into_id chain to the live canonical account. */
 export async function resolveMergeTarget(db: Pool | PoolClient, canonicalUserId: string): Promise<string> {
   let currentId = canonicalUserId;
