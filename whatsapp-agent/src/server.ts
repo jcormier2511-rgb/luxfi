@@ -22,7 +22,18 @@ import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
 import { runOpenAiDiagnosticCall } from "./ai/providers/openai";
 import { listDesignatedGroups, enableGroup, disableGroup, setReferenceRequestsEnabled } from "./concierge/groupRegistry";
-import { isAdminAuthenticated, registerAdminPanel } from "./adminPanel";
+import {
+  SESSION_COOKIE_NAME,
+  buildLogoutCookieHeader,
+  buildSessionCookieHeader,
+  createSessionToken,
+  isHttpsRequest,
+  isValidAdminToken,
+  isValidSessionToken,
+  parseCookies,
+} from "./admin/session";
+import { buildAdminDashboardData } from "./admin/dashboard";
+import { renderDashboard, renderLoginPage } from "./admin/view";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
 // (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
@@ -161,10 +172,58 @@ export async function handleWebhookPayload(body: IncomingWebhook): Promise<void>
 export function createServer() {
   const app = express();
   app.use(express.json());
-  registerAdminPanel(app);
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true });
+  });
+
+  function hasAdminSession(req: express.Request): boolean {
+    const cookies = parseCookies(req.headers.cookie);
+    return isValidSessionToken(cookies[SESSION_COOKIE_NAME]);
+  }
+
+  // Visual admin panel — read-only status for Whapi, Postgres/schema, market updates, v4
+  // postings, WatchFacts sync, and AI matching (no secrets), plus the contacts CSV upload
+  // workflow. Authenticated against WEBHOOK_TOKEN like every other /admin/* route, but via a
+  // login form + signed session cookie (see ./admin/session) rather than a token in the URL —
+  // a URL is logged, cached, and shared far more casually than a submitted form value.
+  app.get("/admin", async (req, res) => {
+    if (!hasAdminSession(req)) {
+      return res.status(401).type("html").send(renderLoginPage());
+    }
+    const data = await buildAdminDashboardData();
+    res.type("html").send(renderDashboard(data));
+  });
+
+  app.post("/admin/login", express.urlencoded({ extended: false }), (req, res) => {
+    const token = typeof req.body?.token === "string" ? req.body.token : "";
+    if (!isValidAdminToken(token)) {
+      return res.status(401).type("html").send(renderLoginPage("Invalid token."));
+    }
+    res.setHeader("Set-Cookie", buildSessionCookieHeader(createSessionToken(), isHttpsRequest(req)));
+    res.redirect(303, "/admin");
+  });
+
+  app.get("/admin/logout", (req, res) => {
+    res.setHeader("Set-Cookie", buildLogoutCookieHeader(isHttpsRequest(req)));
+    res.redirect(303, "/admin");
+  });
+
+  function saveContactsCsv(body: string): number {
+    fs.mkdirSync(path.dirname(config.data.contactsCsv), { recursive: true });
+    fs.writeFileSync(config.data.contactsCsv, body);
+    return loadContacts(true).length;
+  }
+
+  // Session-authenticated counterpart to POST /admin/upload/contacts below, for the panel's own
+  // upload form — same effect (replace + reload contacts.csv), just gated on the browser session
+  // instead of a token query param, since the panel deliberately never puts the token in a URL.
+  app.post("/admin/panel/upload-contacts", express.text({ type: "*/*", limit: "20mb" }), (req, res) => {
+    if (!hasAdminSession(req)) {
+      return res.status(401).json({ error: "not signed in" });
+    }
+    const contacts = saveContactsCsv(req.body);
+    res.json({ ok: true, bytes: req.body.length, contacts });
   });
 
   // Whapi.Cloud webhook receiver. Configure this URL as the channel's webhook (Settings →
@@ -219,20 +278,18 @@ export function createServer() {
   const csvUpload = express.text({ type: "*/*", limit: "20mb" });
 
   app.post("/admin/upload/contacts", csvUpload, (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
-    fs.mkdirSync(path.dirname(config.data.contactsCsv), { recursive: true });
-    fs.writeFileSync(config.data.contactsCsv, req.body);
-    const contacts = loadContacts(true);
-    res.json({ ok: true, bytes: req.body.length, contacts: contacts.length });
+    const contacts = saveContactsCsv(req.body);
+    res.json({ ok: true, bytes: req.body.length, contacts });
   });
 
   // Read-only view of what group monitoring has captured so far — since it accumulates
   // silently (no reply into the group), this is the only way to confirm it's working
   // without SSH/shell access to the container.
   app.get("/admin/group-listings", (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     if (!fs.existsSync(config.data.groupListingsCsv)) {
@@ -249,7 +306,7 @@ export function createServer() {
   // endpoint fetches media from a URL server-side, so this host must be public — that's why
   // PUBLIC_BASE_URL has to be set for the response's suggested `url` field to be usable.
   app.post("/admin/upload/banner", express.raw({ type: "*/*", limit: "15mb" }), (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     const ext = typeof req.query.ext === "string" ? req.query.ext.replace(/[^a-z0-9]/gi, "") || "jpg" : "jpg";
@@ -271,7 +328,7 @@ export function createServer() {
   // number that already passed "new" won't see the intro/trial-start behavior again
   // without this. `phone` is digits-only, no leading +, matching webhook payloads.
   app.get("/admin/conversation-state", (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -280,7 +337,7 @@ export function createServer() {
   });
 
   app.post("/admin/reset-state", (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -294,7 +351,7 @@ export function createServer() {
   // the ONLY way to unlock further approvals for an account — never self-service, never a
   // live charge. See src/billing/entitlementStore.ts.
   app.get("/admin/entitlement", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -303,7 +360,7 @@ export function createServer() {
   });
 
   app.post("/admin/entitlement/override", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -317,7 +374,7 @@ export function createServer() {
   // one is this admin action; no payment processor exists, so this is never self-service and
   // never a live charge. ?plan=none clears an assigned plan back to locked.
   app.post("/admin/entitlement/plan", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -338,7 +395,7 @@ export function createServer() {
   // shows the actual resolved paths, what's on disk at each, and a peek at loaded inventory
   // so we can tell real WatchFacts data from the bundled sample from the response alone.
   app.get("/admin/debug-info", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     const describe = (p: string) => {
@@ -372,7 +429,7 @@ export function createServer() {
   // runInventorySync/syncOneSide. A failure on one side never clears or masks the other's
   // last success, and existing rows for a failed side are never touched.
   app.get("/admin/inventory-status", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(await getSyncStatus(config.watchfacts.enableWtbSync));
@@ -383,7 +440,7 @@ export function createServer() {
   // credentials or shell access. Used to confirm what's actually stored for a given reference
   // when a live search unexpectedly returns nothing.
   app.get("/admin/inventory-search", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -399,7 +456,7 @@ export function createServer() {
   // Currently OpenAI-specific since that's the provider being debugged; the response is already
   // safe to return as-is (no key, no full customer data — see runOpenAiDiagnosticCall).
   app.get("/admin/ai-diagnostic", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(await runOpenAiDiagnosticCall());
@@ -412,14 +469,14 @@ export function createServer() {
   // WATCHFACTS_ADMIN_PHONES — the token alone (which anyone with server-admin access holds) is
   // not sufficient to change what a real WhatsApp group can do.
   app.get("/admin/concierge/groups", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json({ ok: true, groups: await listDesignatedGroups() });
   });
 
   function requireConciergeAdmin(req: express.Request, res: express.Response): boolean {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       res.status(401).json({ error: "invalid token" });
       return false;
     }
@@ -465,7 +522,7 @@ export function createServer() {
   // backgrounding it like /outreach/start. The scheduler in index.ts calls this on its own
   // interval; this endpoint is for a manual/on-demand re-sync.
   app.post("/admin/sync-inventory", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     if (!config.watchfacts.email || !config.watchfacts.password) {
@@ -485,7 +542,7 @@ export function createServer() {
   // The scheduler in index.ts calls this on its own interval; this endpoint is for a manual/
   // on-demand run. Already-known, unchanged matches are a no-op — see runReconciliation.
   app.post("/admin/reconciliation", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     const result = await runReconciliation();
@@ -497,7 +554,7 @@ export function createServer() {
   // already initializes it unconditionally at startup, this should always report ready, but a
   // failing call here (rather than a silent false) is itself the signal something's wrong.
   app.get("/admin/v4-status", async (req, res) => {
-    if (!isAdminAuthenticated(req)) {
+    if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
     let schemaReady = true;
