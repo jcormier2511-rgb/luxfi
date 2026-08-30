@@ -22,6 +22,18 @@ import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
 import { runOpenAiDiagnosticCall } from "./ai/providers/openai";
 import { listDesignatedGroups, enableGroup, disableGroup, setReferenceRequestsEnabled } from "./concierge/groupRegistry";
+import {
+  SESSION_COOKIE_NAME,
+  buildLogoutCookieHeader,
+  buildSessionCookieHeader,
+  createSessionToken,
+  isHttpsRequest,
+  isValidAdminToken,
+  isValidSessionToken,
+  parseCookies,
+} from "./admin/session";
+import { buildAdminDashboardData } from "./admin/dashboard";
+import { renderDashboard, renderLoginPage } from "./admin/view";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
 // (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
@@ -165,6 +177,55 @@ export function createServer() {
     res.json({ ok: true });
   });
 
+  function hasAdminSession(req: express.Request): boolean {
+    const cookies = parseCookies(req.headers.cookie);
+    return isValidSessionToken(cookies[SESSION_COOKIE_NAME]);
+  }
+
+  // Visual admin panel — read-only status for Whapi, Postgres/schema, market updates, v4
+  // postings, WatchFacts sync, and AI matching (no secrets), plus the contacts CSV upload
+  // workflow. Authenticated against WEBHOOK_TOKEN like every other /admin/* route, but via a
+  // login form + signed session cookie (see ./admin/session) rather than a token in the URL —
+  // a URL is logged, cached, and shared far more casually than a submitted form value.
+  app.get("/admin", async (req, res) => {
+    if (!hasAdminSession(req)) {
+      return res.status(401).type("html").send(renderLoginPage());
+    }
+    const data = await buildAdminDashboardData();
+    res.type("html").send(renderDashboard(data));
+  });
+
+  app.post("/admin/login", express.urlencoded({ extended: false }), (req, res) => {
+    const token = typeof req.body?.token === "string" ? req.body.token : "";
+    if (!isValidAdminToken(token)) {
+      return res.status(401).type("html").send(renderLoginPage("Invalid token."));
+    }
+    res.setHeader("Set-Cookie", buildSessionCookieHeader(createSessionToken(), isHttpsRequest(req)));
+    res.redirect(303, "/admin");
+  });
+
+  app.get("/admin/logout", (req, res) => {
+    res.setHeader("Set-Cookie", buildLogoutCookieHeader(isHttpsRequest(req)));
+    res.redirect(303, "/admin");
+  });
+
+  function saveContactsCsv(body: string): number {
+    fs.mkdirSync(path.dirname(config.data.contactsCsv), { recursive: true });
+    fs.writeFileSync(config.data.contactsCsv, body);
+    return loadContacts(true).length;
+  }
+
+  // Session-authenticated counterpart to POST /admin/upload/contacts below, for the panel's own
+  // upload form — same effect (replace + reload contacts.csv), just gated on the browser session
+  // instead of a token query param, since the panel deliberately never puts the token in a URL.
+  app.post("/admin/panel/upload-contacts", express.text({ type: "*/*", limit: "20mb" }), (req, res) => {
+    if (!hasAdminSession(req)) {
+      return res.status(401).json({ error: "not signed in" });
+    }
+    const contacts = saveContactsCsv(req.body);
+    res.json({ ok: true, bytes: req.body.length, contacts });
+  });
+
   // Whapi.Cloud webhook receiver. Configure this URL as the channel's webhook (Settings →
   // Webhooks) with the "messages" event enabled.
   app.post("/webhook", async (req, res) => {
@@ -220,10 +281,8 @@ export function createServer() {
     if (req.query.token !== config.server.webhookToken) {
       return res.status(401).json({ error: "invalid token" });
     }
-    fs.mkdirSync(path.dirname(config.data.contactsCsv), { recursive: true });
-    fs.writeFileSync(config.data.contactsCsv, req.body);
-    const contacts = loadContacts(true);
-    res.json({ ok: true, bytes: req.body.length, contacts: contacts.length });
+    const contacts = saveContactsCsv(req.body);
+    res.json({ ok: true, bytes: req.body.length, contacts });
   });
 
   // Read-only view of what group monitoring has captured so far — since it accumulates

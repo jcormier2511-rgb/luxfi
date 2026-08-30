@@ -357,6 +357,23 @@ curl -X POST "https://<your-railway-domain>/admin/reset-state?phone=<digits-only
 (phone is digits only, no leading `+`, e.g. `15551234567`). Check current state anytime with
 `GET /admin/conversation-state?phone=<digits-only>&token=<WEBHOOK_TOKEN>`.
 
+## Admin panel
+
+`GET /admin` is a visual, read-only status dashboard — Whapi connectivity, PostgreSQL/schema
+health, market-update schedule and last delivery, v4 postings state and allowed group IDs,
+WatchFacts FS/WTB sync status, AI matching configuration, and current deployment health — plus
+the contacts CSV upload workflow from a browser instead of `curl`. Unlike every other `/admin/*`
+route, it does **not** take `?token=...` in the URL: visiting it with no session shows a login
+form that POSTs the token to `/admin/login`, which sets a signed, `HttpOnly`, `SameSite=Strict`
+session cookie (`/admin/logout` clears it) — still authenticated against the same `WEBHOOK_TOKEN`,
+just not carried in a URL that ends up in browser history, proxy logs, or a shared link. No secret
+(the token, API keys, the database connection string) is ever rendered on the page — only
+booleans like "configured" and non-secret operational values.
+
+```
+https://<your-railway-domain>/admin
+```
+
 ## Not yet wired up
 
 - No real billing — `approvedCount` is tracked per contact and `account_entitlements` in

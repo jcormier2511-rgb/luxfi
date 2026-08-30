@@ -260,6 +260,66 @@ export async function runMarketUpdates(period: MarketUpdatePeriod, localDate: st
   return result;
 }
 
+/** pg returns TIMESTAMPTZ columns as Date objects, not strings — coerce for an honest `string | null`. */
+function toIsoOrNull(value: Date | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+/** pg returns DATE columns as Date objects too — format as a plain YYYY-MM-DD, matching the
+ *  local_date string this module writes and reads everywhere else (never a full timestamp). */
+function toLocalDateOrNull(value: Date | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  return value instanceof Date ? value.toISOString().slice(0, 10) : value;
+}
+
+export interface MarketUpdateDeliveryStatus {
+  lastDeliveredAt: string | null;
+  lastPeriod: MarketUpdatePeriod | null;
+  lastLocalDate: string | null;
+  // How many recipients were delivered in that same period/local-date batch — gives a sense of
+  // scale alongside the single most-recent timestamp.
+  recipientsInLastBatch: number;
+  lastFailureAt: string | null;
+  lastFailureError: string | null;
+}
+
+/**
+ * Admin-panel visibility into the market-update scheduler's actual delivery history — queried
+ * live against market_update_deliveries (the same idempotency ledger claimDelivery/markDelivery
+ * write), never a cached counter. Safe to call whether or not the feature is enabled: with it
+ * off, the table simply has no rows and every field comes back null/zero.
+ */
+export async function getMarketUpdateDeliveryStatus(): Promise<MarketUpdateDeliveryStatus> {
+  return withSchema(async (pool) => {
+    const last = await pool.query<{ period: MarketUpdatePeriod; local_date: string; delivered_at: Date | string }>(
+      `SELECT period, local_date, delivered_at FROM market_update_deliveries
+       WHERE status='delivered' ORDER BY delivered_at DESC LIMIT 1`
+    );
+    const lastRow = last.rows[0];
+    let recipientsInLastBatch = 0;
+    if (lastRow) {
+      const count = await pool.query<{ count: number }>(
+        `SELECT COUNT(*)::int AS count FROM market_update_deliveries WHERE status='delivered' AND period=$1 AND local_date=$2`,
+        [lastRow.period, lastRow.local_date]
+      );
+      recipientsInLastBatch = count.rows[0]?.count ?? 0;
+    }
+    const failure = await pool.query<{ error: string | null; claimed_at: Date | string }>(
+      `SELECT error, claimed_at FROM market_update_deliveries WHERE status='failed' ORDER BY claimed_at DESC LIMIT 1`
+    );
+    const failureRow = failure.rows[0];
+    return {
+      lastDeliveredAt: lastRow ? toIsoOrNull(lastRow.delivered_at) : null,
+      lastPeriod: lastRow?.period ?? null,
+      lastLocalDate: lastRow ? toLocalDateOrNull(lastRow.local_date) : null,
+      recipientsInLastBatch,
+      lastFailureAt: failureRow ? toIsoOrNull(failureRow.claimed_at) : null,
+      lastFailureError: failureRow?.error ?? null,
+    };
+  });
+}
+
 let schedulerStarted = false;
 export function runMarketUpdateScheduler(): void {
   if (schedulerStarted) return;

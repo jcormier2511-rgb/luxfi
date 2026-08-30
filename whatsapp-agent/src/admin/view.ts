@@ -1,0 +1,289 @@
+import { AdminDashboardData } from "./dashboard";
+
+/** Every dynamic value below is run through this before landing in HTML — status strings can
+ *  carry error text from external systems (Whapi, WatchFacts, Postgres), which must never be
+ *  trusted as safe markup. */
+export function escapeHtml(value: unknown): string {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function badge(label: string, state: boolean | null): string {
+  const cls = state === true ? "ok" : state === false ? "bad" : "unknown";
+  const text = state === true ? "OK" : state === false ? "ERROR" : "UNKNOWN";
+  return `<span class="badge ${cls}">${escapeHtml(label)}: ${text}</span>`;
+}
+
+function formatUptime(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+
+const PAGE_STYLES = `
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f5f6f8; color: #1a1a1a; }
+@media (prefers-color-scheme: dark) {
+  body { background: #14161a; color: #e6e6e6; }
+  .card, form.login { background: #1e2126 !important; border-color: #2c2f36 !important; }
+  input, button { background: #20242b !important; color: #e6e6e6 !important; border-color: #3a3f47 !important; }
+}
+header { padding: 18px 28px; border-bottom: 1px solid #d8dade; display: flex; justify-content: space-between; align-items: center; }
+header h1 { font-size: 17px; margin: 0; }
+header a { color: #4b5563; text-decoration: none; font-size: 13px; }
+main { max-width: 1000px; margin: 0 auto; padding: 22px 28px 50px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.card { background: #fff; border: 1px solid #e2e4e8; border-radius: 10px; padding: 16px 18px; }
+.card h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
+.card dl { margin: 8px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 13px; }
+.card dt { color: #6b7280; }
+.card dd { margin: 0; word-break: break-word; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; margin-right: 6px; }
+.badge.ok { background: #dcfce7; color: #166534; }
+.badge.bad { background: #fee2e2; color: #991b1b; }
+.badge.unknown { background: #e5e7eb; color: #374151; }
+ul.plain { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+.full { grid-column: 1 / -1; }
+form.login { max-width: 340px; margin: 90px auto; padding: 26px; border: 1px solid #e2e4e8; border-radius: 10px; background: #fff; }
+form.login h1 { font-size: 15px; margin: 0 0 16px; font-weight: 600; }
+form.login input[type=password] { width: 100%; padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
+form.login button, .card button { padding: 8px 14px; border-radius: 6px; border: 1px solid #d1d5db; background: #111827; color: #fff; font-size: 13px; cursor: pointer; }
+form.login button { width: 100%; }
+.error { color: #991b1b; font-size: 13px; margin-bottom: 12px; }
+.muted { color: #6b7280; font-size: 12px; margin-top: 8px; }
+input[type=file] { font-size: 13px; margin-top: 8px; }
+footer { text-align: center; color: #9ca3af; font-size: 11px; padding: 10px 0 30px; }
+`;
+
+/** Never populates the input's `value` — the submitted token is never echoed back into any response. */
+export function renderLoginPage(error?: string): string {
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LuxFi Admin — Sign in</title>
+<style>${PAGE_STYLES}</style>
+</head>
+<body>
+  <form class="login" method="post" action="/admin/login" autocomplete="off">
+    <h1>LuxFi WhatsApp Agent — Admin</h1>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
+    <input type="password" name="token" placeholder="Admin token" autocomplete="off" autofocus required>
+    <button type="submit">Sign in</button>
+  </form>
+</body>
+</html>`;
+}
+
+function renderWhapiCard(w: AdminDashboardData["whapi"]): string {
+  const state = !w.configured ? null : w.error ? false : w.authorized;
+  return `<section class="card">
+    <h2>Whapi connectivity</h2>
+    ${badge("status", state)}
+    <dl>
+      <dt>Configured</dt><dd>${w.configured ? "yes" : "no — WHAPI_TOKEN not set"}</dd>
+      <dt>Reachable</dt><dd>${w.configured ? (w.reachable ? "yes" : "no") : "—"}</dd>
+      <dt>Channel status</dt><dd>${w.statusText ? escapeHtml(w.statusText) : "—"}</dd>
+      <dt>Version</dt><dd>${w.version ? escapeHtml(w.version) : "—"}</dd>
+      ${w.error ? `<dt>Error</dt><dd>${escapeHtml(w.error)}</dd>` : ""}
+    </dl>
+  </section>`;
+}
+
+function renderDatabaseCard(db: AdminDashboardData["database"]): string {
+  return `<section class="card">
+    <h2>PostgreSQL / schema</h2>
+    ${badge("schema", db.schemaReady)}
+    <dl>
+      <dt>Host</dt><dd>${db.host ? escapeHtml(db.host) : "—"}</dd>
+      <dt>Database</dt><dd>${db.databaseName ? escapeHtml(db.databaseName) : "—"}</dd>
+      ${db.schemaError ? `<dt>Error</dt><dd>${escapeHtml(db.schemaError)}</dd>` : ""}
+    </dl>
+  </section>`;
+}
+
+function renderMarketUpdatesCard(mu: AdminDashboardData["marketUpdates"]): string {
+  const delivery = "error" in mu.delivery
+    ? `<dt>Delivery status</dt><dd>error: ${escapeHtml(mu.delivery.error)}</dd>`
+    : `
+      <dt>Last delivery</dt><dd>${
+        mu.delivery.lastDeliveredAt
+          ? `${escapeHtml(mu.delivery.lastDeliveredAt)} (${escapeHtml(mu.delivery.lastPeriod)}, ${mu.delivery.recipientsInLastBatch} recipient(s))`
+          : "never"
+      }</dd>
+      <dt>Last failure</dt><dd>${
+        mu.delivery.lastFailureAt ? `${escapeHtml(mu.delivery.lastFailureAt)}: ${escapeHtml(mu.delivery.lastFailureError ?? "")}` : "none"
+      }</dd>`;
+  return `<section class="card">
+    <h2>Market updates</h2>
+    ${badge("enabled", mu.enabled || null)}
+    <dl>
+      <dt>Schedule</dt><dd>${escapeHtml(mu.morningTime)} &amp; ${escapeHtml(mu.afternoonTime)}</dd>
+      <dt>Timezone</dt><dd>${escapeHtml(mu.timezone)}</dd>
+      <dt>Grace window</dt><dd>${mu.graceMinutes} min</dd>
+      <dt>Allow unchanged</dt><dd>${mu.allowUnchanged ? "yes" : "no"}</dd>
+      <dt>Min observations</dt><dd>${mu.minimumObservations}</dd>
+      ${delivery}
+    </dl>
+  </section>`;
+}
+
+function renderPostingsV4Card(v4: AdminDashboardData["postingsV4"]): string {
+  const groupIds = v4.allowedChatIds.length ? v4.allowedChatIds.map(escapeHtml).join(", ") : "none configured";
+  const operational = v4.operational
+    ? `
+      <dt>Active FS / WTB monitors</dt><dd>${v4.operational.activeFsMonitors} / ${v4.operational.activeWtbMonitors}</dd>
+      <dt>Active matches</dt><dd>${v4.operational.activeMatches}</dd>
+      <dt>Notifications sent / failed</dt><dd>${v4.operational.notificationsSent} / ${v4.operational.notificationsFailed}</dd>`
+    : `<dt>Operational status</dt><dd>error: ${escapeHtml(v4.operationalError ?? "unknown")}</dd>`;
+  const groups = v4.designatedGroups
+    ? v4.designatedGroups.length
+      ? `<ul class="plain">${v4.designatedGroups
+          .map((g) => `<li>${escapeHtml(g.groupName || g.chatId)} — ${g.isActive ? "active" : "inactive"}</li>`)
+          .join("")}</ul>`
+      : `<p class="muted">No concierge groups designated yet.</p>`
+    : `<p class="muted">Designated groups unavailable: ${escapeHtml(v4.designatedGroupsError ?? "unknown error")}</p>`;
+  return `<section class="card">
+    <h2>V4 postings</h2>
+    ${badge("enabled", v4.enabled || null)}
+    <dl>
+      <dt>Allowed group IDs</dt><dd>${groupIds}</dd>
+      <dt>Reminder lead time</dt><dd>${v4.reminderDaysBeforeExpiry} day(s)</dd>
+      ${operational}
+    </dl>
+    <h2 style="margin-top:14px">Designated concierge groups</h2>
+    ${groups}
+  </section>`;
+}
+
+function renderWatchfactsCard(wf: AdminDashboardData["watchfacts"]): string {
+  if ("error" in wf.sync) {
+    return `<section class="card">
+      <h2>WatchFacts FS / WTB sync</h2>
+      ${badge("sync", false)}
+      <dl><dt>Error</dt><dd>${escapeHtml(wf.sync.error)}</dd></dl>
+    </section>`;
+  }
+  const fsOk = wf.sync.fs.status === "ok";
+  const wtbState = wf.sync.wtb.status === "ok" ? true : wf.sync.wtb.status === "disabled" ? null : false;
+  return `<section class="card">
+    <h2>WatchFacts FS / WTB sync</h2>
+    ${badge("FS", fsOk)} ${badge("WTB", wtbState)}
+    <dl>
+      <dt>Credentials configured</dt><dd>${wf.credentialsConfigured ? "yes" : "no"}</dd>
+      <dt>Last attempt</dt><dd>${wf.sync.lastAttemptAt ? escapeHtml(wf.sync.lastAttemptAt) : "never"}</dd>
+      <dt>FS</dt><dd>${escapeHtml(wf.sync.fs.status)} — ${wf.sync.fs.activeCount} active${
+        wf.sync.fs.lastError ? `, error: ${escapeHtml(wf.sync.fs.lastError)}` : ""
+      }</dd>
+      <dt>WTB</dt><dd>${escapeHtml(wf.sync.wtb.status)} — ${wf.sync.wtb.activeCount} active${
+        wf.sync.wtb.lastError ? `, error: ${escapeHtml(wf.sync.wtb.lastError)}` : ""
+      }</dd>
+    </dl>
+  </section>`;
+}
+
+function renderAiMatchingCard(ai: AdminDashboardData["aiMatching"]): string {
+  const keyConfigured = ai.provider === "openai" ? ai.openaiKeyConfigured : ai.anthropicKeyConfigured;
+  const model = ai.provider === "openai" ? ai.openaiModel || "—" : ai.model;
+  return `<section class="card">
+    <h2>AI matching</h2>
+    ${badge("active", ai.chatActive || null)}
+    <dl>
+      <dt>Provider</dt><dd>${escapeHtml(ai.provider)}</dd>
+      <dt>Model</dt><dd>${escapeHtml(model)}</dd>
+      <dt>API key configured</dt><dd>${keyConfigured ? "yes" : "no"}</dd>
+      <dt>Inventory enrichment</dt><dd>${ai.enrichmentEnabled ? `enabled (max ${ai.enrichmentMaxPerSync}/sync)` : "disabled"}</dd>
+      <dt>Test phones</dt><dd>${ai.testPhones.length ? ai.testPhones.map(escapeHtml).join(", ") : "none configured"}</dd>
+    </dl>
+  </section>`;
+}
+
+function renderDeploymentCard(dep: AdminDashboardData["deployment"]): string {
+  return `<section class="card">
+    <h2>Deployment health</h2>
+    ${badge("process", true)}
+    <dl>
+      <dt>Environment</dt><dd>${escapeHtml(dep.nodeEnv)}</dd>
+      <dt>Node version</dt><dd>${escapeHtml(dep.nodeVersion)}</dd>
+      <dt>Port</dt><dd>${dep.port}</dd>
+      <dt>Public base URL</dt><dd>${dep.publicBaseUrl ? escapeHtml(dep.publicBaseUrl) : "not set"}</dd>
+      <dt>Uptime</dt><dd>${formatUptime(dep.uptimeSeconds)}</dd>
+      <dt>Started at</dt><dd>${escapeHtml(dep.startedAt)}</dd>
+      <dt>Persist dir present</dt><dd>${dep.persistDirExists ? "yes" : "no"}</dd>
+    </dl>
+  </section>`;
+}
+
+function renderContactsCard(contacts: AdminDashboardData["contacts"]): string {
+  return `<section class="card full">
+    <h2>Contacts CSV upload</h2>
+    <dl>
+      <dt>Loaded contacts</dt><dd>${contacts.total} (${contacts.tierAB} tier A/B)</dd>
+      <dt>CSV path</dt><dd>${escapeHtml(contacts.csvPath)}</dd>
+      <dt>File present</dt><dd>${contacts.csvExists ? "yes" : "no — currently using bundled sample data"}</dd>
+    </dl>
+    <p class="muted">Replaces the persisted contacts.csv and reloads it immediately — the same workflow as
+      <code>POST /admin/upload/contacts</code>, authenticated by this browser session instead of a token in the URL.</p>
+    <input type="file" id="contactsFile" accept=".csv,text/csv">
+    <div><button type="button" id="contactsUploadBtn">Upload</button></div>
+    <div id="contactsUploadResult" class="muted"></div>
+    <script>
+      document.getElementById('contactsUploadBtn').addEventListener('click', async function () {
+        var input = document.getElementById('contactsFile');
+        var result = document.getElementById('contactsUploadResult');
+        if (!input.files || !input.files[0]) { result.textContent = 'Choose a file first.'; return; }
+        result.textContent = 'Uploading…';
+        try {
+          var text = await input.files[0].text();
+          var res = await fetch('/admin/panel/upload-contacts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/csv' },
+            credentials: 'same-origin',
+            body: text,
+          });
+          var body = await res.json();
+          result.textContent = res.ok
+            ? 'Uploaded — ' + body.contacts + ' contact(s) loaded.'
+            : 'Upload failed: ' + (body.error || res.status);
+        } catch (err) {
+          result.textContent = 'Upload failed: ' + err;
+        }
+      });
+    </script>
+  </section>`;
+}
+
+export function renderDashboard(data: AdminDashboardData): string {
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LuxFi Admin</title>
+<style>${PAGE_STYLES}</style>
+</head>
+<body>
+  <header>
+    <h1>LuxFi WhatsApp Agent — Admin</h1>
+    <a href="/admin/logout">Sign out</a>
+  </header>
+  <main>
+    ${renderWhapiCard(data.whapi)}
+    ${renderDatabaseCard(data.database)}
+    ${renderMarketUpdatesCard(data.marketUpdates)}
+    ${renderPostingsV4Card(data.postingsV4)}
+    ${renderWatchfactsCard(data.watchfacts)}
+    ${renderAiMatchingCard(data.aiMatching)}
+    ${renderDeploymentCard(data.deployment)}
+    ${renderContactsCard(data.contacts)}
+  </main>
+  <footer>Read-only status — generated at ${escapeHtml(data.generatedAt)}. Only the contacts upload above changes anything.</footer>
+</body>
+</html>`;
+}

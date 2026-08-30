@@ -25,6 +25,53 @@ async function post(path: string, body: unknown): Promise<any> {
   return res.json();
 }
 
+export interface WhapiHealthResult {
+  configured: boolean;
+  reachable: boolean;
+  // null (rather than false) when the response came back but didn't match the documented shape
+  // below — an unrecognized-but-successful response must never be reported as "not connected."
+  authorized: boolean | null;
+  statusText: string | null;
+  version: string | null;
+  error: string | null;
+}
+
+/**
+ * Whapi.Cloud's documented GET /health endpoint (https://whapi.readme.io/reference/checkhealth)
+ * reports channel status — {health:{status:{code,text},version,...}}, with status.text "AUTH"
+ * meaning fully connected — without sending anything, so it's safe to call from a read-only
+ * admin panel. The exact shape is taken from Whapi's public docs; this sandbox's network egress
+ * to whapi.readme.io is blocked, so it hasn't been confirmed against a live channel — same
+ * "documented but not empirically confirmed" caveat this project already carries for other
+ * Whapi/WatchFacts integrations (see README).
+ */
+export async function checkWhapiHealth(): Promise<WhapiHealthResult> {
+  if (!config.whapi.token) {
+    return { configured: false, reachable: false, authorized: null, statusText: null, version: null, error: null };
+  }
+  try {
+    const res = await fetch(`${config.whapi.baseUrl}/health`, {
+      method: "GET",
+      headers: { Accept: "application/json", Authorization: `Bearer ${config.whapi.token}` },
+    });
+    if (!res.ok) {
+      return { configured: true, reachable: false, authorized: null, statusText: null, version: null, error: `HTTP ${res.status}` };
+    }
+    const body = (await res.json().catch(() => null)) as { health?: { status?: { text?: string }; version?: string } } | null;
+    const statusText = body?.health?.status?.text ?? null;
+    return {
+      configured: true,
+      reachable: true,
+      authorized: statusText ? statusText === "AUTH" : null,
+      statusText,
+      version: body?.health?.version ?? null,
+      error: null,
+    };
+  } catch (err) {
+    return { configured: true, reachable: false, authorized: null, statusText: null, version: null, error: (err as Error).message };
+  }
+}
+
 export async function sendText(phone: string, message: string): Promise<void> {
   await post("/messages/text", {
     to: digitsOnly(phone),
