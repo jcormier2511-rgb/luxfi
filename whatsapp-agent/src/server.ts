@@ -22,6 +22,7 @@ import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
 import { runOpenAiDiagnosticCall } from "./ai/providers/openai";
 import { listDesignatedGroups, enableGroup, disableGroup, setReferenceRequestsEnabled } from "./concierge/groupRegistry";
+import { isAdminAuthenticated, registerAdminPanel } from "./adminPanel";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
 // (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
@@ -160,6 +161,7 @@ export async function handleWebhookPayload(body: IncomingWebhook): Promise<void>
 export function createServer() {
   const app = express();
   app.use(express.json());
+  registerAdminPanel(app);
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true });
@@ -217,7 +219,7 @@ export function createServer() {
   const csvUpload = express.text({ type: "*/*", limit: "20mb" });
 
   app.post("/admin/upload/contacts", csvUpload, (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     fs.mkdirSync(path.dirname(config.data.contactsCsv), { recursive: true });
@@ -230,7 +232,7 @@ export function createServer() {
   // silently (no reply into the group), this is the only way to confirm it's working
   // without SSH/shell access to the container.
   app.get("/admin/group-listings", (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     if (!fs.existsSync(config.data.groupListingsCsv)) {
@@ -247,7 +249,7 @@ export function createServer() {
   // endpoint fetches media from a URL server-side, so this host must be public — that's why
   // PUBLIC_BASE_URL has to be set for the response's suggested `url` field to be usable.
   app.post("/admin/upload/banner", express.raw({ type: "*/*", limit: "15mb" }), (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     const ext = typeof req.query.ext === "string" ? req.query.ext.replace(/[^a-z0-9]/gi, "") || "jpg" : "jpg";
@@ -269,7 +271,7 @@ export function createServer() {
   // number that already passed "new" won't see the intro/trial-start behavior again
   // without this. `phone` is digits-only, no leading +, matching webhook payloads.
   app.get("/admin/conversation-state", (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -278,7 +280,7 @@ export function createServer() {
   });
 
   app.post("/admin/reset-state", (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -292,7 +294,7 @@ export function createServer() {
   // the ONLY way to unlock further approvals for an account — never self-service, never a
   // live charge. See src/billing/entitlementStore.ts.
   app.get("/admin/entitlement", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -301,7 +303,7 @@ export function createServer() {
   });
 
   app.post("/admin/entitlement/override", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -315,7 +317,7 @@ export function createServer() {
   // one is this admin action; no payment processor exists, so this is never self-service and
   // never a live charge. ?plan=none clears an assigned plan back to locked.
   app.post("/admin/entitlement/plan", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -336,7 +338,7 @@ export function createServer() {
   // shows the actual resolved paths, what's on disk at each, and a peek at loaded inventory
   // so we can tell real WatchFacts data from the bundled sample from the response alone.
   app.get("/admin/debug-info", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     const describe = (p: string) => {
@@ -370,7 +372,7 @@ export function createServer() {
   // runInventorySync/syncOneSide. A failure on one side never clears or masks the other's
   // last success, and existing rows for a failed side are never touched.
   app.get("/admin/inventory-status", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(await getSyncStatus(config.watchfacts.enableWtbSync));
@@ -381,7 +383,7 @@ export function createServer() {
   // credentials or shell access. Used to confirm what's actually stored for a given reference
   // when a live search unexpectedly returns nothing.
   app.get("/admin/inventory-search", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -397,7 +399,7 @@ export function createServer() {
   // Currently OpenAI-specific since that's the provider being debugged; the response is already
   // safe to return as-is (no key, no full customer data — see runOpenAiDiagnosticCall).
   app.get("/admin/ai-diagnostic", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(await runOpenAiDiagnosticCall());
@@ -410,14 +412,14 @@ export function createServer() {
   // WATCHFACTS_ADMIN_PHONES — the token alone (which anyone with server-admin access holds) is
   // not sufficient to change what a real WhatsApp group can do.
   app.get("/admin/concierge/groups", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json({ ok: true, groups: await listDesignatedGroups() });
   });
 
   function requireConciergeAdmin(req: express.Request, res: express.Response): boolean {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       res.status(401).json({ error: "invalid token" });
       return false;
     }
@@ -463,7 +465,7 @@ export function createServer() {
   // backgrounding it like /outreach/start. The scheduler in index.ts calls this on its own
   // interval; this endpoint is for a manual/on-demand re-sync.
   app.post("/admin/sync-inventory", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     if (!config.watchfacts.email || !config.watchfacts.password) {
@@ -483,7 +485,7 @@ export function createServer() {
   // The scheduler in index.ts calls this on its own interval; this endpoint is for a manual/
   // on-demand run. Already-known, unchanged matches are a no-op — see runReconciliation.
   app.post("/admin/reconciliation", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     const result = await runReconciliation();
@@ -495,7 +497,7 @@ export function createServer() {
   // already initializes it unconditionally at startup, this should always report ready, but a
   // failing call here (rather than a silent false) is itself the signal something's wrong.
   app.get("/admin/v4-status", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isAdminAuthenticated(req)) {
       return res.status(401).json({ error: "invalid token" });
     }
     let schemaReady = true;
