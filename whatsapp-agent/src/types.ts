@@ -96,7 +96,7 @@ export interface PendingNaturalFollowUp {
   missing: string[];
 }
 
-export type SellIntakeStep = "details" | "price" | "condition" | "location";
+export type SellIntakeStep = "details" | "price" | "condition" | "location" | "dial" | "confirm";
 
 /**
  * A "sell" request doesn't search anything live yet (there's no automatic buyer-matching for a
@@ -109,19 +109,23 @@ export interface PendingSellIntake {
   description: string; // accumulated free-text description, starting from the original message
   reference: string | null;
   price?: number;
+  currency?: string;
   priceText?: string; // the raw reply, kept for display when the number couldn't be parsed
   condition?: string;
   location?: string;
+  dialColor?: string;
   imageUrl?: string;
 }
 
 export interface PendingBuyIntake {
-  step: "budget" | "condition" | "location";
+  step: "details" | "budget" | "condition" | "location" | "dial" | "confirm";
   description: string;
   reference: string | null;
   budget?: number;
+  currency?: string;
   condition?: string;
   location?: string;
+  dialColor?: string;
 }
 
 export interface ConversationState {
@@ -142,6 +146,7 @@ export interface ConversationState {
   pendingNaturalFollowUp?: PendingNaturalFollowUp;
   pendingSellIntake?: PendingSellIntake;
   pendingBuyIntake?: PendingBuyIntake;
+  pendingReplacementRequest?: string;
   // Set right after a real connection reveal suggests escrow/inspection partners (see
   // config.fiFlow.escrowSuggestion) — checked once, on the contact's very next reply, so a
   // bare "yes" is recognized as accepting the offer (see conversation/flow.ts's handling and
