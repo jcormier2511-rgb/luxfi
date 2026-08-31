@@ -599,6 +599,13 @@ function mergeFollowUpPreferences(partial: SearchPreferences, fromReply: SearchP
  */
 async function handleNaturalFollowUpAnswer(state: ConversationState, text: string, messages: string[]): Promise<void> {
   const pending = state.pendingNaturalFollowUp!;
+  if (/^\s*(?:any|no preference)\s*[.!]?\s*$/i.test(text)) {
+    state.preferences = pending.partial;
+    state.preferencesCollected = true;
+    state.pendingNaturalFollowUp = undefined;
+    await startSearch(state, pending.request, messages);
+    return;
+  }
   const interpreted = await interpretQuery(text);
   const merged = interpreted ? mergeFollowUpPreferences(pending.partial, toSearchPreferences(interpreted)) : pending.partial;
 
