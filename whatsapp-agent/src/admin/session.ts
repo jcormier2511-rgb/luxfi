@@ -114,5 +114,7 @@ export function buildLogoutCookieHeader(secure: boolean): string {
 
 /** Works whether or not Express's own `trust proxy` is configured — reads the forwarded-proto header directly. */
 export function isHttpsRequest(req: { secure?: boolean; headers: Record<string, unknown> }): boolean {
-  return Boolean(req.secure) || req.headers["x-forwarded-proto"] === "https";
+  const forwardedProto=req.headers["x-forwarded-proto"];
+  const nearestProto=typeof forwardedProto==="string"?forwardedProto.split(",")[0].trim().toLowerCase():"";
+  return Boolean(req.secure) || nearestProto === "https";
 }
