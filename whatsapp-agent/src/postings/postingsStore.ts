@@ -170,6 +170,9 @@ export interface DirectSellPostingInput {
   description: string; // the full, human-readable item description collected during intake
   reference: string | null;
   price: number | null;
+  type?: PostingType;
+  condition?: string;
+  location?: string;
   imageUrl?: string;
 }
 
@@ -193,17 +196,20 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
     const insert = await pool.query<PostingRow>(
       `INSERT INTO postings
          (source_platform, source_type, canonical_user_id, source_identity,
-          type, original_text, brand, reference, price, currency, contact_name, contact_phone, status, expires_at)
-       VALUES ($1,'direct',$2,$3,'FS',$4,$5,$6,$7,'USD',$8,$9,'active',$10)
+          type, original_text, brand, reference, condition, price, currency, location, contact_name, contact_phone, status, expires_at)
+       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,'USD',$9,$10,$11,'active',$12)
        RETURNING *`,
       [
         platform,
         canonicalUserId,
         input.phone,
+        input.type ?? "FS",
         input.description,
         brand,
         input.reference ?? "",
+        input.condition ?? "",
         input.price,
+        input.location ?? "",
         input.senderName || input.phone,
         input.phone,
         expiresAt,

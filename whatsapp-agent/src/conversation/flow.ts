@@ -1,5 +1,5 @@
 import { config, isAiChatEnabled, isAiMatchingEnabledForPhone } from "../config";
-import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences, MatchDecision, PendingSellIntake } from "../types";
+import { Contact, ConversationState, ItemRequest, InventoryListing, SearchPreferences, MatchDecision, PendingSellIntake, PendingBuyIntake } from "../types";
 import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSignals, attachCurrencyDisplay, CurrencyDisplay } from "../matching/engine";
 import { PriceSignal } from "../matching/priceSignal";
 import { requestPhotosForMatch } from "../matching/photoRequests";
@@ -21,7 +21,7 @@ import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
 import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
 import { upsertListings } from "../watchfacts/inventoryDb";
-import { ingestDirectSellPosting } from "../postings/ingest";
+import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -297,12 +297,13 @@ async function handleStatusCommand(state: ConversationState, messages: string[])
  *  starts" rule this does NOT apply to. */
 function handleCancelCommand(state: ConversationState, messages: string[]): void {
   const hadSomethingToCancel = Boolean(
-    state.pendingMatches || state.pendingPreferenceCollection || state.pendingNaturalFollowUp || state.pendingSellIntake
+    state.pendingMatches || state.pendingPreferenceCollection || state.pendingNaturalFollowUp || state.pendingSellIntake || state.pendingBuyIntake
   );
   state.pendingMatches = undefined;
   state.pendingPreferenceCollection = undefined;
   state.pendingNaturalFollowUp = undefined;
   state.pendingSellIntake = undefined;
+  state.pendingBuyIntake = undefined;
   state.pendingEscrowOffer = false;
   state.pendingListingsMenu = false;
   messages.push(
@@ -330,11 +331,7 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
     // out an existing, still-undecided match set just because THIS search came back empty.
     // state.pendingMatches is left untouched here; only a search that actually finds results
     // replaces it (below).
-    const wtbFeedNote =
-      request.action === "sell" && !config.watchfacts.enableWtbSync
-        ? " (the external WTB feed is currently disabled, so I'm relying on monitored group chats for buyer matches)"
-        : "";
-    messages.push(`No live matches yet for "${request.query}"${wtbFeedNote} — I'll keep watching the network.`);
+    messages.push(`No live matches yet for "${request.query}" — I'll keep watching the network.`);
     console.log(`[router] new_search=true pending_match_preserved=${hadExistingPending}`);
     // Real reported gap: a "sell" search with nothing to match against just stopped there,
     // leaving the seller's message unused. There's no live automatic buyer-matching for a
@@ -613,7 +610,22 @@ async function handleNaturalFollowUpAnswer(state: ConversationState, text: strin
 
 const SELL_DETAILS_QUESTION = "Tell me a bit more about what you're selling — brand, model, and reference number if you have it.";
 const SELL_PRICE_QUESTION = "What's your asking price?";
-const SELL_PHOTO_QUESTION = "Can you send a photo of it?";
+const CONDITION_INTAKE_QUESTION = "What condition is it in? (new, unworn, or pre-owned)";
+const BUY_CONDITION_QUESTION = "What condition do you prefer? (new, pre-owned, or any)";
+const SELL_LOCATION_QUESTION = "Where is the watch located? (city or country)";
+const BUY_LOCATION_QUESTION = "Any location preference? (city or country, or say any)";
+const BUY_BUDGET_QUESTION = "What's your maximum budget?";
+
+/** Private listing shorthand commonly omits a currency marker. Only accept a standalone
+ * trailing amount, and never the already-identified reference, so 116500LN cannot become a
+ * price while `... 28500` reliably does. */
+function extractListingAmount(text: string, reference: string | null): number | undefined {
+  const marked = text.match(/(?:under|max(?:imum)?|budget|asking|price|[$€£])\s*[$€£]?\s*([\d,.]+\s*k?)/i);
+  const trailing = text.match(/(?:^|\s)([\d,.]+\s*k?)\s*$/i);
+  const raw = marked?.[1] ?? trailing?.[1];
+  if (!raw || raw.toUpperCase() === reference?.toUpperCase()) return undefined;
+  return normalizePriceShorthand(raw) ?? undefined;
+}
 
 /**
  * A "sell" request has no live automatic buyer-matching wired up yet — there's nothing to
@@ -624,11 +636,21 @@ const SELL_PHOTO_QUESTION = "Can you send a photo of it?";
  * question when the message already names a reference or a known brand — "116500 white dial"
  * doesn't need to be asked "tell me more" when it's already specific.
  */
-async function startSellIntake(state: ConversationState, request: ItemRequest, messages: string[]): Promise<void> {
+async function startSellIntake(state: ConversationState, request: ItemRequest, messages: string[], originalText = request.query, suppliedCondition?: string, suppliedLocation?: string): Promise<void> {
   const reference = extractReference(request.query);
   const hasSpecifics = Boolean(reference) || containsKnownBrand(request.query);
-  state.pendingSellIntake = { step: hasSpecifics ? "price" : "details", description: request.query, reference };
-  messages.push(hasSpecifics ? SELL_PRICE_QUESTION : SELL_DETAILS_QUESTION);
+  const price = extractListingAmount(originalText, reference);
+  const step = !hasSpecifics ? "details" : price === undefined ? "price" : !suppliedCondition ? "condition" : "location";
+  state.pendingSellIntake = { step, description: request.query, reference, price, condition: suppliedCondition, location: suppliedLocation };
+  messages.push(step === "details" ? SELL_DETAILS_QUESTION : step === "price" ? SELL_PRICE_QUESTION : step === "condition" ? CONDITION_INTAKE_QUESTION : SELL_LOCATION_QUESTION);
+}
+
+async function startBuyIntake(state: ConversationState, request: ItemRequest, messages: string[], originalText: string, suppliedCondition?: string, suppliedLocation?: string): Promise<void> {
+  const reference = extractReference(request.query);
+  const budget = extractListingAmount(originalText, reference);
+  const step: PendingBuyIntake["step"] = budget === undefined ? "budget" : !suppliedCondition ? "condition" : "location";
+  state.pendingBuyIntake = { step, description: request.query, reference, budget, condition: suppliedCondition, location: suppliedLocation };
+  messages.push(step === "budget" ? BUY_BUDGET_QUESTION : step === "condition" ? BUY_CONDITION_QUESTION : BUY_LOCATION_QUESTION);
 }
 
 /**
@@ -650,9 +672,9 @@ async function persistSellIntake(state: ConversationState, pending: PendingSellI
         item: pending.description,
         brand,
         ref: pending.reference ?? "",
-        condition: "",
+        condition: pending.condition ?? "",
         price: pending.price !== undefined ? String(pending.price) : "ASK",
-        location: "",
+        location: pending.location ?? "",
         contactName: "",
         contactPhone: state.phone,
         rating: "",
@@ -694,12 +716,17 @@ async function handleSellIntakeAnswer(
     const parsedPrice = normalizePriceShorthand(text);
     if (parsedPrice !== null) pending.price = parsedPrice;
     else pending.priceText = text.trim();
-    pending.step = "photo";
-    messages.push(SELL_PHOTO_QUESTION);
+    pending.step = "condition";
+    messages.push(CONDITION_INTAKE_QUESTION);
     return;
   }
-
-  // step === "photo" — the final step, regardless of whether an image actually came with this message.
+  if (pending.step === "condition") {
+    pending.condition = text.trim();
+    pending.step = "location";
+    messages.push(SELL_LOCATION_QUESTION);
+    return;
+  }
+  pending.location = text.trim();
   if (imageUrl) pending.imageUrl = imageUrl;
   const priceLine =
     pending.price !== undefined ? `$${pending.price.toLocaleString("en-US")}` : pending.priceText ? pending.priceText : "not set";
@@ -714,21 +741,47 @@ async function handleSellIntakeAnswer(
     reference: pending.reference ?? null,
     price: pending.price ?? null,
     imageUrl: pending.imageUrl,
+    condition: pending.condition,
+    location: pending.location,
   });
 
   const outcomeLine =
     matchesFound > 0
       ? `Good news — I found ${matchesFound === 1 ? "a buyer" : `${matchesFound} buyers`} already looking for something like this. I'll be in touch as soon as it's confirmed.`
-      : `I'm listing it now and will let you know automatically as soon as I find a qualifying buyer.`;
+      : `Your listing is active. I'll keep monitoring and let you know automatically as soon as I find a qualifying buyer.`;
 
   messages.push(
     `Got it — here's what I have on file:\n` +
       `Item: ${pending.description}\n` +
       `Asking: ${priceLine}\n` +
+      `Condition: ${pending.condition || "not specified"}\n` +
+      `Location: ${pending.location || "not specified"}\n` +
       `Photo: ${photoLine}\n\n` +
       outcomeLine
   );
   state.pendingSellIntake = undefined;
+}
+
+async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<void> {
+  const pending = state.pendingBuyIntake!;
+  if (pending.step === "budget") {
+    pending.budget = normalizePriceShorthand(text) ?? undefined;
+    pending.step = "condition";
+    messages.push(BUY_CONDITION_QUESTION);
+    return;
+  }
+  if (pending.step === "condition") {
+    pending.condition = text.trim();
+    pending.step = "location";
+    messages.push(BUY_LOCATION_QUESTION);
+    return;
+  }
+  pending.location = text.trim();
+  const { matchesFound } = await ingestDirectBuyPosting({ phone: state.phone, senderName: contact?.name, description: pending.description, reference: pending.reference, price: pending.budget ?? null, condition: pending.condition, location: pending.location });
+  messages.push(matchesFound > 0
+    ? `Your request is saved. Good news — I found ${matchesFound === 1 ? "a matching listing" : `${matchesFound} matching listings`}. I'll send confirmed match details shortly.`
+    : "Your request is active. I don't have a current match, but I'll keep monitoring for matching inventory.");
+  state.pendingBuyIntake = undefined;
 }
 
 interface ResolvedItems {
@@ -920,6 +973,12 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     return { state, messages };
   }
 
+  if (state.pendingBuyIntake) {
+    await handleBuyIntakeAnswer(state, text, messages, contact);
+    saveState(state);
+    return { state, messages };
+  }
+
   if (state.pendingPreferenceCollection) {
     await handlePreferenceAnswer(state, text, messages);
     saveState(state);
@@ -1004,37 +1063,15 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     messages.push(`I'll start with the first one — send me the others one at a time whenever you're ready.`);
   }
 
-  if (!state.preferencesCollected) {
-    // Came straight from the intent extractor's own single AI call above — no separate
-    // interpretQuery call needed (that path is the fallback for when AI classification of the
-    // MESSAGE ITSELF didn't happen, e.g. AI is off for this phone or classification failed).
-    const naturalLanguagePrefs = resolved.aiPreferences ?? (await tryNaturalLanguagePreferences(phone, text));
-    if (naturalLanguagePrefs) {
-      // A request must always carry budget/location/dial color/condition — ask for exactly
-      // what this one message didn't already cover, once, rather than proceeding with gaps.
-      const missing = missingPreferenceFields(naturalLanguagePrefs);
-      if (missing.length > 0) {
-        state.pendingNaturalFollowUp = { request: parsed[0], partial: naturalLanguagePrefs, missing };
-        messages.push(missingFieldsQuestion(missing));
-        saveState(state);
-        return { state, messages };
-      }
-      state.preferences = naturalLanguagePrefs;
-      state.preferencesCollected = true;
-    } else {
-      state.pendingPreferenceCollection = { step: "price", request: parsed[0] };
-      messages.push("Before I search, a few quick preferences — just this once:\n\n" + PRICE_QUESTION);
-      saveState(state);
-      return { state, messages };
-    }
+  // FS/WTB messages are postings, not generic searches. Complete and save the posting first;
+  // only the completion handler is allowed to run matching. This also keeps seller fields out
+  // of the buyer-preference interview entirely.
+  if (parsed[0].action === "sell") {
+    await startSellIntake(state, parsed[0], messages, text, resolved.aiPreferences?.condition, resolved.aiPreferences?.location);
+    saveState(state);
+    return { state, messages };
   }
-
-  if (resolved.priceUnreliable) {
-    messages.push("Price: Not reliably parsed — searching without a budget filter for this one.");
-  }
-
-  await startSearch(state, parsed[0], messages);
-
+  await startBuyIntake(state, parsed[0], messages, text, resolved.aiPreferences?.condition, resolved.aiPreferences?.location);
   saveState(state);
   return { state, messages };
 }
