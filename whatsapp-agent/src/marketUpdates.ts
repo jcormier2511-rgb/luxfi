@@ -4,7 +4,7 @@ import { getState } from "./conversation/stateStore";
 import { withSchema } from "./postings/db";
 import { PostingRow } from "./postings/postingsStore";
 import { sendText } from "./channels";
-import { getEntitlement } from "./billing/entitlementStore";
+import { Entitlement, getEntitlement } from "./billing/entitlementStore";
 
 export type MarketUpdatePeriod = "morning" | "afternoon";
 
@@ -32,8 +32,13 @@ interface RecipientRow {
   phone: string;
 }
 
-const CLOSED_PAYMENT_STATES = new Set(["blocked", "inactive", "cancelled", "canceled", "closed", "suspended"]);
+const ACTIVE_PAYMENT_STATES = new Set(["active", "paid", "current"]);
 const LEASE_MINUTES = 10;
+
+/** Briefings are a paid-plan benefit: absence of any positive billing signal is ineligible. */
+export function isMarketUpdateEligible(entitlement: Pick<Entitlement, "plan" | "paymentAuthorized" | "paymentStatus">): boolean {
+  return Boolean(entitlement.plan && entitlement.paymentAuthorized === true && entitlement.paymentStatus && ACTIVE_PAYMENT_STATES.has(entitlement.paymentStatus.toLowerCase()));
+}
 
 /** Intl supplies IANA timezone and DST handling without a process-global TZ mutation. */
 export function localClock(at: Date, timezone: string): LocalClock {
@@ -229,7 +234,7 @@ async function eligibleRecipients(): Promise<RecipientRow[]> {
     const eligible: RecipientRow[] = [];
     for (const row of result.rows) {
       const entitlement = await getEntitlement(row.phone);
-      if (!entitlement.paymentStatus || !CLOSED_PAYMENT_STATES.has(entitlement.paymentStatus.toLowerCase())) eligible.push(row);
+      if (isMarketUpdateEligible(entitlement)) eligible.push(row);
     }
     return eligible;
   });

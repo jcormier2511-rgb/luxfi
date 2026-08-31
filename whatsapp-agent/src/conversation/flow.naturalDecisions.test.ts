@@ -89,7 +89,11 @@ async function setUpOnePendingMatch(t: { mock: { method: Function } }): Promise<
     candidates.map((c) => ({ id: c.id, explanation: "matches request", evidence: "Rolex Daytona 116500LN" }))
   );
   await handleIncomingMessage(TEST_PHONE, "hi");
-  await handleIncomingMessage(TEST_PHONE, "buy Rolex Daytona 116500LN");
+  await handleIncomingMessage(TEST_PHONE, "buy: Rolex Daytona 116500LN");
+  await handleIncomingMessage(TEST_PHONE, "any");
+  await handleIncomingMessage(TEST_PHONE, "any");
+  await handleIncomingMessage(TEST_PHONE, "any");
+  await handleIncomingMessage(TEST_PHONE, "any");
 }
 
 test("required regression: natural phrasing approves the shown match the same way 'approve 1' would", async (t) => {
@@ -154,7 +158,7 @@ test("a non-test phone's decisions are unaffected — only the literal 'approve 
   // A non-AI phone still goes through the one-time price/location/dial/condition interview
   // before its first search — answer each with "any" to get to the match card.
   await handleIncomingMessage(OTHER_PHONE, "hi");
-  await handleIncomingMessage(OTHER_PHONE, "buy Rolex Daytona 116500LN");
+  await handleIncomingMessage(OTHER_PHONE, "buy: Rolex Daytona 116500LN");
   await handleIncomingMessage(OTHER_PHONE, "any");
   await handleIncomingMessage(OTHER_PHONE, "any");
   await handleIncomingMessage(OTHER_PHONE, "any");

@@ -46,17 +46,14 @@ test("required regression: a completed sell-intake is persisted as a live FS lis
   await inventoryDb._resetDbForTests();
   await postingsDb._resetDbForTests();
 
-  // A specific request (has a reference) skips straight to price — see flow.sellIntake.test.ts —
-  // so this is: sell request -> price -> photo.
-  const searchResult = await freshRequest(SELLER_PHONE, "sell: Rolex Daytona 116500LN persistence-findable-listing");
-  assert.match(searchResult.messages.join("\n"), /What's your asking price\?/);
-
-  await handleIncomingMessage(SELLER_PHONE, "28500");
-  const finished = await handleIncomingMessage(SELLER_PHONE, "", undefined, "https://example.com/daytona.jpg");
-  // No live WTB postings exist for this item in the v4 automatic-matching system (see
-  // conversation/flow.ts's ingestDirectSellPosting call and flow.sellIntake.test.ts's own
-  // coverage of that path), so the honest acknowledgment is "still looking," not a found match.
-  assert.match(finished.messages.join("\n"), /let you know automatically as soon as I find a qualifying buyer/i);
+  await handleIncomingMessage(SELLER_PHONE, "hi");
+  const photoPrompt = await handleIncomingMessage(SELLER_PHONE, "FS Rolex Daytona 116500LN persistence-findable-listing black dial pre-owned in USA for 28500");
+  assert.match(photoPrompt.messages.join("\n"), /attach a photo/i);
+  const summary = await handleIncomingMessage(SELLER_PHONE, "photo attached", undefined, "https://example.com/daytona.jpg");
+  assert.match(summary.messages.join("\n"), /Photo: attached.*Should I start monitoring\?/);
+  assert.equal((await inventoryDb.getActiveListings("FS")).length, 0, "draft and photo are not saved before confirmation");
+  const finished = await handleIncomingMessage(SELLER_PHONE, "yes");
+  assert.match(finished.messages.join("\n"), /listing is active/i);
 
   const active = await inventoryDb.getActiveListings("FS");
   const found = active.find((l) => l.item.includes("persistence-findable-listing"));
@@ -78,9 +75,12 @@ test("a sell-intake finished with no photo is still persisted (whatever was coll
   await inventoryDb._resetDbForTests();
   await postingsDb._resetDbForTests();
 
-  await freshRequest(SELLER_PHONE_NO_PHOTO, "sell: Omega Speedmaster 311.30.42.30.01.005 no-photo-listing");
-  await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "12000");
-  await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "no photo right now");
+  await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "hi");
+  const photoPrompt = await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "FS Omega Speedmaster 311.30.42.30.01.005 no-photo-listing pre-owned in USA for $12000");
+  assert.match(photoPrompt.messages.join("\n"), /attach a photo/i);
+  const summary = await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "no photo");
+  assert.match(summary.messages.join("\n"), /Photo: none.*Should I start monitoring\?/);
+  await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "yes");
 
   const active = await inventoryDb.getActiveListings("FS");
   const found = active.find((l) => l.item.includes("no-photo-listing"));

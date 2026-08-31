@@ -23,6 +23,13 @@ after(async () => {
   fs.rmSync(persist, { recursive: true, force: true });
 });
 
+async function markPaid(...phones: string[]) {
+  for (const phone of phones) {
+    await entitlementDb.getEntitlement(phone);
+    await db.withSchema((pool) => pool.query(`UPDATE account_entitlements SET plan='tier1', payment_authorized=true, payment_status='active' WHERE phone=$1`, [phone]));
+  }
+}
+
 async function add(phone: string, messageId: string, text: string) {
   return store.ingestChatPosting({ platform: "whatsapp", chatId: "market", messageId, senderIdentity: phone, text });
 }
@@ -34,6 +41,7 @@ test("combined delivery is billing-neutral, replica-idempotent, and retries Whap
   await add("15550000001", "b2", "WTB Patek Philippe 5712G");
   const seller = await add("15550000002", "s1", "FS Rolex Daytona 126500LN $28000");
   await add("15550000003", "s2", "FS Patek Philippe 5712G $90000");
+  await markPaid("15550000001", "15550000002", "15550000003");
   await db.withSchema((pool) => pool.query(`INSERT INTO matches (fs_posting_id, wtb_posting_id) VALUES ($1,$2)`, [seller.posting!.id, buyer.posting!.id]));
 
   const sent: string[] = [];
@@ -54,6 +62,7 @@ test("combined delivery is billing-neutral, replica-idempotent, and retries Whap
   assert.equal((await updates.runMarketUpdates("morning", "2026-08-29")).sent, 0, "persistent key survives repeated/restart-equivalent ticks");
 
   await add("15550000004", "s3", "FS Rolex Daytona 126500LN $29000");
+  await markPaid("15550000004");
   t.mock.restoreAll();
   let failOnce = true;
   t.mock.method(whapi, "sendText", async () => { if (failOnce) { failOnce = false; throw new Error("transient"); } });

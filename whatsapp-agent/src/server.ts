@@ -7,6 +7,7 @@ import { sendText, NormalizedIncomingMessage } from "./channels";
 import { platformForIdentity } from "./channels/identity";
 import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
 import { verifyTwilioSignature, extractIncomingMessage as extractSmsMessage } from "./channels/sms";
+import { extractMetaTextMessages, verifyMetaSignature } from "./channels/metaWhatsapp";
 import { alreadyProcessed, getState, resetState, markPendingEscrowOffer } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
@@ -172,7 +173,7 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
       }
 
       const contact = getTierABContacts().find((c) => c.phone === message.phone);
-      const { messages } = await handleIncomingMessage(message.phone, message.text, contact);
+      const { messages } = await handleIncomingMessage(message.phone, message.text, contact, message.imageUrl);
       for (const reply of messages) await sendText(message.phone, reply);
     } catch (err) {
       console.error(`[webhook] failed handling message from ${message.phone}:`, err);
@@ -190,11 +191,35 @@ export function createServer() {
   // Railway terminates TLS at its nearest proxy. Trust exactly that hop so Express derives
   // req.secure and the throttling client IP from Railway's X-Forwarded-* headers.
   app.set("trust proxy", 1);
-  app.use(express.json());
+  app.use(express.json({ verify: (req, _res, buffer) => {
+    (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+  } }));
   const adminReady = initAdminSchema();
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true });
+  });
+
+  app.get("/webhook/whatsapp", (req, res) => {
+    const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+    if (!verifyToken) return res.sendStatus(503);
+    if (req.query["hub.mode"] !== "subscribe" || req.query["hub.verify_token"] !== verifyToken) return res.sendStatus(403);
+    const challenge = req.query["hub.challenge"];
+    if (typeof challenge !== "string") return res.sendStatus(403);
+    return res.status(200).type("text/plain").send(challenge);
+  });
+
+  app.post("/webhook/whatsapp", (req, res) => {
+    const appSecret = process.env.WHATSAPP_APP_SECRET;
+    if (!appSecret) return res.sendStatus(503);
+    const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+    if (!rawBody || !verifyMetaSignature(rawBody, req.header("x-hub-signature-256"), appSecret)) return res.sendStatus(401);
+    res.sendStatus(200);
+    setImmediate(() => {
+      for (const message of extractMetaTextMessages(req.body)) {
+        console.info(`[meta-whatsapp] inbound text id=${message.id} from=${message.from} phone_number_id=${message.phoneNumberId ?? "unknown"}`);
+      }
+    });
   });
 
   function hasAdminSession(req: express.Request): boolean {

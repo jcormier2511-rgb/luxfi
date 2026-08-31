@@ -17,6 +17,7 @@ export interface PostingRow {
   brand: string;
   model: string;
   reference: string;
+  dial?: string;
   condition: string;
   price: string | null; // NUMERIC comes back as string from pg
   currency: string;
@@ -170,6 +171,11 @@ export interface DirectSellPostingInput {
   description: string; // the full, human-readable item description collected during intake
   reference: string | null;
   price: number | null;
+  type?: PostingType;
+  condition?: string;
+  location?: string;
+  dialColor?: string;
+  currency?: string;
   imageUrl?: string;
 }
 
@@ -186,24 +192,29 @@ export interface DirectSellPostingInput {
 export async function createDirectPosting(input: DirectSellPostingInput): Promise<PostingRow> {
   const platform = platformForIdentity(input.phone);
   const canonicalUserId = await getOrCreateCanonicalUser(platform, input.phone);
-  const { brand } = normalizeText(input.description);
+  const normalized = normalizeText(input.description);
   const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
 
   return withSchema(async (pool) => {
     const insert = await pool.query<PostingRow>(
       `INSERT INTO postings
          (source_platform, source_type, canonical_user_id, source_identity,
-          type, original_text, brand, reference, price, currency, contact_name, contact_phone, status, expires_at)
-       VALUES ($1,'direct',$2,$3,'FS',$4,$5,$6,$7,'USD',$8,$9,'active',$10)
+          type, original_text, brand, reference, dial, condition, price, currency, location, contact_name, contact_phone, status, expires_at)
+       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',$15)
        RETURNING *`,
       [
         platform,
         canonicalUserId,
         input.phone,
+        input.type ?? "FS",
         input.description,
-        brand,
+        normalized.brand,
         input.reference ?? "",
+        input.dialColor ?? "",
+        input.condition ?? "",
         input.price,
+        input.currency ?? normalized.currency,
+        input.location ?? "",
         input.senderName || input.phone,
         input.phone,
         expiresAt,

@@ -23,6 +23,13 @@ after(async () => {
   fs.rmSync(persist, { recursive: true, force: true });
 });
 
+async function markPaid(...phones: string[]) {
+  for (const phone of phones) {
+    await entitlementDb.getEntitlement(phone);
+    await db.withSchema((pool) => pool.query(`UPDATE account_entitlements SET plan='tier1', payment_authorized=true, payment_status='active' WHERE phone=$1`, [phone]));
+  }
+}
+
 test("getMarketUpdateDeliveryStatus reports 'never delivered, no failures' against a freshly migrated schema", async () => {
   await db._resetDbForTests();
   await entitlementDb._resetDbForTests();
@@ -42,6 +49,7 @@ test("getMarketUpdateDeliveryStatus reflects a real successful run: timestamp, p
   await entitlementDb._resetDbForTests();
   await store.ingestChatPosting({ platform: "whatsapp", chatId: "market", messageId: "b1", senderIdentity: "15550000001", text: "WTB Rolex Daytona 126500LN" });
   await store.ingestChatPosting({ platform: "whatsapp", chatId: "market", messageId: "s1", senderIdentity: "15550000002", text: "FS Rolex Daytona 126500LN $28000" });
+  await markPaid("15550000001", "15550000002");
 
   t.mock.method(whapi, "sendText", async () => {});
   const run = await updates.runMarketUpdates("morning", "2026-08-30");
@@ -61,6 +69,7 @@ test("getMarketUpdateDeliveryStatus separately reports the most recent failure w
   await entitlementDb._resetDbForTests();
   await store.ingestChatPosting({ platform: "whatsapp", chatId: "market", messageId: "b1", senderIdentity: "15550000001", text: "WTB Rolex Daytona 126500LN" });
   await store.ingestChatPosting({ platform: "whatsapp", chatId: "market", messageId: "s1", senderIdentity: "15550000002", text: "FS Rolex Daytona 126500LN $28000" });
+  await markPaid("15550000001", "15550000002");
 
   t.mock.method(whapi, "sendText", async () => {
     throw new Error("simulated whapi outage");

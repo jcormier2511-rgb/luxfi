@@ -56,6 +56,13 @@ export async function ingestDirectSellPosting(input: DirectSellPostingInput): Pr
   return { matchesFound };
 }
 
+/** Saves a completed private buyer request before attempting any inventory search. */
+export async function ingestDirectBuyPosting(input: DirectSellPostingInput): Promise<DirectSellIngestResult> {
+  const posting = await createDirectPosting({ ...input, type: "WTB" });
+  const { matchesFound } = await runImmediateMatch(posting);
+  return { matchesFound };
+}
+
 /**
  * Single entry point for what a successful WatchFacts FS sync must do to the v4 matching
  * system (spec requirement: "every successful sync must trigger reverse matching of new or
