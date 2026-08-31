@@ -197,7 +197,7 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
       `INSERT INTO postings
          (source_platform, source_type, canonical_user_id, source_identity,
           type, original_text, brand, reference, condition, price, currency, location, contact_name, contact_phone, status, expires_at)
-       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,'USD',$9,$10,$11,'active',$12)
+       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,$9,'USD',$10,$11,$12,'active',$13)
        RETURNING *`,
       [
         platform,

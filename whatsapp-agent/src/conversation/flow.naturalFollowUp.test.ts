@@ -117,7 +117,7 @@ test("required regression: answering the follow-up merges the missing fields and
   assert.ok(!result.messages.some((m) => /over-budget|63,?000/.test(m)), "the budget from the follow-up reply must still be enforced");
 });
 
-test("only one follow-up round is ever asked — a still-incomplete reply proceeds with whatever is known rather than asking again", async (t) => {
+test("an incomplete follow-up remains pending and does not search with missing required fields", async (t) => {
   resetState(TEST_PHONE);
   await inventoryDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("a", { location: "North America" })], new Date().toISOString());
@@ -131,10 +131,9 @@ test("only one follow-up round is ever asked — a still-incomplete reply procee
   await handleIncomingMessage(TEST_PHONE, "looking for a rolex daytona 116500 in the USA, pre-owned");
   const result = await handleIncomingMessage(TEST_PHONE, "not sure, whatever's available");
 
-  assert.ok(
-    result.messages.some((m) => /Potential Match/.test(m)),
-    "must proceed with the search rather than asking a second follow-up round"
-  );
+  assert.ok(result.state.pendingNaturalFollowUp, "missing fields keep the request in draft state");
+  assert.ok(result.messages.some((m) => /budget|dial color/i.test(m)), "Fi asks only for the still-missing information");
+  assert.ok(!result.messages.some((m) => /Potential Match/.test(m)), "an incomplete request must not search");
 });
 
 test("a fully-specified message never triggers a follow-up at all", async (t) => {

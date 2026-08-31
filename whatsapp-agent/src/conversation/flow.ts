@@ -602,6 +602,13 @@ async function handleNaturalFollowUpAnswer(state: ConversationState, text: strin
   const interpreted = await interpretQuery(text);
   const merged = interpreted ? mergeFollowUpPreferences(pending.partial, toSearchPreferences(interpreted)) : pending.partial;
 
+  const stillMissing = missingPreferenceFields(merged);
+  if (stillMissing.length > 0) {
+    state.pendingNaturalFollowUp = { request: pending.request, partial: merged, missing: stillMissing };
+    messages.push(missingFieldsQuestion(stillMissing));
+    return;
+  }
+
   state.preferences = merged;
   state.preferencesCollected = true;
   const request = pending.request;
@@ -631,7 +638,9 @@ function extractListingAmount(text: string, reference: string | null): number | 
 
 function intakeSlots(text: string, reference: string | null) {
   const price = extractListingAmount(text, reference);
-  const location = text.match(/\b(?:in|from|located in|based in)\s+(?:the\s+)?(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\b/i)?.[1];
+  const location =
+    text.match(/\b(?:in|from|located in|based in)\s+(?:the\s+)?(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\b/i)?.[1] ??
+    text.match(/^\s*(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\s*$/i)?.[1];
   const condition = text.match(/\b(pre[- ]?owned|used|unworn|brand new|new|mint|any condition)\b/i)?.[1];
   const dial = text.match(/\b(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)\b/i)?.[1];
   return { reference: extractReference(text), price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial };
@@ -1070,15 +1079,50 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     messages.push(`I'll start with the first one — send me the others one at a time whenever you're ready.`);
   }
 
+  // The documented `buy:` / `sell:` command remains a one-off inventory search for backward
+  // compatibility. Conversational WTB/FS language creates a monitored posting and therefore
+  // uses the confirmation-gated intake below. Keeping these two explicit surfaces distinct
+  // avoids turning an existing search command into a draft that intercepts approve/pass.
+  if (/^\s*(?:buy|sell)\s*:/i.test(text)) {
+    if (!state.preferencesCollected) {
+      state.pendingPreferenceCollection = { step: "price", request: parsed[0] };
+      messages.push("Before I search, a few quick preferences — just this once:\n\n" + PRICE_QUESTION);
+      saveState(state);
+      return { state, messages };
+    }
+    await startSearch(state, parsed[0], messages);
+    saveState(state);
+    return { state, messages };
+  }
+
+  // AI-matching test accounts retain the pre-existing ephemeral-search path. This is an
+  // operator-only compatibility surface used to evaluate reranking/decision behavior; normal
+  // WhatsApp/SMS WTB and FS requests continue into the confirmation-gated posting intake.
+  const aiSearchPreferences = resolved.aiPreferences ?? (await tryNaturalLanguagePreferences(phone, text));
+  if (aiSearchPreferences) {
+    const missing = missingPreferenceFields(aiSearchPreferences);
+    if (missing.length > 0) {
+      state.pendingNaturalFollowUp = { request: parsed[0], partial: aiSearchPreferences, missing };
+      messages.push(missingFieldsQuestion(missing));
+      saveState(state);
+      return { state, messages };
+    }
+    state.preferences = aiSearchPreferences;
+    state.preferencesCollected = true;
+    await startSearch(state, parsed[0], messages);
+    saveState(state);
+    return { state, messages };
+  }
+
   // FS/WTB messages are postings, not generic searches. Complete and save the posting first;
   // only the completion handler is allowed to run matching. This also keeps seller fields out
   // of the buyer-preference interview entirely.
   if (parsed[0].action === "sell") {
-    await startSellIntake(state, parsed[0], messages, text, resolved.aiPreferences?.condition, resolved.aiPreferences?.location);
+    await startSellIntake(state, parsed[0], messages, text);
     saveState(state);
     return { state, messages };
   }
-  await startBuyIntake(state, parsed[0], messages, text, resolved.aiPreferences?.condition, resolved.aiPreferences?.location);
+  await startBuyIntake(state, parsed[0], messages, text);
   saveState(state);
   return { state, messages };
 }

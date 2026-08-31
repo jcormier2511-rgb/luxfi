@@ -195,9 +195,9 @@ test("required: option 3 shows a real active listing created via the sell-intake
   await inventoryDb._resetDbForTests();
   await postingsDb._resetDbForTests();
 
-  await freshRequest(phone, "I want to sell a Rolex Submariner 116610LV");
-  await handleIncomingMessage(phone, "$14,500");
-  await handleIncomingMessage(phone, "here you go", undefined, "https://cdn.example/sub.jpg");
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "FS Rolex Submariner 116610LV pre-owned in USA for $14,500");
+  await handleIncomingMessage(phone, "yes");
 
   await handleIncomingMessage(phone, "listings");
   const result = await handleIncomingMessage(phone, "3");
