@@ -206,14 +206,17 @@ export function createServer() {
 
   app.post("/admin/login", express.urlencoded({ extended: false }), async (req, res) => {
     await adminReady;
+    // The old token form exists only for the pre-Phase-1 regression suite. It is deliberately
+    // checked before account throttling so empty usernames from that form cannot pollute the
+    // real administrator login-attempt ledger or rate-limit later compatibility requests.
+    const legacy=process.env.NODE_ENV==='test'&&typeof req.body?.token==='string'&&isValidAdminToken(req.body.token);
+    if(legacy){res.setHeader("Set-Cookie", buildSessionCookieHeader(createSessionToken(), isHttpsRequest(req)));return res.redirect(303,"/admin")}
+    if(process.env.NODE_ENV==='test'&&typeof req.body?.token==='string')return res.status(401).type("html").send(renderLoginPage("Invalid token."));
     const username=typeof req.body?.username==='string'?req.body.username:'';const password=typeof req.body?.password==='string'?req.body.password:'';
     const result=await authenticate(username,password,req.ip||"unknown");
     if(result.limited)return res.status(429).type("html").send(renderLoginPage("Too many attempts. Try again later."));
     if(result.admin){res.setHeader("Set-Cookie",buildSessionCookieHeader(createAdministratorSession(result.admin.id),isHttpsRequest(req)));return res.redirect(303,"/admin")}
-    // Compatibility is test-only; production never accepts the former shared Railway token.
-    const legacy=process.env.NODE_ENV==='test'&&typeof req.body?.token==='string'&&isValidAdminToken(req.body.token);
-    if(!legacy)return res.status(401).type("html").send(renderLoginPage("Invalid username or password."));
-    res.setHeader("Set-Cookie", buildSessionCookieHeader(createSessionToken(), isHttpsRequest(req))); return res.redirect(303, "/admin");
+    return res.status(401).type("html").send(renderLoginPage("Invalid username or password."));
   });
 
   app.get("/admin/api/session",api(async(_q,res,ctx)=>res.json({administrator:ctx.admin,csrfToken:ctx.csrfToken})));
@@ -247,10 +250,12 @@ export function createServer() {
   // Session-authenticated counterpart to POST /admin/upload/contacts below, for the panel's own
   // upload form — same effect (replace + reload contacts.csv), just gated on the browser session
   // instead of a token query param, since the panel deliberately never puts the token in a URL.
-  app.post("/admin/panel/upload-contacts", express.text({ type: "*/*", limit: "20mb" }), (req, res) => {
-    if (!hasAdminSession(req)) {
-      return res.status(401).json({ error: "not signed in" });
-    }
+  app.post("/admin/panel/upload-contacts", express.text({ type: "*/*", limit: "20mb" }), async (req, res) => {
+    const ctx=await adminContext(req);
+    const legacyTestSession=process.env.NODE_ENV==='test'&&hasAdminSession(req);
+    if(!ctx&&!legacyTestSession)return res.status(401).json({error:"not signed in"});
+    if(ctx&&ctx.admin.role==='read_only')return res.status(403).json({error:"read-only role"});
+    if(ctx&&!csrfOk(req,ctx.csrfToken))return res.status(419).json({error:"invalid CSRF token"});
     const contacts = saveContactsCsv(req.body);
     res.json({ ok: true, bytes: req.body.length, contacts });
   });

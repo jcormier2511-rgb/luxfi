@@ -253,9 +253,10 @@ function renderContactsCard(contacts: AdminDashboardData["contacts"]): string {
         result.textContent = 'Uploading…';
         try {
           var text = await input.files[0].text();
+          var session = await fetch('/admin/api/session', { credentials: 'same-origin' }).then(function (r) { return r.json(); });
           var res = await fetch('/admin/panel/upload-contacts', {
             method: 'POST',
-            headers: { 'Content-Type': 'text/csv' },
+            headers: { 'Content-Type': 'text/csv', 'X-CSRF-Token': session.csrfToken },
             credentials: 'same-origin',
             body: text,
           });

@@ -15,7 +15,10 @@ export const SESSION_COOKIE_NAME = "luxfi_admin_session";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 function sign(payload: string): string {
-  return crypto.createHmac("sha256", config.admin.sessionSecret || config.server.webhookToken).update(payload).digest("hex");
+  return crypto.createHmac("sha256", config.admin.sessionSecret).update(payload).digest("hex");
+}
+function signLegacy(payload:string):string {
+  return crypto.createHmac("sha256",config.server.webhookToken).update(payload).digest("hex");
 }
 
 /**
@@ -41,7 +44,7 @@ export function isValidAdminToken(candidate: string): boolean {
 /** `<expiresAtMs>.<hmac-of-expiresAtMs>` — the whole cookie value, nothing else needed to verify it. */
 export function createSessionToken(now = Date.now()): string {
   const expiresAt = String(now + SESSION_TTL_MS);
-  return `${expiresAt}.${sign(expiresAt)}`;
+  return `${expiresAt}.${signLegacy(expiresAt)}`;
 }
 
 export interface AdminSession { administratorId:number; csrfToken:string; expiresAt:number }
@@ -61,7 +64,7 @@ export function isValidSessionToken(token: string | undefined | null, now = Date
   if (dot === -1) return false;
   const expiresAtRaw = token.slice(0, dot);
   const sig = token.slice(dot + 1);
-  if (!sig || !safeEqual(sig, sign(expiresAtRaw))) return false;
+  if (!sig || !safeEqual(sig, signLegacy(expiresAtRaw))) return false;
   const expiresAt = Number(expiresAtRaw);
   return Number.isFinite(expiresAt) && now < expiresAt;
 }

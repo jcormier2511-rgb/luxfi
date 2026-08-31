@@ -25,7 +25,7 @@ export const config = {
     webhookToken: required("WEBHOOK_TOKEN", "change-me"),
   },
   admin: {
-    sessionSecret: process.env.ADMIN_SESSION_SECRET ?? "",
+    sessionSecret: required("ADMIN_SESSION_SECRET", process.env.NODE_ENV === "test" ? "test-only-admin-session-secret" : undefined),
     initial: { name: process.env.ADMIN_INITIAL_NAME ?? "", username: process.env.ADMIN_INITIAL_USERNAME ?? "", email: process.env.ADMIN_INITIAL_EMAIL ?? "", passwordHash: process.env.ADMIN_INITIAL_PASSWORD_HASH ?? "" },
   },
   outreach: {

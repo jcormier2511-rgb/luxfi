@@ -1,6 +1,7 @@
 import { findPostingsNeedingReminder, claimReminderForPosting, PostingRow } from "./postingsStore";
 import { sendText } from "../whapi/client";
-import { config, isPostingChatEnabled } from "../config";
+import { config } from "../config";
+import { isPostingMonitoringEnabled } from "../admin/store";
 
 function watchLabel(posting: PostingRow): string {
   if (posting.reference) return `${posting.brand || ""} ${posting.reference}`.trim();
@@ -49,7 +50,7 @@ export async function sendExpirationReminders(): Promise<{ remindersSent: number
     let remindersSent = 0;
 
     for (const posting of candidates) {
-      if (!isPostingChatEnabled(posting)) continue; // group no longer allowed — never remind
+      if (!await isPostingMonitoringEnabled(posting)) continue; // group no longer allowed — never remind
       if (!posting.contact_phone) continue;
 
       try {
