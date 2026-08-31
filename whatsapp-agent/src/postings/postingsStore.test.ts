@@ -270,3 +270,15 @@ test("expireStalePostings expires only active postings whose expires_at has pass
   assert.equal((await getPosting(created.posting!.id))!.status, "expired");
   assert.equal((await getPosting(stillFresh.posting!.id))!.status, "active");
 });
+
+test("direct postings persist dial and native currency", async () => {
+  await db._resetDbForTests();
+  const posting = await store.createDirectPosting({
+    phone: "15550009999", description: "WTB Rolex 116500LN", reference: "116500LN", price: 220000,
+    type: "WTB", dialColor: "white", condition: "pre-owned", location: "Hong Kong", currency: "HKD",
+  });
+  assert.equal(posting.dial, "white");
+  assert.equal(posting.currency, "HKD");
+  assert.equal(posting.condition, "pre-owned");
+  assert.equal(posting.location, "Hong Kong");
+});

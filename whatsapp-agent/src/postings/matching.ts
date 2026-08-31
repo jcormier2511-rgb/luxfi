@@ -2,6 +2,7 @@ import { withSchema } from "./db";
 import { PostingRow, findOppositeSideCandidates, isEligible } from "./postingsStore";
 import { notifyMatch } from "./notify";
 import { normalizeReference, referencesMatch } from "./normalize";
+import { convertMoneyToUsd } from "../matching/currency";
 
 export interface ScoreResult {
   score: number;
@@ -45,14 +46,49 @@ export function scoreMatch(fs: PostingRow, wtb: PostingRow): ScoreResult | null 
     return null; // no structured basis for a match
   }
 
+  const canonical = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const requestedDial = canonical(wtb.dial || "");
+  if (requestedDial && requestedDial !== "any" && requestedDial !== "either") {
+    if (!fs.dial || canonical(fs.dial) !== requestedDial) return null;
+    reasons.push(`Dial: ${wtb.dial}`);
+  }
+  const requestedCondition = canonical(wtb.condition || "");
+  if (requestedCondition && requestedCondition !== "any" && requestedCondition !== "anycondition") {
+    if (!fs.condition || canonical(fs.condition) !== requestedCondition) return null;
+    reasons.push(`Condition: ${wtb.condition}`);
+  }
+  const locationAlias = (value: string) => {
+    const normalized = canonical(value);
+    return ["us", "usa", "unitedstates"].includes(normalized) ? "us" : normalized;
+  };
+  const requestedLocation = locationAlias(wtb.location || "");
+  if (requestedLocation && requestedLocation !== "any") {
+    if (!fs.location || locationAlias(fs.location) !== requestedLocation) return null;
+    reasons.push(`Location: ${wtb.location}`);
+  }
+
   const fsPrice = fs.price !== null ? Number(fs.price) : null;
   const wtbMaxBid = wtb.price !== null ? Number(wtb.price) : null;
   if (fsPrice !== null && wtbMaxBid !== null) {
+    if ((fs.currency || "USD") !== (wtb.currency || "USD")) return null;
     if (fsPrice > wtbMaxBid) return null; // hard max bid respected
     reasons.push(`Within budget ($${fsPrice} ≤ $${wtbMaxBid})`);
   }
 
   return { score, reasons };
+}
+
+/** Runtime matcher with conservative FX conversion for cross-currency hard budgets. */
+export async function scoreMatchWithCurrency(fs: PostingRow, wtb: PostingRow): Promise<ScoreResult | null> {
+  if ((fs.currency || "USD") === (wtb.currency || "USD") || fs.price === null || wtb.price === null) return scoreMatch(fs, wtb);
+  const withoutPrices = scoreMatch({ ...fs, price: null }, { ...wtb, price: null });
+  if (!withoutPrices) return null;
+  const [fsUsd, budgetUsd] = await Promise.all([
+    convertMoneyToUsd({ amount: Number(fs.price), currency: fs.currency as any }),
+    convertMoneyToUsd({ amount: Number(wtb.price), currency: wtb.currency as any }),
+  ]);
+  if (fsUsd === null || budgetUsd === null || fsUsd > budgetUsd) return null;
+  return { ...withoutPrices, reasons: [...withoutPrices.reasons, `Within converted budget (${fs.currency} ${fs.price} ≤ ${wtb.currency} ${wtb.price})`] };
 }
 
 /**
@@ -114,7 +150,7 @@ export async function runImmediateMatch(posting: PostingRow): Promise<ImmediateM
 
   for (const candidate of candidates) {
     const [fs, wtb] = posting.type === "FS" ? [posting, candidate] : [candidate, posting];
-    const result = scoreMatch(fs, wtb);
+    const result = await scoreMatchWithCurrency(fs, wtb);
     if (!result) continue;
 
     const { matchId, revision, isNewOrChanged } = await upsertMatch(fs.id, wtb.id, result);
@@ -153,7 +189,7 @@ export async function runReconciliation(): Promise<ReconciliationResult> {
       for (const wtb of wtbRows.rows) {
         for (const fs of fsRows.rows) {
           if (fs.canonical_user_id !== null && fs.canonical_user_id === wtb.canonical_user_id) continue; // no self-match
-          const result = scoreMatch(fs, wtb);
+          const result = await scoreMatchWithCurrency(fs, wtb);
           if (!result) continue;
           const { matchId, revision, isNewOrChanged } = await upsertMatch(fs.id, wtb.id, result);
           if (isNewOrChanged) {

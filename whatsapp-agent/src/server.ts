@@ -172,7 +172,7 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
       }
 
       const contact = getTierABContacts().find((c) => c.phone === message.phone);
-      const { messages } = await handleIncomingMessage(message.phone, message.text, contact);
+      const { messages } = await handleIncomingMessage(message.phone, message.text, contact, message.imageUrl);
       for (const reply of messages) await sendText(message.phone, reply);
     } catch (err) {
       console.error(`[webhook] failed handling message from ${message.phone}:`, err);
