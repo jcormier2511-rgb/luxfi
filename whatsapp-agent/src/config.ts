@@ -27,11 +27,6 @@ export const config = {
   admin: {
     sessionSecret: required("ADMIN_SESSION_SECRET", process.env.NODE_ENV === "test" ? "test-only-admin-session-secret" : undefined),
     initial: { name: process.env.ADMIN_INITIAL_NAME ?? "", username: process.env.ADMIN_INITIAL_USERNAME ?? "", email: process.env.ADMIN_INITIAL_EMAIL ?? "", passwordHash: process.env.ADMIN_INITIAL_PASSWORD_HASH ?? "" },
-    passwordReset: {
-      resendApiKey: process.env.RESEND_API_KEY ?? "",
-      fromEmail: process.env.ADMIN_PASSWORD_RESET_FROM_EMAIL ?? "",
-      baseUrl: (process.env.ADMIN_PASSWORD_RESET_BASE_URL ?? process.env.PUBLIC_BASE_URL ?? "").replace(/\/$/, ""),
-    },
   },
   outreach: {
     introMessage:

@@ -34,10 +34,9 @@ import {
   readAdministratorSession,
   parseCookies,
 } from "./admin/session";
-import { Administrator, authenticate, consumePasswordReset, createPasswordReset, deleteGroup, deleteUser, exportUsersCsv, getAdministrator, importUsersCsv, initAdminSchema, listAdministrators, listGroups, listUsers, resetAdministratorPassword, saveAdministrator, saveGroup, saveUser, USER_CSV_SAMPLE } from "./admin/store";
-import { sendAdministratorPasswordReset } from "./admin/passwordResetEmail";
+import { Administrator, authenticate, deleteGroup, deleteUser, exportUsersCsv, getAdministrator, importUsersCsv, initAdminSchema, listAdministrators, listGroups, listUsers, resetAdministratorPassword, saveAdministrator, saveGroup, saveUser, USER_CSV_SAMPLE } from "./admin/store";
 import { buildAdminDashboardData } from "./admin/dashboard";
-import { renderDashboard, renderForgotPasswordPage, renderLoginPage, renderManagementPage, renderResetPasswordPage } from "./admin/view";
+import { renderDashboard, renderLoginPage, renderManagementPage } from "./admin/view";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
 // (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
@@ -175,9 +174,8 @@ export async function handleWebhookPayload(body: IncomingWebhook): Promise<void>
 
 export function createServer() {
   const app = express();
-  // Railway terminates TLS before forwarding to this Express process. Trust exactly that
-  // nearest proxy so req.secure and req.ip reflect X-Forwarded-* without trusting arbitrary
-  // client-supplied hops (important for Secure cookies and IP-based login throttling).
+  // Railway terminates TLS at its nearest proxy. Trust exactly that hop so Express derives
+  // req.secure and the throttling client IP from Railway's X-Forwarded-* headers.
   app.set("trust proxy", 1);
   app.use(express.json());
   const adminReady = initAdminSchema();
@@ -222,21 +220,6 @@ export function createServer() {
     if(result.limited)return res.status(429).type("html").send(renderLoginPage("Too many attempts. Try again later."));
     if(result.admin){res.setHeader("Set-Cookie",buildSessionCookieHeader(createAdministratorSession(result.admin.id),isHttpsRequest(req)));return res.redirect(303,"/admin")}
     return res.status(401).type("html").send(renderLoginPage("Invalid username or password."));
-  });
-
-  app.get("/admin/forgot-password",(_req,res)=>res.type("html").send(renderForgotPasswordPage()));
-  app.post("/admin/forgot-password",express.urlencoded({extended:false}),async(req,res)=>{
-    await adminReady;
-    const email=typeof req.body?.email==='string'?req.body.email:'';
-    const reset=await createPasswordReset(email,req.ip||"unknown");
-    if(reset)sendAdministratorPasswordReset(reset.administrator.email,reset.token).catch(error=>console.error("[admin] password reset email failed:",(error as Error).message));
-    res.type("html").send(renderForgotPasswordPage("If that active administrator exists, a one-time reset link will be emailed shortly."));
-  });
-  app.get("/admin/reset-password",(req,res)=>{const token=typeof req.query.token==='string'?req.query.token:'';res.type("html").send(renderResetPasswordPage(token,token?undefined:"This reset link is invalid."))});
-  app.post("/admin/reset-password",express.urlencoded({extended:false}),async(req,res)=>{
-    const token=typeof req.body?.token==='string'?req.body.token:'';const password=typeof req.body?.password==='string'?req.body.password:'';const confirmation=typeof req.body?.password_confirmation==='string'?req.body.password_confirmation:'';
-    if(password!==confirmation)return res.status(400).type("html").send(renderResetPasswordPage(token,"Passwords do not match."));
-    try{const changed=await consumePasswordReset(token,password);if(!changed)return res.status(400).type("html").send(renderResetPasswordPage("","This reset link is invalid or has expired."));res.type("html").send(renderResetPasswordPage("",undefined,true));}catch(error){res.status(400).type("html").send(renderResetPasswordPage(token,(error as Error).message));}
   });
 
   app.get("/admin/api/session",api(async(_q,res,ctx)=>res.json({administrator:ctx.admin,csrfToken:ctx.csrfToken})));
