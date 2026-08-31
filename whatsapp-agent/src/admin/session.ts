@@ -102,17 +102,17 @@ export function buildSessionCookieHeader(token: string, secure: boolean): string
     "SameSite=Strict",
     `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
   ];
-  if (secure || process.env.NODE_ENV === "production") attrs.push("Secure");
+  if (secure) attrs.push("Secure");
   return attrs.join("; ");
 }
 
 export function buildLogoutCookieHeader(secure: boolean): string {
   const attrs = [`${SESSION_COOKIE_NAME}=`, "Path=/admin", "HttpOnly", "SameSite=Strict", "Max-Age=0"];
-  if (secure || process.env.NODE_ENV === "production") attrs.push("Secure");
+  if (secure) attrs.push("Secure");
   return attrs.join("; ");
 }
 
-/** Works whether or not Express's own `trust proxy` is configured — reads the forwarded-proto header directly. */
-export function isHttpsRequest(req: { secure?: boolean; headers: Record<string, unknown> }): boolean {
-  return Boolean(req.secure) || req.headers["x-forwarded-proto"] === "https";
+/** Express derives this from the socket and, for the single trusted Railway proxy, X-Forwarded-Proto. */
+export function isHttpsRequest(req: { secure?: boolean }): boolean {
+  return Boolean(req.secure);
 }

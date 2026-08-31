@@ -50,6 +50,9 @@ test("production login survives Railway HTTPS proxy redirect and grants GET /adm
   assert.match(setCookie,/SameSite=Strict/);
 
   const cookie=setCookie.split(";",1)[0];
+  const tamperedDashboard=await fetch(`${baseUrl}/admin`,{headers:{Cookie:`${cookie}x`,"X-Forwarded-Proto":"https","X-Forwarded-For":"203.0.113.9"}});
+  assert.equal(tamperedDashboard.status,401);
+
   const dashboard=await fetch(`${baseUrl}/admin`,{headers:{Cookie:cookie,"X-Forwarded-Proto":"https","X-Forwarded-For":"203.0.113.9"}});
   assert.equal(dashboard.status,200);
   assert.match(await dashboard.text(),/Whapi connectivity/);
