@@ -81,9 +81,8 @@ test("logout cookie header clears the cookie via Max-Age=0", () => {
   assert.match(header, new RegExp(`^${session.SESSION_COOKIE_NAME}=;`));
 });
 
-test("isHttpsRequest trusts either req.secure or a forwarded-proto https header", () => {
-  assert.equal(session.isHttpsRequest({ secure: true, headers: {} }), true);
-  assert.equal(session.isHttpsRequest({ secure: false, headers: { "x-forwarded-proto": "https" } }), true);
-  assert.equal(session.isHttpsRequest({ secure: false, headers: { "x-forwarded-proto": "http" } }), false);
-  assert.equal(session.isHttpsRequest({ headers: {} }), false);
+test("isHttpsRequest uses Express's proxy-aware secure flag", () => {
+  assert.equal(session.isHttpsRequest({ secure: true }), true);
+  assert.equal(session.isHttpsRequest({ secure: false }), false);
+  assert.equal(session.isHttpsRequest({}), false);
 });
