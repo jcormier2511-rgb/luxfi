@@ -15,7 +15,10 @@ export const SESSION_COOKIE_NAME = "luxfi_admin_session";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 function sign(payload: string): string {
-  return crypto.createHmac("sha256", config.server.webhookToken).update(payload).digest("hex");
+  return crypto.createHmac("sha256", config.admin.sessionSecret).update(payload).digest("hex");
+}
+function signLegacy(payload:string):string {
+  return crypto.createHmac("sha256",config.server.webhookToken).update(payload).digest("hex");
 }
 
 /**
@@ -41,7 +44,17 @@ export function isValidAdminToken(candidate: string): boolean {
 /** `<expiresAtMs>.<hmac-of-expiresAtMs>` — the whole cookie value, nothing else needed to verify it. */
 export function createSessionToken(now = Date.now()): string {
   const expiresAt = String(now + SESSION_TTL_MS);
-  return `${expiresAt}.${sign(expiresAt)}`;
+  return `${expiresAt}.${signLegacy(expiresAt)}`;
+}
+
+export interface AdminSession { administratorId:number; csrfToken:string; expiresAt:number }
+export function createAdministratorSession(administratorId:number, now=Date.now()):string {
+  const payload=Buffer.from(JSON.stringify({ administratorId, csrfToken:crypto.randomBytes(24).toString("hex"), expiresAt:now+SESSION_TTL_MS })).toString("base64url");
+  return `${payload}.${sign(payload)}`;
+}
+export function readAdministratorSession(token:string|undefined|null,now=Date.now()):AdminSession|null {
+  if(!token)return null;const dot=token.lastIndexOf(".");if(dot<1)return null;const payload=token.slice(0,dot),signature=token.slice(dot+1);if(!safeEqual(signature,sign(payload)))return null;
+  try { const value=JSON.parse(Buffer.from(payload,"base64url").toString()); return Number.isInteger(value.administratorId)&&typeof value.csrfToken==='string'&&now<value.expiresAt?value:null; } catch{return null}
 }
 
 /** Verifies the signature before ever trusting the embedded expiry, so a tampered cookie can't extend its own life. */
@@ -51,7 +64,7 @@ export function isValidSessionToken(token: string | undefined | null, now = Date
   if (dot === -1) return false;
   const expiresAtRaw = token.slice(0, dot);
   const sig = token.slice(dot + 1);
-  if (!sig || !safeEqual(sig, sign(expiresAtRaw))) return false;
+  if (!sig || !safeEqual(sig, signLegacy(expiresAtRaw))) return false;
   const expiresAt = Number(expiresAtRaw);
   return Number.isFinite(expiresAt) && now < expiresAt;
 }
@@ -89,13 +102,13 @@ export function buildSessionCookieHeader(token: string, secure: boolean): string
     "SameSite=Strict",
     `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
   ];
-  if (secure) attrs.push("Secure");
+  if (secure || process.env.NODE_ENV === "production") attrs.push("Secure");
   return attrs.join("; ");
 }
 
 export function buildLogoutCookieHeader(secure: boolean): string {
   const attrs = [`${SESSION_COOKIE_NAME}=`, "Path=/admin", "HttpOnly", "SameSite=Strict", "Max-Age=0"];
-  if (secure) attrs.push("Secure");
+  if (secure || process.env.NODE_ENV === "production") attrs.push("Secure");
   return attrs.join("; ");
 }
 

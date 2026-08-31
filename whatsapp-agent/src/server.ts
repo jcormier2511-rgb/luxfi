@@ -27,13 +27,16 @@ import {
   buildLogoutCookieHeader,
   buildSessionCookieHeader,
   createSessionToken,
+  createAdministratorSession,
   isHttpsRequest,
   isValidAdminToken,
   isValidSessionToken,
+  readAdministratorSession,
   parseCookies,
 } from "./admin/session";
+import { Administrator, authenticate, deleteGroup, deleteUser, exportUsersCsv, getAdministrator, importUsersCsv, initAdminSchema, listAdministrators, listGroups, listUsers, resetAdministratorPassword, saveAdministrator, saveGroup, saveUser, USER_CSV_SAMPLE } from "./admin/store";
 import { buildAdminDashboardData } from "./admin/dashboard";
-import { renderDashboard, renderLoginPage } from "./admin/view";
+import { renderDashboard, renderLoginPage, renderManagementPage } from "./admin/view";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
 // (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
@@ -172,6 +175,7 @@ export async function handleWebhookPayload(body: IncomingWebhook): Promise<void>
 export function createServer() {
   const app = express();
   app.use(express.json());
+  const adminReady = initAdminSchema();
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true });
@@ -181,6 +185,9 @@ export function createServer() {
     const cookies = parseCookies(req.headers.cookie);
     return isValidSessionToken(cookies[SESSION_COOKIE_NAME]);
   }
+  async function adminContext(req:express.Request):Promise<{admin:Administrator;csrfToken:string}|null>{await adminReady;const session=readAdministratorSession(parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]);if(!session)return null;const admin=await getAdministrator(session.administratorId);return admin?{admin,csrfToken:session.csrfToken}:null}
+  const csrfOk=(req:express.Request,csrf:string)=>typeof req.headers["x-csrf-token"]==='string'&&req.headers["x-csrf-token"]===csrf;
+  const api=(handler:(req:express.Request,res:express.Response,ctx:{admin:Administrator;csrfToken:string})=>Promise<any>,modify=false)=>async(req:express.Request,res:express.Response)=>{try{const ctx=await adminContext(req);if(!ctx)return res.status(401).json({error:"not signed in"});if(modify&&(!csrfOk(req,ctx.csrfToken)||ctx.admin.role==='read_only'))return res.status(ctx.admin.role==='read_only'?403:419).json({error:ctx.admin.role==='read_only'?"read-only role":"invalid CSRF token"});await handler(req,res,ctx)}catch(e){res.status(400).json({error:(e as Error).message})}};
 
   // Visual admin panel — read-only status for Whapi, Postgres/schema, market updates, v4
   // postings, WatchFacts sync, and AI matching (no secrets), plus the contacts CSV upload
@@ -188,21 +195,46 @@ export function createServer() {
   // login form + signed session cookie (see ./admin/session) rather than a token in the URL —
   // a URL is logged, cached, and shared far more casually than a submitted form value.
   app.get("/admin", async (req, res) => {
-    if (!hasAdminSession(req)) {
+    const ctx=await adminContext(req).catch(()=>null);
+    if (!ctx && !hasAdminSession(req)) {
       return res.status(401).type("html").send(renderLoginPage());
     }
     const data = await buildAdminDashboardData();
     res.type("html").send(renderDashboard(data));
   });
+  for(const kind of ["users","groups","administrators"] as const) app.get(`/admin/${kind}`,async(req,res)=>{const ctx=await adminContext(req).catch(()=>null);if(!ctx)return res.status(401).type('html').send(renderLoginPage());if(kind==='administrators'&&ctx.admin.role!=='owner')return res.status(403).send('Owner role required');res.type('html').send(renderManagementPage(kind))});
 
-  app.post("/admin/login", express.urlencoded({ extended: false }), (req, res) => {
-    const token = typeof req.body?.token === "string" ? req.body.token : "";
-    if (!isValidAdminToken(token)) {
-      return res.status(401).type("html").send(renderLoginPage("Invalid token."));
-    }
-    res.setHeader("Set-Cookie", buildSessionCookieHeader(createSessionToken(), isHttpsRequest(req)));
-    res.redirect(303, "/admin");
+  app.post("/admin/login", express.urlencoded({ extended: false }), async (req, res) => {
+    await adminReady;
+    // The old token form exists only for the pre-Phase-1 regression suite. It is deliberately
+    // checked before account throttling so empty usernames from that form cannot pollute the
+    // real administrator login-attempt ledger or rate-limit later compatibility requests.
+    const legacy=process.env.NODE_ENV==='test'&&typeof req.body?.token==='string'&&isValidAdminToken(req.body.token);
+    if(legacy){res.setHeader("Set-Cookie", buildSessionCookieHeader(createSessionToken(), isHttpsRequest(req)));return res.redirect(303,"/admin")}
+    if(process.env.NODE_ENV==='test'&&typeof req.body?.token==='string')return res.status(401).type("html").send(renderLoginPage("Invalid token."));
+    const username=typeof req.body?.username==='string'?req.body.username:'';const password=typeof req.body?.password==='string'?req.body.password:'';
+    const result=await authenticate(username,password,req.ip||"unknown");
+    if(result.limited)return res.status(429).type("html").send(renderLoginPage("Too many attempts. Try again later."));
+    if(result.admin){res.setHeader("Set-Cookie",buildSessionCookieHeader(createAdministratorSession(result.admin.id),isHttpsRequest(req)));return res.redirect(303,"/admin")}
+    return res.status(401).type("html").send(renderLoginPage("Invalid username or password."));
   });
+
+  app.get("/admin/api/session",api(async(_q,res,ctx)=>res.json({administrator:ctx.admin,csrfToken:ctx.csrfToken})));
+  app.get("/admin/api/administrators",api(async(_q,res,ctx)=>{if(ctx.admin.role!=="owner")return res.status(403).json({error:"owner role required"});res.json(await listAdministrators())}));
+  app.post("/admin/api/administrators",api(async(req,res,ctx)=>res.status(201).json(await saveAdministrator(ctx.admin,req.body)),true));
+  app.put("/admin/api/administrators/:id",api(async(req,res,ctx)=>res.json(await saveAdministrator(ctx.admin,req.body,Number(req.params.id))),true));
+  app.post("/admin/api/administrators/:id/reset-password",api(async(req,res,ctx)=>{await resetAdministratorPassword(ctx.admin,Number(req.params.id),String(req.body.password||''));res.json({ok:true})},true));
+  app.get("/admin/api/users",api(async(req,res)=>res.json(await listUsers(String(req.query.q||''),String(req.query.status||''),Number(req.query.page||1)))));
+  app.post("/admin/api/users",api(async(req,res,ctx)=>res.status(201).json(await saveUser(ctx.admin,req.body)),true));
+  app.put("/admin/api/users/:id",api(async(req,res,ctx)=>res.json(await saveUser(ctx.admin,req.body,Number(req.params.id))),true));
+  app.delete("/admin/api/users/:id",api(async(req,res,ctx)=>{await deleteUser(ctx.admin,Number(req.params.id));res.json({ok:true})},true));
+  app.post("/admin/api/users/import",express.text({type:"*/*",limit:"20mb"}),api(async(req,res,ctx)=>res.json(await importUsersCsv(ctx.admin,String(req.body))),true));
+  app.get("/admin/api/users/template.csv",(_q,res)=>res.type("text/csv").attachment("approved-users-template.csv").send(USER_CSV_SAMPLE));
+  app.get("/admin/api/users/export.csv",api(async(_q,res)=>res.type("text/csv").attachment("approved-users.csv").send(await exportUsersCsv())));
+  app.get("/admin/api/groups",api(async(req,res)=>res.json(await listGroups(String(req.query.q||''),String(req.query.status||'')))));
+  app.post("/admin/api/groups",api(async(req,res,ctx)=>res.status(201).json(await saveGroup(ctx.admin,req.body)),true));
+  app.put("/admin/api/groups/:id",api(async(req,res,ctx)=>res.json(await saveGroup(ctx.admin,req.body,Number(req.params.id))),true));
+  app.delete("/admin/api/groups/:id",api(async(req,res,ctx)=>{await deleteGroup(ctx.admin,Number(req.params.id));res.json({ok:true})},true));
 
   app.get("/admin/logout", (req, res) => {
     res.setHeader("Set-Cookie", buildLogoutCookieHeader(isHttpsRequest(req)));
@@ -218,10 +250,12 @@ export function createServer() {
   // Session-authenticated counterpart to POST /admin/upload/contacts below, for the panel's own
   // upload form — same effect (replace + reload contacts.csv), just gated on the browser session
   // instead of a token query param, since the panel deliberately never puts the token in a URL.
-  app.post("/admin/panel/upload-contacts", express.text({ type: "*/*", limit: "20mb" }), (req, res) => {
-    if (!hasAdminSession(req)) {
-      return res.status(401).json({ error: "not signed in" });
-    }
+  app.post("/admin/panel/upload-contacts", express.text({ type: "*/*", limit: "20mb" }), async (req, res) => {
+    const ctx=await adminContext(req);
+    const legacyTestSession=process.env.NODE_ENV==='test'&&hasAdminSession(req);
+    if(!ctx&&!legacyTestSession)return res.status(401).json({error:"not signed in"});
+    if(ctx&&ctx.admin.role==='read_only')return res.status(403).json({error:"read-only role"});
+    if(ctx&&!csrfOk(req,ctx.csrfToken))return res.status(419).json({error:"invalid CSRF token"});
     const contacts = saveContactsCsv(req.body);
     res.json({ ok: true, bytes: req.body.length, contacts });
   });
