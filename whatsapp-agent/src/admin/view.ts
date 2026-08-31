@@ -51,7 +51,7 @@ ul.plain { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
 .full { grid-column: 1 / -1; }
 form.login { max-width: 340px; margin: 90px auto; padding: 26px; border: 1px solid #e2e4e8; border-radius: 10px; background: #fff; }
 form.login h1 { font-size: 15px; margin: 0 0 16px; font-weight: 600; }
-form.login input[type=password] { width: 100%; padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
+form.login input { width: 100%; padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
 form.login button, .card button { padding: 8px 14px; border-radius: 6px; border: 1px solid #d1d5db; background: #111827; color: #fff; font-size: 13px; cursor: pointer; }
 form.login button { width: 100%; }
 .error { color: #991b1b; font-size: 13px; margin-bottom: 12px; }
@@ -60,7 +60,7 @@ input[type=file] { font-size: 13px; margin-top: 8px; }
 footer { text-align: center; color: #9ca3af; font-size: 11px; padding: 10px 0 30px; }
 `;
 
-/** Never populates the input's `value` — the submitted token is never echoed back into any response. */
+/** Never repopulates credentials and always uses generic errors to avoid account discovery. */
 export function renderLoginPage(error?: string): string {
   return `<!doctype html>
 <html>
@@ -74,11 +74,23 @@ export function renderLoginPage(error?: string): string {
   <form class="login" method="post" action="/admin/login" autocomplete="off">
     <h1>LuxFi WhatsApp Agent — Admin</h1>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
-    <input type="password" name="token" placeholder="Admin token" autocomplete="off" autofocus required>
+    <input type="text" name="username" placeholder="Username" autocomplete="username" autofocus required>
+    <input type="password" name="password" placeholder="Password" autocomplete="current-password" required>
     <button type="submit">Sign in</button>
   </form>
 </body>
 </html>`;
+}
+
+export function renderManagementPage(kind:"users"|"groups"|"administrators"):string {
+  const title=kind==="users"?"Approved Users":kind==="groups"?"Approved Groups":"Administrators";
+  const empty=kind==="groups"?"No approved groups yet. Add the exact WhatsApp chat ID after the number is restored; wildcards are never accepted.":`No ${title.toLowerCase()} found.`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}.toolbar{display:flex;gap:8px;margin-bottom:14px}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin">Overview</a> · <a href="/admin/users">Users</a> · <a href="/admin/groups">Groups</a> · <a href="/admin/administrators">Administrators</a> · <a href="/admin/logout">Sign out</a></nav></header><main><section class="card"><div class="toolbar"><input id="q" placeholder="Search"><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
+  const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='';
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  async function load(){const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));table.querySelector('thead').innerHTML='<tr>'+keys.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+'</tr>').join('')}
+  load().catch(e=>document.querySelector('#error').textContent=e.message);
+  </script></body></html>`;
 }
 
 function renderWhapiCard(w: AdminDashboardData["whapi"]): string {

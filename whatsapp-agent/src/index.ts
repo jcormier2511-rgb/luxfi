@@ -6,8 +6,11 @@ import { sendExpirationReminders } from "./postings/reminders";
 import { runReconciliation } from "./postings/matching";
 import { initConciergeSchema } from "./concierge/db";
 import { runMarketUpdateScheduler } from "./marketUpdates";
+import { initAdminSchema } from "./admin/store";
 
 const app = createServer();
+
+initAdminSchema().then(()=>console.log("[admin] administrators, approved users, groups and audit schema ready")).catch(err=>console.error("[admin] schema initialization failed:",err.message));
 
 app.listen(config.server.port, () => {
   console.log(`LuxFi WhatsApp agent listening on port ${config.server.port}`);

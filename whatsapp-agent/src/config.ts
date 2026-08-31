@@ -24,6 +24,10 @@ export const config = {
     port: Number(process.env.PORT ?? 3000),
     webhookToken: required("WEBHOOK_TOKEN", "change-me"),
   },
+  admin: {
+    sessionSecret: process.env.ADMIN_SESSION_SECRET ?? "",
+    initial: { name: process.env.ADMIN_INITIAL_NAME ?? "", username: process.env.ADMIN_INITIAL_USERNAME ?? "", email: process.env.ADMIN_INITIAL_EMAIL ?? "", passwordHash: process.env.ADMIN_INITIAL_PASSWORD_HASH ?? "" },
+  },
   outreach: {
     introMessage:
       process.env.INTRO_MESSAGE ??

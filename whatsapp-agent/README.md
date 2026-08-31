@@ -21,6 +21,20 @@ WF inventory feed as a starting point), searches for counterparty matches, and g
 
 ## Setup
 
+### Administrator bootstrap (Railway)
+
+On the first deployment only, the empty `administrators` table is seeded from
+`ADMIN_INITIAL_NAME`, `ADMIN_INITIAL_USERNAME`, `ADMIN_INITIAL_EMAIL`, and
+`ADMIN_INITIAL_PASSWORD_HASH` (a bcrypt hash; never a plaintext password). Set a separate,
+high-entropy `ADMIN_SESSION_SECRET` for signed 12-hour browser sessions. After the owner exists,
+the bootstrap values are ignored and administrator management is available only to that owner.
+Keep `DATABASE_URL` configured as before. Do not put any of these values in source control.
+
+Approved users and approved WhatsApp groups are stored additively in PostgreSQL. An active,
+monitored database group list becomes authoritative as soon as it has an entry;
+`V4_ALLOWED_CHAT_IDS` is only a fallback during migration and `*` is never honored by the
+database-backed production gate.
+
 ```bash
 cd whatsapp-agent
 npm install
