@@ -1,4 +1,4 @@
-export type Platform = 'whatsapp' | 'telegram';
+export type Platform = 'whatsapp' | 'telegram' | 'sms' | 'email';
 export type SourceType = 'chat' | 'api';
 export type PostingType = 'FS' | 'WTB';
 

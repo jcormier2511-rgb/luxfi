@@ -3,6 +3,8 @@ import helmet from 'helmet';
 import { Pool } from 'pg';
 import { webhookRoutes } from './routes/webhook.routes';
 import { whatsappRoutes } from './routes/whatsapp.routes';
+import { telegramRoutes } from './routes/telegram.routes';
+import { smsRoutes } from './routes/sms.routes';
 import { matchRoutes } from './routes/match.routes';
 import { adminRoutes } from './routes/admin.routes';
 
@@ -27,6 +29,8 @@ export function createApp(pool: Pool): Express {
 
   app.use('/webhook', webhookRoutes(pool));
   app.use('/webhook/whatsapp', whatsappRoutes(pool));
+  app.use('/webhook/telegram', telegramRoutes(pool));
+  app.use('/webhook/sms', smsRoutes(pool));
   app.use('/matches', matchRoutes(pool));
   app.use('/admin', adminRoutes(pool));
 

@@ -4,7 +4,10 @@ import { getAdminStatus } from '../services/admin.service';
 import { setManualEntitlementOverride, setWatchFactsMembershipManual } from '../services/entitlement.service';
 import { runFsSync, runWtbSync } from '../services/sync.service';
 import { reconcileMatches } from '../services/matching.service';
-import { mergeCanonicalUsers } from '../services/canonicalUser.service';
+import { mergeCanonicalUsers, addPlatformIdentityToCanonicalUser } from '../services/canonicalUser.service';
+import { Platform } from '../types/domain';
+
+const VALID_PLATFORMS: Platform[] = ['whatsapp', 'telegram', 'sms', 'email'];
 
 function requireAdminToken(req: Request, res: Response, next: NextFunction): void {
   const token = process.env.ADMIN_API_TOKEN;
@@ -77,6 +80,38 @@ export function adminRoutes(pool: Pool): Router {
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
+  });
+
+  /**
+   * Attaches a new channel identity (e.g. an email address or phone number
+   * for the SMS/email channels, which have no inbound webhook of their own)
+   * to an existing account. Rejects with 409 rather than silently moving an
+   * identity that's already linked to a different account -- use the merge
+   * endpoint above for that, since it carries the history reassignment a
+   * plain identity move would skip.
+   */
+  router.post('/users/:canonicalUserId/platform-identity', async (req, res) => {
+    const { platform, platformUserId, chatId, displayName } = req.body as {
+      platform?: string;
+      platformUserId?: string;
+      chatId?: string;
+      displayName?: string;
+    };
+    if (!platform || !platformUserId || !VALID_PLATFORMS.includes(platform as Platform)) {
+      res.status(400).json({ error: `platform (${VALID_PLATFORMS.join('|')}) and platformUserId are required` });
+      return;
+    }
+    const result = await addPlatformIdentityToCanonicalUser(pool, req.params.canonicalUserId, {
+      platform: platform as Platform,
+      platformUserId,
+      chatId,
+      displayName,
+    });
+    if (result.status === 'conflict') {
+      res.status(409).json({ error: 'platform identity already linked to a different canonical user', existingCanonicalUserId: result.existingCanonicalUserId });
+      return;
+    }
+    res.status(200).json(result);
   });
 
   router.post('/sync/fs', async (_req, res) => {
