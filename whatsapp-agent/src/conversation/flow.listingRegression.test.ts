@@ -67,6 +67,8 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
     description: "Rolex 116500LN white dial pre-owned in the US for $28,000",
     reference: "116500LN",
     price: 30000,
+    currency: "USD",
+    dialColor: "white",
     condition: "new",
     location: "US",
   });
@@ -84,8 +86,10 @@ test("FS confirmation boundary persists and activates every parsed field exactly
   t.mock.method(inventory, "upsertListings", async (rows: Parameters<typeof inventory.upsertListings>[0]) => { inventoryWrites.push(rows); });
   t.mock.method(ingest, "ingestDirectSellPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => { activations.push(input); return { matchesFound: 0 }; });
 
-  const summary = await handleIncomingMessage(phone, "FS Rolex 116500LN black dial unworn in Canada for 28500");
-  assert.match(summary.messages.at(-1)!, /Should I start monitoring\?/);
+  const photoPrompt = await handleIncomingMessage(phone, "FS Rolex 116500LN black dial unworn in Canada for 28500");
+  assert.match(photoPrompt.messages.at(-1)!, /attach a photo/i);
+  const summary = await handleIncomingMessage(phone, "skip");
+  assert.match(summary.messages.at(-1)!, /Photo: none.*Should I start monitoring\?/);
   assert.equal(inventoryWrites.length, 0, "summary must not persist inventory");
   assert.equal(activations.length, 0, "summary must not activate or match the listing");
 
@@ -102,6 +106,35 @@ test("FS confirmation boundary persists and activates every parsed field exactly
   assert.equal(inventoryWrites[0][0].condition, "pre-owned");
   assert.equal(inventoryWrites[0][0].location, "Canada");
   assert.equal(activations[0].price, 29000);
+  assert.equal(activations[0].currency, "USD");
+  assert.equal(activations[0].dialColor, "black");
   assert.equal(activations[0].condition, "pre-owned");
   assert.equal(activations[0].location, "Canada");
+});
+
+test("an original-message FS photo stays in the draft and appears in the confirmation summary", async (t) => {
+  const phone = "15550002007";
+  resetState(phone);
+  const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
+  const ingest = require("../postings/ingest") as typeof import("../postings/ingest");
+  let inventoryWrites = 0;
+  let activations = 0;
+  t.mock.method(inventory, "upsertListings", async () => { inventoryWrites++; });
+  t.mock.method(ingest, "ingestDirectSellPosting", async () => { activations++; return { matchesFound: 0 }; });
+
+  const summary = await handleIncomingMessage(
+    phone,
+    "FS Rolex 116500LN white dial pre-owned in USA for EUR 25,000",
+    undefined,
+    "https://cdn.example/original.jpg"
+  );
+  assert.match(summary.messages.at(-1)!, /Photo: attached.*Should I start monitoring\?/);
+  assert.equal(summary.state.pendingSellIntake?.imageUrl, "https://cdn.example/original.jpg");
+  assert.equal(summary.state.pendingSellIntake?.currency, "EUR");
+  assert.equal(inventoryWrites, 0);
+  assert.equal(activations, 0);
+
+  await handleIncomingMessage(phone, "yes");
+  assert.equal(inventoryWrites, 1);
+  assert.equal(activations, 1);
 });

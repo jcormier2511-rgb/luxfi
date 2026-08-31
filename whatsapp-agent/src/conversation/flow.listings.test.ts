@@ -197,6 +197,7 @@ test("required: option 3 shows a real active listing created via the sell-intake
 
   await handleIncomingMessage(phone, "hi");
   await handleIncomingMessage(phone, "FS Rolex Submariner 116610LV pre-owned in USA for $14,500");
+  await handleIncomingMessage(phone, "skip");
   await handleIncomingMessage(phone, "yes");
 
   await handleIncomingMessage(phone, "listings");

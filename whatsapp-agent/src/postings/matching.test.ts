@@ -335,3 +335,26 @@ test("runReconciliation recovers a match the immediate path missed, without dupl
   );
   assert.equal(matches.rows.length, 1, "reconciliation must never create duplicate match rows for the same pair");
 });
+
+test("explicit dial, condition, and location requirements are mandatory", () => {
+  const baseFs = posting({ reference: "116500LN", dial: "white", condition: "pre-owned", location: "USA" });
+  const baseWtb = posting({ type: "WTB", reference: "116500LN", dial: "white", condition: "pre-owned", location: "US" });
+  assert.ok(scoreMatch(baseFs, baseWtb));
+  assert.equal(scoreMatch({ ...baseFs, dial: "black" }, baseWtb), null, "dial mismatch");
+  assert.equal(scoreMatch({ ...baseFs, dial: "" }, baseWtb), null, "missing dial");
+  assert.equal(scoreMatch({ ...baseFs, condition: "new" }, baseWtb), null, "condition mismatch");
+  assert.equal(scoreMatch({ ...baseFs, condition: "" }, baseWtb), null, "missing condition");
+  assert.equal(scoreMatch({ ...baseFs, location: "Canada" }, baseWtb), null, "location mismatch");
+  assert.equal(scoreMatch({ ...baseFs, location: "" }, baseWtb), null, "missing location");
+});
+
+test("cross-currency budgets are converted before comparison", async (t) => {
+  const currency = require("../matching/currency") as typeof import("../matching/currency");
+  currency.setExchangeRateProviderForTests(async (code) => code === "EUR" ? 1.2 : null);
+  t.after(() => currency.setExchangeRateProviderForTests());
+  const fs = posting({ reference: "116500LN", price: "24000", currency: "EUR" });
+  const enough = posting({ type: "WTB", reference: "116500LN", price: "30000", currency: "USD" });
+  const tooLow = posting({ type: "WTB", reference: "116500LN", price: "28000", currency: "USD" });
+  assert.ok(await matching.scoreMatchWithCurrency(fs, enough));
+  assert.equal(await matching.scoreMatchWithCurrency(fs, tooLow), null);
+});

@@ -112,11 +112,11 @@ export async function setManualOverride(phone: string, enabled: boolean): Promis
 export async function setPlan(phone: string, plan: PlanKey | null): Promise<Entitlement> {
   await ensureSchema();
   const result = await getPool().query(
-    `INSERT INTO account_entitlements (phone, plan, updated_at)
-     VALUES ($1, $2, now())
-     ON CONFLICT (phone) DO UPDATE SET plan = $2, updated_at = now()
+    `INSERT INTO account_entitlements (phone, plan, payment_authorized, payment_status, updated_at)
+     VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT (phone) DO UPDATE SET plan = $2, payment_authorized = $3, payment_status = $4, updated_at = now()
      RETURNING *`,
-    [phone, plan]
+    [phone, plan, plan !== null, plan === null ? "inactive" : "active"]
   );
   return rowToEntitlement(result.rows[0] as EntitlementRow);
 }

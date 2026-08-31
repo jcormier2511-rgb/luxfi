@@ -624,6 +624,7 @@ const SELL_LOCATION_QUESTION = "Where is the watch located? (city or country)";
 const BUY_LOCATION_QUESTION = "Any location preference? (city or country, or say any)";
 const BUY_BUDGET_QUESTION = "What's your maximum budget?";
 const DIAL_INTAKE_QUESTION = "Do you prefer the black dial, white dial, or either?";
+const SELL_PHOTO_QUESTION = 'Would you like to attach a photo? Send it now, or reply "skip" or "no photo".';
 
 /** Private listing shorthand commonly omits a currency marker. Only accept a standalone
  * trailing amount, and never the already-identified reference, so 116500LN cannot become a
@@ -674,6 +675,7 @@ function nextSell(p: PendingSellIntake): string | null {
   if (dialRelevant(p.reference) && !p.dialColor) { p.step="dial"; return "Is it the black dial, white dial, or another color?"; }
   if (!p.condition) { p.step="condition"; return CONDITION_INTAKE_QUESTION; }
   if (!p.location) { p.step="location"; return SELL_LOCATION_QUESTION; }
+  if (!p.imageUrl && !p.photoSkipped) { p.step="photo"; return SELL_PHOTO_QUESTION; }
   p.step="confirm"; return null;
 }
 function nextBuy(p: PendingBuyIntake): string | null {
@@ -686,7 +688,7 @@ function nextBuy(p: PendingBuyIntake): string | null {
 }
 const confirmed = (text: string) => /^(yes|yep|yeah|confirm|correct|sure|ok(?:ay)?|start|do it)\b/i.test(text.trim());
 const cash = (n: number, c = "USD") => `${c === "USD" ? "$" : c+" "}${n.toLocaleString("en-US")}`;
-const sellSummary = (p: PendingSellIntake) => `I have: FS ${p.description}${p.dialColor ? `, ${p.dialColor} dial` : ""}, ${p.condition}, ${p.location}, asking ${cash(p.price!,p.currency)}. Should I start monitoring?`;
+const sellSummary = (p: PendingSellIntake) => `I have: FS ${p.description}${p.dialColor ? `, ${p.dialColor} dial` : ""}, ${p.condition}, ${p.location}, asking ${cash(p.price!,p.currency)}. Photo: ${p.imageUrl ? "attached" : "none"}. Should I start monitoring?`;
 const buySummary = (p: PendingBuyIntake) => `I have: WTB ${p.description}${p.dialColor ? `, ${p.dialColor} dial` : ""}, ${p.condition}, ${p.location}, maximum ${cash(p.budget!,p.currency)}. Should I start monitoring?`;
 
 /**
@@ -698,8 +700,8 @@ const buySummary = (p: PendingBuyIntake) => `I have: WTB ${p.description}${p.dia
  * question when the message already names a reference or a known brand — "116500 white dial"
  * doesn't need to be asked "tell me more" when it's already specific.
  */
-async function startSellIntake(state: ConversationState, request: ItemRequest, messages: string[], originalText = request.query, suppliedCondition?: string, suppliedLocation?: string): Promise<void> {
-  const p: PendingSellIntake = { step:"details", description:request.query, reference:extractReference(request.query), condition:suppliedCondition, location:suppliedLocation };
+async function startSellIntake(state: ConversationState, request: ItemRequest, messages: string[], originalText = request.query, imageUrl?: string, suppliedCondition?: string, suppliedLocation?: string): Promise<void> {
+  const p: PendingSellIntake = { step:"details", description:request.query, reference:extractReference(request.query), condition:suppliedCondition, location:suppliedLocation, imageUrl };
   applySellSlots(p, originalText); state.pendingSellIntake=p; messages.push(nextSell(p) ?? sellSummary(p));
 }
 
@@ -751,10 +753,12 @@ async function persistSellIntake(state: ConversationState, pending: PendingSellI
  *  ingestDirectSellPosting) — the acknowledgment reflects whether that immediate search actually
  *  found a live buyer, rather than a blanket "not wired up yet" caveat. */
 async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<void> {
-  const p=state.pendingSellIntake!; if(imageUrl)p.imageUrl=imageUrl;
-  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const {matchesFound}=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,reference:p.reference,price:p.price!,condition:p.condition,location:p.location,imageUrl:p.imageUrl}); messages.push(matchesFound?`Your listing is active. I found ${matchesFound} potential buyer${matchesFound===1?"":"s"}.`:"Your listing is active. I'll keep monitoring for a qualifying buyer."); state.pendingSellIntake=undefined; return; }
+  const p=state.pendingSellIntake!; const suppliedPhoto = Boolean(imageUrl); if(imageUrl)p.imageUrl=imageUrl;
+  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const {matchesFound}=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,imageUrl:p.imageUrl}); messages.push(matchesFound?`Your listing is active. I found ${matchesFound} potential buyer${matchesFound===1?"":"s"}.`:"Your listing is active. I'll keep monitoring for a qualifying buyer."); state.pendingSellIntake=undefined; return; }
+  const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
+  if (skippedPhoto) p.photoSkipped = true;
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your listing draft open."); messages.push(nextSell(p)??sellSummary(p)); return; }
-  const changed=applySellSlots(p,text);
+  const changed=applySellSlots(p,text) || suppliedPhoto || skippedPhoto;
   if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
   else if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open."); }
   messages.push(nextSell(p)??sellSummary(p));
@@ -762,7 +766,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
 
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingBuyIntake!;
-  if(p.step==="confirm" && confirmed(text)){ const {matchesFound}=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,reference:p.reference,price:p.budget!,condition:p.condition,location:p.location}); messages.push(matchesFound?`Your request is active. I found ${matchesFound} potential listing${matchesFound===1?"":"s"}.`:"Your request is active. I'll keep monitoring for matching inventory."); state.pendingBuyIntake=undefined; return; }
+  if(p.step==="confirm" && confirmed(text)){ const {matchesFound}=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(matchesFound?`Your request is active. I found ${matchesFound} potential listing${matchesFound===1?"":"s"}.`:"Your request is active. I'll keep monitoring for matching inventory."); state.pendingBuyIntake=undefined; return; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const changed=applyBuySlots(p,text);
   if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
@@ -1118,7 +1122,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   // only the completion handler is allowed to run matching. This also keeps seller fields out
   // of the buyer-preference interview entirely.
   if (parsed[0].action === "sell") {
-    await startSellIntake(state, parsed[0], messages, text);
+    await startSellIntake(state, parsed[0], messages, text, imageUrl);
     saveState(state);
     return { state, messages };
   }

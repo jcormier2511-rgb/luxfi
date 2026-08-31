@@ -81,8 +81,10 @@ test("required: seller details are collected, summarized, and only saved after c
   await handleIncomingMessage(phone, "It's a Rolex Submariner 116610LV");
   await handleIncomingMessage(phone, "$14,500");
   await handleIncomingMessage(phone, "pre-owned");
-  const summary = await handleIncomingMessage(phone, "USA");
-  assert.match(summary.messages.join("\n"), /Should I start monitoring\?/);
+  const photoPrompt = await handleIncomingMessage(phone, "USA");
+  assert.match(photoPrompt.messages.join("\n"), /attach a photo/i);
+  const summary = await handleIncomingMessage(phone, "skip");
+  assert.match(summary.messages.join("\n"), /Photo: none.*Should I start monitoring\?/);
   assert.ok(summary.state.pendingSellIntake, "summary is still an unsaved draft");
   const confirmed = await handleIncomingMessage(phone, "yes");
   assert.match(confirmed.messages.join("\n"), /listing is active/i);
@@ -94,7 +96,7 @@ test("photo remains optional and can be attached before confirmation", async (t)
   await handleIncomingMessage(phone, "hi");
   await handleIncomingMessage(phone, "FS Patek 5711/1A $85,000 pre-owned in USA");
   const withPhoto = await handleIncomingMessage(phone, "here it is", undefined, "https://cdn.example/patek.jpg");
-  assert.match(withPhoto.messages.at(-1)!, /Should I start monitoring\?/);
+  assert.match(withPhoto.messages.at(-1)!, /Photo: attached.*Should I start monitoring\?/);
   assert.equal(withPhoto.state.pendingSellIntake?.imageUrl, "https://cdn.example/patek.jpg");
 });
 
@@ -104,8 +106,10 @@ test("required: confirmation creates a direct FS posting and immediately matches
   await ingestAndMatch({ platform:"whatsapp", chatId:"group-1", messageId:"wtb-direct-1", senderIdentity:"19991110000", text:"WTB Rolex Submariner 116610LV budget $16,000" });
   sent.length=0;
   await handleIncomingMessage(phone, "hi");
-  const summary = await handleIncomingMessage(phone, "FS Rolex Submariner 116610LV pre-owned in USA for $14,500");
-  assert.match(summary.messages.at(-1)!, /Should I start monitoring\?/);
+  const photoPrompt = await handleIncomingMessage(phone, "FS Rolex Submariner 116610LV pre-owned in USA for $14,500");
+  assert.match(photoPrompt.messages.at(-1)!, /attach a photo/i);
+  const summary = await handleIncomingMessage(phone, "no photo");
+  assert.match(summary.messages.at(-1)!, /Photo: none.*Should I start monitoring\?/);
   assert.equal(sent.length, 0, "no match notification before confirmation");
   const confirmed = await handleIncomingMessage(phone, "yes");
   assert.match(confirmed.messages.join("\n"), /listing is active.*found 1 potential buyer/i);

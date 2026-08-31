@@ -62,13 +62,19 @@ test("setPlan assigns a tier; setPlan(phone, null) clears it back to no plan", a
   const phone = "15554444444";
 
   await setPlan(phone, "tier1");
-  assert.equal((await getEntitlement(phone)).plan, "tier1");
+  const paid = await getEntitlement(phone);
+  assert.equal(paid.plan, "tier1");
+  assert.equal(paid.paymentAuthorized, true);
+  assert.equal(paid.paymentStatus, "active");
 
   await setPlan(phone, "tier2");
   assert.equal((await getEntitlement(phone)).plan, "tier2", "reassigning a plan overwrites the previous one");
 
   await setPlan(phone, null);
-  assert.equal((await getEntitlement(phone)).plan, null);
+  const inactive = await getEntitlement(phone);
+  assert.equal(inactive.plan, null);
+  assert.equal(inactive.paymentAuthorized, false);
+  assert.equal(inactive.paymentStatus, "inactive");
 });
 
 test("weeklyLimitFor: flat-fee tiers cap the week; tier3 and the legacy override are unlimited; no plan is locked", async () => {
@@ -86,4 +92,14 @@ test("weeklyLimitFor: flat-fee tiers cap the week; tier3 and the legacy override
     null,
     "an override takes precedence over a lower-tier plan"
   );
+});
+
+test("admin plan assignment creates briefing-eligible paid state; requested and cleared states remain ineligible", async () => {
+  const { isMarketUpdateEligible } = require("../marketUpdates") as typeof import("../marketUpdates");
+  await _resetDbForTests();
+  const phone = "15556667777";
+  await recordBillingRequested(phone);
+  assert.equal(isMarketUpdateEligible(await getEntitlement(phone)), false, "requested is unpaid");
+  assert.equal(isMarketUpdateEligible(await setPlan(phone, "tier2")), true, "admin-authorized paid membership is eligible");
+  assert.equal(isMarketUpdateEligible(await setPlan(phone, null)), false, "cleared membership is inactive");
 });
