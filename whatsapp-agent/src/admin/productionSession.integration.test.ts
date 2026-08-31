@@ -24,7 +24,6 @@ let baseUrl="";
 
 before(async()=>{
   await adminStore.initAdminSchema();
-  await database.query("DELETE FROM administrator_password_resets");
   await database.query("DELETE FROM admin_audit_log");
   await database.query("DELETE FROM admin_login_attempts");
   await database.query("DELETE FROM administrators");
@@ -36,7 +35,6 @@ before(async()=>{
 after(async()=>{
   await new Promise<void>(resolve=>server.close(()=>resolve()));
   await database.end();
-  await adminStore._closeAdminPoolForTests();
 });
 
 test("production login survives Railway HTTPS proxy redirect and grants GET /admin access",async()=>{

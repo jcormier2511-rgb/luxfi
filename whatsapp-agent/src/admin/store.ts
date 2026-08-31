@@ -13,9 +13,8 @@ export const USER_CSV_SAMPLE = `${USER_CSV_HEADER}\n13055551234,Marco D.,Marco W
 let pool: Pool | null = null;
 let adminSchemaReady: Promise<void> | null = null;
 const db = () => pool ??= new Pool({ connectionString: config.database.url });
-// pg returns BIGSERIAL values as strings to avoid silently losing precision. Administrator IDs
-// are well inside Number's safe range, and sessions deliberately require an integer ID, so
-// normalize at this boundary rather than signing a string that readAdministratorSession rejects.
+// pg returns BIGSERIAL values as strings. Sessions require an integer administrator ID, so
+// normalize it at the database boundary before signing it into the production session cookie.
 const publicAdmin = (r:any): Administrator => ({ id:Number(r.id), name:r.name, username:r.username, email:r.email, role:r.role, status:r.status, last_login_at:r.last_login_at?.toISOString?.() ?? r.last_login_at, created_at:r.created_at?.toISOString?.() ?? r.created_at, updated_at:r.updated_at?.toISOString?.() ?? r.updated_at });
 export function normalizePhone(value:string):string { const phone=value.replace(/[^0-9]/g,""); if (!/^[1-9][0-9]{7,14}$/.test(phone)) throw new Error("phone must contain 8-15 digits including country code"); return phone; }
 export async function hashPassword(password:string):Promise<string> { if(password.length<12) throw new Error("password must be at least 12 characters"); return bcrypt.hash(password,12); }
@@ -26,8 +25,6 @@ async function createAdminSchema():Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS administrators_username_ci ON administrators(lower(username)); CREATE UNIQUE INDEX IF NOT EXISTS administrators_email_ci ON administrators(lower(email));
     CREATE TABLE IF NOT EXISTS admin_audit_log (id BIGSERIAL PRIMARY KEY,administrator_id BIGINT REFERENCES administrators(id) ON DELETE SET NULL,administrator_label TEXT NOT NULL,action TEXT NOT NULL,target_type TEXT NOT NULL,target_id TEXT,metadata JSONB NOT NULL DEFAULT '{}',created_at TIMESTAMPTZ NOT NULL DEFAULT now());
     CREATE TABLE IF NOT EXISTS admin_login_attempts (id BIGSERIAL PRIMARY KEY,identifier_hash TEXT NOT NULL,ip_hash TEXT NOT NULL,succeeded BOOLEAN NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now()); CREATE INDEX IF NOT EXISTS admin_login_attempts_recent ON admin_login_attempts(identifier_hash,ip_hash,created_at);
-    CREATE TABLE IF NOT EXISTS administrator_password_resets (id BIGSERIAL PRIMARY KEY,administrator_id BIGINT NOT NULL REFERENCES administrators(id) ON DELETE CASCADE,token_hash TEXT NOT NULL UNIQUE,requested_ip_hash TEXT NOT NULL,expires_at TIMESTAMPTZ NOT NULL,used_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
-    CREATE INDEX IF NOT EXISTS administrator_password_resets_recent ON administrator_password_resets(administrator_id,created_at);
     CREATE TABLE IF NOT EXISTS approved_users (id BIGSERIAL PRIMARY KEY,phone TEXT NOT NULL UNIQUE,name TEXT NOT NULL,company TEXT,email TEXT,tier TEXT,specialty TEXT,wf_profile_id TEXT,membership_status TEXT,subscription_status TEXT,access_status TEXT NOT NULL DEFAULT 'active' CHECK(access_status IN ('active','inactive','blocked')),trial_limit INTEGER NOT NULL DEFAULT 3 CHECK(trial_limit>=0),trial_approvals_used INTEGER NOT NULL DEFAULT 0 CHECK(trial_approvals_used>=0),complimentary_access BOOLEAN NOT NULL DEFAULT false,opt_in_status TEXT,opt_in_source TEXT,opt_in_at TIMESTAMPTZ,last_interaction_at TIMESTAMPTZ,notes TEXT,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
     CREATE TABLE IF NOT EXISTS approved_groups (id BIGSERIAL PRIMARY KEY,group_name TEXT NOT NULL,whatsapp_chat_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive')),monitoring_enabled BOOLEAN NOT NULL DEFAULT false,concierge_enabled BOOLEAN NOT NULL DEFAULT false,categories TEXT[] NOT NULL DEFAULT '{}',country TEXT,timezone TEXT,last_message_at TIMESTAMPTZ,last_posting_at TIMESTAMPTZ,member_count INTEGER CHECK(member_count>=0),notes TEXT,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
   `);
@@ -74,39 +71,6 @@ export async function saveAdministrator(actor:Administrator,input:any,id?:number
 }
 export async function resetAdministratorPassword(actor:Administrator,id:number,password:string){if(actor.role!=="owner")throw new Error("owner role required");await db().query("UPDATE administrators SET password_hash=$1,updated_at=now() WHERE id=$2",[await hashPassword(password),id]);await audit(actor,"administrator.password_reset","administrator",String(id));}
 
-export async function createPasswordReset(email:string,ip:string):Promise<{token:string;administrator:Administrator}|null>{
-  await initAdminSchema();
-  const result=await db().query("SELECT * FROM administrators WHERE lower(email)=lower($1) AND status='active'",[email.trim()]);
-  if(!result.rows[0])return null;
-  const administrator=publicAdmin(result.rows[0]);
-  const recent=Number((await db().query("SELECT count(*) n FROM administrator_password_resets WHERE administrator_id=$1 AND created_at>now()-interval '1 hour'",[administrator.id])).rows[0].n);
-  if(recent>=3)return null;
-  const token=crypto.randomBytes(32).toString("base64url");
-  const tokenHash=crypto.createHash("sha256").update(token).digest("hex");
-  const ipHash=crypto.createHash("sha256").update(ip).digest("hex");
-  await db().query("UPDATE administrator_password_resets SET used_at=now() WHERE administrator_id=$1 AND used_at IS NULL",[administrator.id]);
-  await db().query("INSERT INTO administrator_password_resets(administrator_id,token_hash,requested_ip_hash,expires_at) VALUES($1,$2,$3,now()+interval '30 minutes')",[administrator.id,tokenHash,ipHash]);
-  await audit(null,"administrator.password_reset_requested","administrator",String(administrator.id),{ipHash});
-  return{token,administrator};
-}
-
-export async function consumePasswordReset(token:string,password:string):Promise<boolean>{
-  await initAdminSchema();
-  const tokenHash=crypto.createHash("sha256").update(token).digest("hex");
-  const client=await db().connect();
-  try{
-    await client.query("BEGIN");
-    const reset=(await client.query("SELECT * FROM administrator_password_resets WHERE token_hash=$1 AND used_at IS NULL AND expires_at>now() FOR UPDATE",[tokenHash])).rows[0];
-    if(!reset){await client.query("ROLLBACK");return false;}
-    await client.query("UPDATE administrators SET password_hash=$1,updated_at=now() WHERE id=$2",[await hashPassword(password),reset.administrator_id]);
-    await client.query("UPDATE administrator_password_resets SET used_at=now() WHERE id=$1",[reset.id]);
-    await client.query("COMMIT");
-    const admin=await getAdministrator(Number(reset.administrator_id));
-    await audit(admin,"administrator.password_reset_completed","administrator",String(reset.administrator_id));
-    return true;
-  }catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}
-}
-
 const allowedUserFields=["phone","name","company","email","tier","specialty","wf_profile_id","membership_status","subscription_status","access_status","trial_limit","complimentary_access","opt_in_status","opt_in_source","notes"];
 export async function listUsers(q="",status="",page=1,limit=25){const values:any[]=[];let where="WHERE 1=1";if(q){values.push(`%${q}%`);where+=` AND (phone ILIKE $${values.length} OR name ILIKE $${values.length} OR company ILIKE $${values.length})`;}if(status){values.push(status);where+=` AND access_status=$${values.length}`;}values.push(limit,(page-1)*limit);const rows=(await db().query(`SELECT * FROM approved_users ${where} ORDER BY created_at DESC LIMIT $${values.length-1} OFFSET $${values.length}`,values)).rows;const count=Number((await db().query(`SELECT count(*) n FROM approved_users ${where}`,values.slice(0,-2))).rows[0].n);return{rows,count,page,limit}}
 export async function saveUser(actor:Administrator,input:any,id?:number){const phone=normalizePhone(String(input.phone));if(!String(input.name??"").trim())throw new Error("name required");const values=allowedUserFields.map(f=>f==='phone'?phone:f==='trial_limit'?Number(input[f]??3):f==='complimentary_access'?input[f]===true||input[f]==='true':input[f]||null);let row;if(id){values.push(id);row=(await db().query(`UPDATE approved_users SET ${allowedUserFields.map((f,i)=>`${f}=$${i+1}`).join(',')},updated_at=now() WHERE id=$${values.length} RETURNING *`,values)).rows[0]}else row=(await db().query(`INSERT INTO approved_users(${allowedUserFields.join(',')}) VALUES(${values.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`,values)).rows[0];await audit(actor,id?"user.updated":"user.created","approved_user",String(row.id));return row}
@@ -125,10 +89,4 @@ export async function isPostingMonitoringEnabled(posting:{source_type:string;sou
     ? isApprovedMonitoringGroup(posting.source_chat_id)
     : config.postingsV4.allowedChatIds.includes(posting.source_chat_id)
       || (process.env.NODE_ENV !== "production" && config.postingsV4.allowedChatIds.includes("*"));
-}
-
-export async function _closeAdminPoolForTests():Promise<void>{
-  if(pool)await pool.end();
-  pool=null;
-  adminSchemaReady=null;
 }
