@@ -37,3 +37,71 @@ test("FS preserves parsed price/reference and never asks buyer price-range langu
  assert.equal(r.state.pendingSellIntake?.price,28500); assert.equal(r.state.pendingSellIntake?.reference,"116500LN");
  assert.doesNotMatch(r.messages.join("\n"),/price range|searching now|external .*disabled/i);
 });
+
+test("WTB confirmation boundary saves the corrected draft exactly once", async (t) => {
+  const phone = "15550002005";
+  resetState(phone);
+  const ingest = require("../postings/ingest") as typeof import("../postings/ingest");
+  const saved: import("../postings/postingsStore").DirectSellPostingInput[] = [];
+  t.mock.method(ingest, "ingestDirectBuyPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => {
+    saved.push(input);
+    return { matchesFound: 0 };
+  });
+
+  const summary = await handleIncomingMessage(phone, "WTB Rolex 116500LN white dial pre-owned in the US for $28,000");
+  assert.match(summary.messages.at(-1)!, /Should I start monitoring\?/);
+  assert.equal(saved.length, 0, "a complete summarized request must remain a draft");
+  assert.ok(summary.state.pendingBuyIntake, "draft remains pending before confirmation");
+
+  const correction = await handleIncomingMessage(phone, "Actually make the budget $30,000 and condition new");
+  assert.equal(saved.length, 0, "a correction at confirmation must not activate the request");
+  assert.match(correction.messages.at(-1)!, /new.*maximum \$30,000.*Should I start monitoring\?/);
+  assert.equal(correction.state.pendingBuyIntake?.budget, 30000);
+  assert.equal(correction.state.pendingBuyIntake?.condition, "new");
+
+  const confirmed = await handleIncomingMessage(phone, "yes");
+  assert.equal(saved.length, 1, "confirmation activates exactly one request");
+  assert.deepEqual(saved[0], {
+    phone,
+    senderName: undefined,
+    description: "Rolex 116500LN white dial pre-owned in the US for $28,000",
+    reference: "116500LN",
+    price: 30000,
+    condition: "new",
+    location: "US",
+  });
+  assert.equal(confirmed.state.pendingBuyIntake, undefined);
+  assert.match(confirmed.messages[0], /request is active/i);
+});
+
+test("FS confirmation boundary persists and activates every parsed field exactly once", async (t) => {
+  const phone = "15550002006";
+  resetState(phone);
+  const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
+  const ingest = require("../postings/ingest") as typeof import("../postings/ingest");
+  const inventoryWrites: Parameters<typeof inventory.upsertListings>[0][] = [];
+  const activations: import("../postings/postingsStore").DirectSellPostingInput[] = [];
+  t.mock.method(inventory, "upsertListings", async (rows: Parameters<typeof inventory.upsertListings>[0]) => { inventoryWrites.push(rows); });
+  t.mock.method(ingest, "ingestDirectSellPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => { activations.push(input); return { matchesFound: 0 }; });
+
+  const summary = await handleIncomingMessage(phone, "FS Rolex 116500LN black dial unworn in Canada for 28500");
+  assert.match(summary.messages.at(-1)!, /Should I start monitoring\?/);
+  assert.equal(inventoryWrites.length, 0, "summary must not persist inventory");
+  assert.equal(activations.length, 0, "summary must not activate or match the listing");
+
+  const correction = await handleIncomingMessage(phone, "Actually condition pre-owned and price $29,000");
+  assert.equal(inventoryWrites.length, 0);
+  assert.equal(activations.length, 0, "correction requires a fresh confirmation");
+  assert.match(correction.messages.at(-1)!, /pre-owned.*asking \$29,000.*Should I start monitoring\?/);
+
+  await handleIncomingMessage(phone, "yes");
+  assert.equal(inventoryWrites.length, 1, "confirmed seller inventory is persisted once");
+  assert.equal(activations.length, 1, "confirmed FS posting is activated/matched once");
+  assert.equal(inventoryWrites[0][0].ref, "116500LN");
+  assert.equal(inventoryWrites[0][0].price, "29000");
+  assert.equal(inventoryWrites[0][0].condition, "pre-owned");
+  assert.equal(inventoryWrites[0][0].location, "Canada");
+  assert.equal(activations[0].price, 29000);
+  assert.equal(activations[0].condition, "pre-owned");
+  assert.equal(activations[0].location, "Canada");
+});
