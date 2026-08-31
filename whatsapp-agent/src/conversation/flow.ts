@@ -10,6 +10,7 @@ import { recordBillingRequested } from "../billing/entitlementStore";
 import { MEMBERSHIP_PLANS } from "../billing/plans";
 import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, getApprovedMatchesSummary } from "../postings/approvalUsage";
 import { getOrCreateCanonicalUser } from "../postings/identity";
+import { platformForIdentity } from "../channels/identity";
 import { getActivePostingsForUser } from "../postings/postingsStore";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
@@ -254,7 +255,7 @@ function formatPendingListingsSummary(state: ConversationState): string {
  *  group-chat WTB/FS messages persist an actual monitored posting; a plain search is a one-off
  *  lookup against live inventory, not something Fi is actively watching on your behalf. */
 async function formatMyListingsSummary(phone: string): Promise<string> {
-  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
   const postings = await getActivePostingsForUser(canonicalUserId);
   if (postings.length === 0) return "You don't have any active WTB or FS listings being monitored right now.";
   const lines = postings.map((p, i) => {

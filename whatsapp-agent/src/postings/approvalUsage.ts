@@ -1,5 +1,6 @@
 import { withSchema } from "./db";
 import { getOrCreateCanonicalUser } from "./identity";
+import { platformForIdentity } from "../channels/identity";
 import { getEntitlement, Entitlement } from "../billing/entitlementStore";
 import { weeklyLimitFor, PlanKey } from "../billing/plans";
 import { config } from "../config";
@@ -52,7 +53,7 @@ export async function getWeeklyApprovalCount(client: QueryClient, canonicalUserI
 /** Live snapshot of one phone's approval usage — the read side used for "status" display and
  *  by v3's flow.ts (which has no surrounding transaction of its own to reuse). */
 export async function getApprovalUsage(phone: string): Promise<ApprovalUsageSnapshot> {
-  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
   const entitlement = await getEntitlement(phone);
   return withSchema(async (pool) => {
     const userResult = await pool.query(`SELECT total_approved_count FROM canonical_users WHERE id=$1`, [canonicalUserId]);
@@ -166,7 +167,7 @@ export interface ApprovedMatchSummary {
 
 /** "My approved matches" — see conversation/flow.ts's "listings" command. Most recent first. */
 export async function getApprovedMatchesSummary(phone: string, limit = 20): Promise<ApprovedMatchSummary[]> {
-  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
   return withSchema(async (pool) => {
     const result = await pool.query(
       `SELECT listing_description, counterpart_name, counterpart_phone, created_at

@@ -2,7 +2,11 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { config, isConciergeAdminPhone } from "./config";
-import { extractIncomingMessages, IncomingWebhook, sendText } from "./whapi/client";
+import { extractIncomingMessages, IncomingWebhook } from "./whapi/client";
+import { sendText, NormalizedIncomingMessage } from "./channels";
+import { platformForIdentity } from "./channels/identity";
+import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
+import { verifyTwilioSignature, extractIncomingMessage as extractSmsMessage } from "./channels/sms";
 import { alreadyProcessed, getState, resetState, markPendingEscrowOffer } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
@@ -101,7 +105,7 @@ export async function tryHandleDirectPostingDecision(phone: string, text: string
   if (!m) return null;
   const matchId = parseInt(m[2], 10);
 
-  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
   const mine = await getOwnPostingForMatch(matchId, canonicalUserId);
   if (!mine || mine.source_type !== "direct") return null; // not a direct-sourced decision
 
@@ -131,7 +135,7 @@ export async function tryHandleV4Extend(phone: string, text: string): Promise<st
   if (!m) return null;
   const postingId = parseInt(m[1], 10);
 
-  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
   const posting = await getPosting(postingId);
   if (!posting || posting.canonical_user_id !== canonicalUserId) return null;
 
@@ -140,11 +144,15 @@ export async function tryHandleV4Extend(phone: string, text: string): Promise<st
   return `Renewed — active for 15 more days.`;
 }
 
-/** Processes the payload received by the live /webhook route after its immediate ACK. */
-export async function handleWebhookPayload(body: IncomingWebhook): Promise<void> {
-  const incoming = extractIncomingMessages(body).filter((m) => !alreadyProcessed(m.id));
+/**
+ * Channel-agnostic per-message pipeline, shared by every webhook route (WhatsApp, Telegram,
+ * SMS — see channels/). Each channel's own route parses its provider's raw payload into this
+ * same normalized shape (channels/types.ts's NormalizedIncomingMessage) before calling this.
+ */
+export async function processIncomingMessages(incoming: NormalizedIncomingMessage[]): Promise<void> {
+  const filtered = incoming.filter((m) => !alreadyProcessed(m.id));
 
-  for (const message of incoming) {
+  for (const message of filtered) {
     try {
       if (message.isGroup) {
         await handleGroupMessage(message.id, message.groupId!, message.phone, message.senderName, message.text, message.imageUrl);
@@ -170,6 +178,11 @@ export async function handleWebhookPayload(body: IncomingWebhook): Promise<void>
       console.error(`[webhook] failed handling message from ${message.phone}:`, err);
     }
   }
+}
+
+/** Processes the payload received by the live /webhook (WhatsApp) route after its immediate ACK. */
+export async function handleWebhookPayload(body: IncomingWebhook): Promise<void> {
+  await processIncomingMessages(extractIncomingMessages(body));
 }
 
 export function createServer() {
@@ -273,6 +286,52 @@ export function createServer() {
     res.status(200).json({ ok: true });
 
     await handleWebhookPayload(req.body as IncomingWebhook);
+  });
+
+  // Telegram Bot API webhook receiver. Register via a one-time
+  // `POST https://api.telegram.org/bot<token>/setWebhook` call with
+  // url=<this deployment>/webhook/telegram and secret_token=TELEGRAM_WEBHOOK_SECRET — Telegram
+  // then echoes that secret back on every call in X-Telegram-Bot-Api-Secret-Token, which is how
+  // this route authenticates inbound updates (Telegram has no HMAC-signed body). Fails closed
+  // (503) while TELEGRAM_WEBHOOK_SECRET is unset, same posture as every other channel here.
+  app.post("/webhook/telegram", async (req, res) => {
+    if (!config.channels.telegram.webhookSecret) {
+      return res.status(503).json({ error: "TELEGRAM_WEBHOOK_SECRET is not configured" });
+    }
+    if (!verifyTelegramSecret(req.header("x-telegram-bot-api-secret-token"))) {
+      return res.sendStatus(401);
+    }
+    res.sendStatus(200);
+    try {
+      const messages = await extractTelegramMessages(req.body);
+      await processIncomingMessages(messages);
+    } catch (err) {
+      console.error("[webhook/telegram] failed handling update:", err);
+    }
+  });
+
+  // Twilio SMS/MMS webhook receiver. Configure this URL as the number's "A message comes in"
+  // webhook in the Twilio console. Verifies X-Twilio-Signature before processing anything —
+  // fails closed (503) while TWILIO_AUTH_TOKEN is unset. Twilio expects an immediate response;
+  // an empty TwiML body acknowledges without an auto-reply, since Fi replies via the separate
+  // channels/sms.ts REST call instead.
+  app.post("/webhook/sms", express.urlencoded({ extended: false }), async (req, res) => {
+    if (!config.channels.sms.authToken) {
+      return res.status(503).json({ error: "TWILIO_AUTH_TOKEN is not configured" });
+    }
+    const url = config.channels.sms.webhookBaseUrl
+      ? `${config.channels.sms.webhookBaseUrl.replace(/\/$/, "")}${req.originalUrl}`
+      : `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+    if (!verifyTwilioSignature(url, req.body, req.header("x-twilio-signature"))) {
+      return res.sendStatus(401);
+    }
+    res.status(200).type("text/xml").send("<Response></Response>");
+    try {
+      const message = extractSmsMessage(req.body);
+      if (message) await processIncomingMessages([message]);
+    } catch (err) {
+      console.error("[webhook/sms] failed handling message:", err);
+    }
   });
 
   // Manual trigger to kick off the Tier A/B blast over HTTP instead of the CLI script.

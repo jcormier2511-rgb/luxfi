@@ -1,21 +1,25 @@
 import { withSchema, withTransaction } from "./db";
 import { getOrCreateCanonicalUser } from "./identity";
+import { platformForIdentity } from "../channels/identity";
 import { PostingRow, getPrimaryImageUrl } from "./postingsStore";
 import { recordNotificationFailure } from "./status";
 import { getEntitlement } from "../billing/entitlementStore";
 import { weeklyLimitFor, PlanKey } from "../billing/plans";
 import { getWeeklyApprovalCount, recordApprovalEvent, markApprovalRevealed } from "./approvalUsage";
-import { sendText } from "../whapi/client";
+import { sendText } from "../channels";
 import { config } from "../config";
 import { isPostingMonitoringEnabled } from "../admin/store";
 import { markPendingEscrowOffer } from "../conversation/stateStore";
 
+/**
+ * Not filtered by platform: a canonical user has exactly one linked identity in this MVP
+ * (see postings/identity.ts — no cross-platform merge UI yet), and that identity's own prefix
+ * (see channels/identity.ts) is what tells sendText (channels/index.ts) which channel to use —
+ * this lookup just needs to find it, whichever channel it's actually on.
+ */
 async function getPhoneForCanonicalUser(canonicalUserId: number): Promise<string | null> {
   return withSchema(async (pool) => {
-    const result = await pool.query(
-      `SELECT identity FROM linked_identities WHERE canonical_user_id=$1 AND platform='whatsapp' LIMIT 1`,
-      [canonicalUserId]
-    );
+    const result = await pool.query(`SELECT identity FROM linked_identities WHERE canonical_user_id=$1 LIMIT 1`, [canonicalUserId]);
     return result.rows[0]?.identity ?? null;
   });
 }
@@ -147,7 +151,7 @@ export async function notifyMatch(matchId: number, revision: number): Promise<vo
 }
 
 export async function passMatch(matchId: number, phone: string): Promise<"passed" | "already_decided" | "invalid"> {
-  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
   return withSchema(async (pool) => {
     const matchRow = await pool.query(`SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id=$1`, [matchId]);
     if (matchRow.rows.length === 0) return "invalid";
@@ -252,7 +256,7 @@ async function getRecipientRow(
  * charge is never attempted; an admin assigns the plan (see src/billing/entitlementStore.ts).
  */
 export async function approveMatch(matchId: number, phone: string): Promise<ApprovalOutcome> {
-  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
   const entitlement = await getEntitlement(phone);
 
   const result = await withTransaction(async (client) => {

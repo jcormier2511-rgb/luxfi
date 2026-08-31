@@ -20,6 +20,29 @@ export const config = {
     token: process.env.WHAPI_TOKEN ?? "",
     baseUrl: process.env.WHAPI_BASE_URL ?? "https://gate.whapi.cloud",
   },
+  // Multi-channel scaffolding (src/channels/) alongside WhatsApp (above). Each stays inert
+  // until its own credentials are set — see channels/telegram.ts / channels/sms.ts's "skip the
+  // live call, log instead" fallback, same posture as an unset WHAPI_TOKEN.
+  channels: {
+    telegram: {
+      botToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
+      // Chosen by whoever registers the webhook (Bot API's setWebhook secret_token param), not
+      // issued by Telegram — any string works as long as it matches what setWebhook was called with.
+      webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
+      apiBaseUrl: process.env.TELEGRAM_API_BASE_URL ?? "https://api.telegram.org",
+    },
+    // Twilio, the most common SMS/MMS provider — swap channels/sms.ts's implementation later
+    // if a different one is chosen; nothing outside that file assumes Twilio specifically.
+    sms: {
+      accountSid: process.env.TWILIO_ACCOUNT_SID ?? "",
+      authToken: process.env.TWILIO_AUTH_TOKEN ?? "",
+      fromNumber: process.env.TWILIO_FROM_NUMBER ?? "",
+      apiBaseUrl: process.env.TWILIO_API_BASE_URL ?? "https://api.twilio.com",
+      // Only needed behind a proxy/load balancer where req.protocol/host don't reflect the
+      // public URL Twilio was configured with — required for X-Twilio-Signature verification.
+      webhookBaseUrl: process.env.TWILIO_WEBHOOK_BASE_URL ?? "",
+    },
+  },
   server: {
     port: Number(process.env.PORT ?? 3000),
     webhookToken: required("WEBHOOK_TOKEN", "change-me"),

@@ -3,7 +3,7 @@ import { config } from "./config";
 import { getState } from "./conversation/stateStore";
 import { withSchema } from "./postings/db";
 import { PostingRow } from "./postings/postingsStore";
-import { sendText } from "./whapi/client";
+import { sendText } from "./channels";
 import { getEntitlement } from "./billing/entitlementStore";
 
 export type MarketUpdatePeriod = "morning" | "afternoon";
@@ -223,7 +223,7 @@ async function eligibleRecipients(): Promise<RecipientRow[]> {
   return withSchema(async (pool) => {
     const result = await pool.query<RecipientRow>(
       `SELECT DISTINCT p.canonical_user_id, li.identity AS phone
-       FROM postings p JOIN linked_identities li ON li.canonical_user_id=p.canonical_user_id AND li.platform='whatsapp'
+       FROM postings p JOIN linked_identities li ON li.canonical_user_id=p.canonical_user_id
        WHERE p.status='active' AND p.expires_at > now() AND p.canonical_user_id IS NOT NULL`
     );
     const eligible: RecipientRow[] = [];

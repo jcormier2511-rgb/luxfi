@@ -1,7 +1,7 @@
 import { config } from "../config";
 import { Contact } from "../types";
 import { getTierABContacts } from "../data/contactsStore";
-import { sendBannerImage, sendText } from "../whapi/client";
+import { sendBannerImage, sendText } from "../channels";
 import { getState, saveState } from "../conversation/stateStore";
 import { readBlastStatus, writeBlastStatus } from "./status";
 import { openWatchFactsSession, WatchFactsSession, LatestListing } from "../watchfacts/scraper";

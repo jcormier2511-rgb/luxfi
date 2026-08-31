@@ -1,5 +1,6 @@
 import { withSchema } from "./db";
 import { getOrCreateCanonicalUser } from "./identity";
+import { platformForIdentity } from "../channels/identity";
 import { classifyText, normalizeText, PostingType } from "./normalize";
 
 export interface PostingRow {
@@ -183,7 +184,8 @@ export interface DirectSellPostingInput {
  * completion is its own new listing, never an in-place edit of a previous one.
  */
 export async function createDirectPosting(input: DirectSellPostingInput): Promise<PostingRow> {
-  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", input.phone);
+  const platform = platformForIdentity(input.phone);
+  const canonicalUserId = await getOrCreateCanonicalUser(platform, input.phone);
   const { brand } = normalizeText(input.description);
   const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
 
@@ -192,9 +194,10 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
       `INSERT INTO postings
          (source_platform, source_type, canonical_user_id, source_identity,
           type, original_text, brand, reference, price, currency, contact_name, contact_phone, status, expires_at)
-       VALUES ('whatsapp','direct',$1,$2,'FS',$3,$4,$5,$6,'USD',$7,$8,'active',$9)
+       VALUES ($1,'direct',$2,$3,'FS',$4,$5,$6,$7,'USD',$8,$9,'active',$10)
        RETURNING *`,
       [
+        platform,
         canonicalUserId,
         input.phone,
         input.description,

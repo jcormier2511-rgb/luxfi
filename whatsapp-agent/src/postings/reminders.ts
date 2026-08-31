@@ -1,5 +1,5 @@
 import { findPostingsNeedingReminder, claimReminderForPosting, PostingRow } from "./postingsStore";
-import { sendText } from "../whapi/client";
+import { sendText } from "../channels";
 import { config } from "../config";
 import { isPostingMonitoringEnabled } from "../admin/store";
 

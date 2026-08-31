@@ -8,7 +8,7 @@ import {
   DirectSellPostingInput,
 } from "./postingsStore";
 import { runImmediateMatch } from "./matching";
-import { sendText } from "../whapi/client";
+import { sendText } from "../channels";
 
 /**
  * Spec §4.1/§4.2: a new or materially-changed posting is immediately tested against every

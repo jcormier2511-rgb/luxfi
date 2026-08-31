@@ -1,4 +1,4 @@
-import { sendText, sendBannerImage } from "../whapi/client";
+import { sendText, sendBannerImage } from "../channels";
 import {
   getPhotoRequestRecord,
   markPhotoRequested,
