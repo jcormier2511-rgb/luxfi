@@ -21,6 +21,30 @@ WF inventory feed as a starting point), searches for counterparty matches, and g
 
 ## Setup
 
+### Administrator bootstrap (Railway)
+
+On the first deployment only, the empty `administrators` table is seeded from
+`ADMIN_INITIAL_NAME`, `ADMIN_INITIAL_USERNAME`, `ADMIN_INITIAL_EMAIL`, and
+`ADMIN_INITIAL_PASSWORD_HASH` (a bcrypt hash; never a plaintext password). Set a separate,
+high-entropy `ADMIN_SESSION_SECRET` for signed 12-hour browser sessions. After the owner exists,
+the bootstrap values are ignored and administrator management is available only to that owner.
+Keep `DATABASE_URL` configured as before. Do not put any of these values in source control.
+
+Email-based “Forgot password” recovery is disabled until `RESEND_API_KEY`,
+`ADMIN_PASSWORD_RESET_FROM_EMAIL` (a verified sender), and
+`ADMIN_PASSWORD_RESET_BASE_URL` (the public HTTPS service URL) are set. Reset links are
+single-use, expire after 30 minutes, and only a SHA-256 digest of each token is stored.
+
+Approved users and approved WhatsApp groups are stored additively in PostgreSQL. An active,
+monitored database group list becomes authoritative as soon as it has an entry;
+`V4_ALLOWED_CHAT_IDS` is only a fallback during migration and `*` is never honored by the
+database-backed production gate.
+
+The Approved Users page provides **Download CSV template**, **Download current users**, and
+**Import CSV** controls. A repository copy of the upload template is also available at
+`data/approved_users_template.csv`; fill its rows without changing the header names, then import
+it from the page. Imports with invalid rows offer a downloadable row-level error report.
+
 ```bash
 cd whatsapp-agent
 npm install

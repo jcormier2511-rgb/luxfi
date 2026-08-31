@@ -1,10 +1,11 @@
 import fs from "fs";
 import path from "path";
-import { config, isV4ChatEnabled } from "../config";
+import { config } from "../config";
 import { InventoryListing, ListingType } from "../types";
 import { ingestAndMatch } from "../postings/ingest";
 import { normalizeText, classifyText } from "../postings/normalize";
 import { enrichListingText } from "../ai/enrichment";
+import { isPostingMonitoringEnabled } from "../admin/store";
 
 const GROUP_LISTINGS_HEADER =
   "id,type,category,item,brand,ref,condition,price,location,contact_name,contact_phone,source,rating,description\n";
@@ -150,7 +151,10 @@ export async function handleGroupMessage(
   // either — the same gate covers ingestion, notification, and decision handling consistently.
   // appendGroupListing above (the existing v3 CSV capture) is unaffected either way, and never
   // sends a message itself, so this gate can never cause a duplicate ack/match card/intro.
-  if (!isV4ChatEnabled(groupId)) return;
+  // PostgreSQL is authoritative once any approved-group record exists. The env list remains a
+  // migration fallback only; its historical "*" value is never accepted in production.
+  const allowed = await isPostingMonitoringEnabled({ source_type: "chat", source_chat_id: groupId });
+  if (!allowed) return;
 
   try {
     await ingestAndMatch({

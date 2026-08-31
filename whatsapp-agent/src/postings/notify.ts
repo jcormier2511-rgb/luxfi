@@ -6,7 +6,8 @@ import { getEntitlement } from "../billing/entitlementStore";
 import { weeklyLimitFor, PlanKey } from "../billing/plans";
 import { getWeeklyApprovalCount, recordApprovalEvent, markApprovalRevealed } from "./approvalUsage";
 import { sendText } from "../whapi/client";
-import { config, isPostingChatEnabled } from "../config";
+import { config } from "../config";
+import { isPostingMonitoringEnabled } from "../admin/store";
 import { markPendingEscrowOffer } from "../conversation/stateStore";
 
 async function getPhoneForCanonicalUser(canonicalUserId: number): Promise<string | null> {
@@ -92,7 +93,7 @@ async function notifyOneRecipient(
   // must stop it from generating notifications immediately. Checked BEFORE the claim below so
   // nothing gets marked "notified" for a message that was never actually sent — if the group
   // becomes allowed again later, this stays retryable rather than permanently skipped.
-  if (!isPostingChatEnabled(self)) return;
+  if (!await isPostingMonitoringEnabled(self)) return;
 
   const claimed = await withSchema((pool) =>
     pool.query(
@@ -205,7 +206,7 @@ async function isOwnPostingChatEnabled(
   ]);
   const mine = result.rows.find((r) => r.canonical_user_id === canonicalUserId);
   if (!mine) return true;
-  return isPostingChatEnabled(mine);
+  return isPostingMonitoringEnabled(mine);
 }
 
 /** `lock` uses FOR UPDATE — only ever set true for the CALLER's own row, never the counterpart's, to avoid two concurrent approvals on the same match deadlocking on each other's rows. */

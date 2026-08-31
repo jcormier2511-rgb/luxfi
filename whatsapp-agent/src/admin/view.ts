@@ -51,7 +51,7 @@ ul.plain { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
 .full { grid-column: 1 / -1; }
 form.login { max-width: 340px; margin: 90px auto; padding: 26px; border: 1px solid #e2e4e8; border-radius: 10px; background: #fff; }
 form.login h1 { font-size: 15px; margin: 0 0 16px; font-weight: 600; }
-form.login input[type=password] { width: 100%; padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
+form.login input { width: 100%; padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
 form.login button, .card button { padding: 8px 14px; border-radius: 6px; border: 1px solid #d1d5db; background: #111827; color: #fff; font-size: 13px; cursor: pointer; }
 form.login button { width: 100%; }
 .error { color: #991b1b; font-size: 13px; margin-bottom: 12px; }
@@ -60,7 +60,7 @@ input[type=file] { font-size: 13px; margin-top: 8px; }
 footer { text-align: center; color: #9ca3af; font-size: 11px; padding: 10px 0 30px; }
 `;
 
-/** Never populates the input's `value` — the submitted token is never echoed back into any response. */
+/** Never repopulates credentials and always uses generic errors to avoid account discovery. */
 export function renderLoginPage(error?: string): string {
   return `<!doctype html>
 <html>
@@ -74,11 +74,29 @@ export function renderLoginPage(error?: string): string {
   <form class="login" method="post" action="/admin/login" autocomplete="off">
     <h1>LuxFi WhatsApp Agent — Admin</h1>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
-    <input type="password" name="token" placeholder="Admin token" autocomplete="off" autofocus required>
+    <input type="text" name="username" placeholder="Username" autocomplete="username" autofocus required>
+    <input type="password" name="password" placeholder="Password" autocomplete="current-password" required>
     <button type="submit">Sign in</button>
+    <p class="muted"><a href="/admin/forgot-password">Forgot password?</a></p>
   </form>
 </body>
 </html>`;
+}
+
+export function renderForgotPasswordPage(message?:string):string{return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi Admin — Forgot password</title><style>${PAGE_STYLES}</style></head><body><form class="login" method="post" action="/admin/forgot-password"><h1>Reset administrator password</h1>${message?`<div class="muted">${escapeHtml(message)}</div>`:""}<input type="email" name="email" placeholder="Administrator email" autocomplete="email" required><button type="submit">Email reset link</button><p class="muted"><a href="/admin">Return to sign in</a></p></form></body></html>`}
+
+export function renderResetPasswordPage(token:string,error?:string,success=false):string{return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi Admin — Reset password</title><style>${PAGE_STYLES}</style></head><body><form class="login" method="post" action="/admin/reset-password">${success?`<h1>Password updated</h1><p class="muted"><a href="/admin">Sign in</a></p>`:`<h1>Choose a new password</h1>${error?`<div class="error">${escapeHtml(error)}</div>`:""}<input type="hidden" name="token" value="${escapeHtml(token)}"><input type="password" name="password" placeholder="At least 12 characters" autocomplete="new-password" minlength="12" required><input type="password" name="password_confirmation" placeholder="Confirm password" autocomplete="new-password" minlength="12" required><button type="submit">Reset password</button>`}</form></body></html>`}
+
+export function renderManagementPage(kind:"users"|"groups"|"administrators"):string {
+  const title=kind==="users"?"Approved Users":kind==="groups"?"Approved Groups":"Administrators";
+  const empty=kind==="groups"?"No approved groups yet. Add the exact WhatsApp chat ID after the number is restored; wildcards are never accepted.":`No ${title.toLowerCase()} found.`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}.toolbar{display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin">Overview</a> · <a href="/admin/users">Users</a> · <a href="/admin/groups">Groups</a> · <a href="/admin/administrators">Administrators</a> · <a href="/admin/logout">Sign out</a></nav></header><main><section class="card"><div class="toolbar"><input id="q" placeholder="Search"><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select><button onclick="load()">Search</button>${kind==='users'?'<a download href="/admin/api/users/template.csv">Download CSV template</a> <a download href="/admin/api/users/export.csv">Download current users</a> <input type="file" id="csvFile" accept=".csv,text/csv"><button type="button" id="csvImport">Import CSV</button>':''}</div><div id="importResult" class="muted"></div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
+  const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='';
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  async function load(){const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));table.querySelector('thead').innerHTML='<tr>'+keys.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+'</tr>').join('')}
+  if(kind==='users')document.querySelector('#csvImport').addEventListener('click',async()=>{const file=document.querySelector('#csvFile').files[0],result=document.querySelector('#importResult');if(!file){result.textContent='Choose a CSV file first.';return}result.textContent='Importing…';const response=await fetch('/admin/api/users/import',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'text/csv','X-CSRF-Token':csrf},body:await file.text()});const body=await response.json();if(!response.ok){result.textContent='Import failed: '+(body.error||response.status);return}result.textContent='Added '+body.added+', updated '+body.updated+', skipped '+body.skipped+', errors '+body.errors.length+'.';if(body.errors.length){const csv='row,error\n'+body.errors.map(e=>e.row+',"'+String(e.error).replace(/"/g,'""')+'"').join('\n');const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));link.download='approved-users-import-errors.csv';link.textContent=' Download row-level error report';result.appendChild(link)}await load()});
+  load().catch(e=>document.querySelector('#error').textContent=e.message);
+  </script></body></html>`;
 }
 
 function renderWhapiCard(w: AdminDashboardData["whapi"]): string {
@@ -241,9 +259,10 @@ function renderContactsCard(contacts: AdminDashboardData["contacts"]): string {
         result.textContent = 'Uploading…';
         try {
           var text = await input.files[0].text();
+          var session = await fetch('/admin/api/session', { credentials: 'same-origin' }).then(function (r) { return r.json(); });
           var res = await fetch('/admin/panel/upload-contacts', {
             method: 'POST',
-            headers: { 'Content-Type': 'text/csv' },
+            headers: { 'Content-Type': 'text/csv', 'X-CSRF-Token': session.csrfToken },
             credentials: 'same-origin',
             body: text,
           });
