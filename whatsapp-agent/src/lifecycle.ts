@@ -39,9 +39,9 @@ export async function recordInboundActivity(identity:string, firstName?:string, 
   if(!["whatsapp","telegram"].includes(channel)) return;
   const userId=await getOrCreateCanonicalUser(channel,identity);
   await withSchema(db=>db.query(`INSERT INTO user_lifecycle(canonical_user_id,channel,identity,first_name,last_inbound_at,last_direct_inbound_at)
-    VALUES($1,$2,$3,$4,$5,CASE WHEN $6 THEN $5 ELSE NULL END) ON CONFLICT(canonical_user_id) DO UPDATE SET channel=excluded.channel,identity=excluded.identity,
+    VALUES($1,$2,$3,$4,$5::timestamptz,CASE WHEN $6::boolean THEN $5::timestamptz ELSE NULL::timestamptz END) ON CONFLICT(canonical_user_id) DO UPDATE SET channel=excluded.channel,identity=excluded.identity,
     first_name=COALESCE(excluded.first_name,user_lifecycle.first_name),last_inbound_at=GREATEST(user_lifecycle.last_inbound_at,excluded.last_inbound_at),
-    last_direct_inbound_at=CASE WHEN $6 THEN GREATEST(COALESCE(user_lifecycle.last_direct_inbound_at,$5),$5) ELSE user_lifecycle.last_direct_inbound_at END,updated_at=now()`,[userId,channel,identity,firstName?.trim().split(/\s+/)[0]||null,at,direct]));
+    last_direct_inbound_at=CASE WHEN $6::boolean THEN GREATEST(COALESCE(user_lifecycle.last_direct_inbound_at,$5::timestamptz),$5::timestamptz) ELSE user_lifecycle.last_direct_inbound_at END,updated_at=now()`,[userId,channel,identity,firstName?.trim().split(/\s+/)[0]||null,at,direct]));
 }
 
 async function claim(userId:number,kind:"morning_briefing"|"dormant",date:string):Promise<boolean>{
