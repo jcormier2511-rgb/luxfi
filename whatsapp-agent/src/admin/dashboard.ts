@@ -8,6 +8,7 @@ import { getV4OperationalStatus, V4OperationalStatus } from "../postings/status"
 import { getMarketUpdateDeliveryStatus, MarketUpdateDeliveryStatus } from "../marketUpdates";
 import { listDesignatedGroups, DesignatedGroup } from "../concierge/groupRegistry";
 import { getTierABContacts, loadContacts } from "../data/contactsStore";
+import { getAdminMetrics, AdminMetrics } from "./metrics";
 
 export interface AdminDashboardData {
   whapi: WhapiHealthResult;
@@ -69,6 +70,8 @@ export interface AdminDashboardData {
     startedAt: string;
     persistDirExists: boolean;
   };
+  metrics: AdminMetrics | null;
+  metricsError: string | null;
   generatedAt: string;
 }
 
@@ -153,6 +156,14 @@ export async function buildAdminDashboardData(): Promise<AdminDashboardData> {
     // see comment above
   }
 
+  let metrics: AdminMetrics | null = null;
+  let metricsError: string | null = null;
+  try {
+    metrics = await getAdminMetrics();
+  } catch (err) {
+    metricsError = (err as Error).message;
+  }
+
   return {
     whapi,
     database: { schemaReady, schemaError, host: dbSummary.host, databaseName: dbSummary.databaseName },
@@ -209,6 +220,8 @@ export async function buildAdminDashboardData(): Promise<AdminDashboardData> {
       // (not exported on `config` directly — see config.ts).
       persistDirExists: fs.existsSync(path.dirname(config.storageDir)),
     },
+    metrics,
+    metricsError,
     generatedAt: new Date().toISOString(),
   };
 }

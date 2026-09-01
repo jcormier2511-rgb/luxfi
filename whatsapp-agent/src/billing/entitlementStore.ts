@@ -136,6 +136,24 @@ export async function recordBillingRequested(phone: string): Promise<void> {
   );
 }
 
+/**
+ * Bulk, read-only fetch for the admin dashboard's membership metrics (see admin/metrics.ts) --
+ * a phone with no row is implicitly "no plan, no override" (getEntitlement's own default), so
+ * callers should treat a missing map entry the same as that default rather than needing every
+ * phone to have a row first. Deliberately does NOT use getEntitlement's insert-on-read
+ * behavior, which would otherwise litter account_entitlements with a row for every canonical
+ * user just from viewing the dashboard.
+ */
+export async function listAllEntitlements(): Promise<Map<string, Entitlement>> {
+  await ensureSchema();
+  const result = await getPool().query(`SELECT * FROM account_entitlements`);
+  const map = new Map<string, Entitlement>();
+  for (const row of result.rows as EntitlementRow[]) {
+    map.set(row.phone, rowToEntitlement(row));
+  }
+  return map;
+}
+
 /** Test-only escape hatch, mirroring inventoryDb.ts's pattern. */
 export async function _resetDbForTests(): Promise<void> {
   await getPool().query(`DROP TABLE IF EXISTS account_entitlements`);

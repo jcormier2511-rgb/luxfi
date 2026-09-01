@@ -117,12 +117,16 @@ test("GET /admin with a valid session renders read-only status for every require
   for (const heading of [
     "Whapi connectivity",
     "PostgreSQL / schema",
+    "Membership",
+    "Payments",
+    "Top requests",
     "Market updates",
     "V4 postings",
     "WatchFacts FS / WTB sync",
     "AI matching",
     "Deployment health",
     "Contacts CSV upload",
+    "Activity by user",
   ]) {
     assert.ok(html.includes(heading), `dashboard is missing required section: ${heading}`);
   }

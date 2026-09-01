@@ -12,6 +12,7 @@ import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, ge
 import { getOrCreateCanonicalUser } from "../postings/identity";
 import { platformForIdentity } from "../channels/identity";
 import { getActivePostingsForUser } from "../postings/postingsStore";
+import { logSearchRequest } from "../postings/analytics";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
@@ -321,6 +322,7 @@ export interface FlowResult {
 
 /** Runs a fresh search for `request`, showing Match Cards and arming them for approve/pass. */
 async function startSearch(state: ConversationState, request: ItemRequest, messages: string[]): Promise<void> {
+  await logSearchRequest(state.phone, request.action, request.query); // best-effort (catches its own errors internally)
   const hadExistingPending = Boolean(state.pendingMatches);
   // findMatchesHybrid only ever activates AI-assisted matching for the configured test phone
   // (see config.isAiMatchingEnabledForPhone) — every other contact gets exactly the plain

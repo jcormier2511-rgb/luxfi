@@ -278,6 +278,19 @@ async function ensureSchema(): Promise<void> {
         -- allowlist rollout controls 'chat' postings do.
         ALTER TABLE postings DROP CONSTRAINT IF EXISTS postings_source_type_check;
         ALTER TABLE postings ADD CONSTRAINT postings_source_type_check CHECK (source_type IN ('chat', 'api', 'direct'));
+
+        -- Admin dashboard "top requests" metric (src/postings/analytics.ts): one row per
+        -- resolved buy/sell search, logged best-effort from conversation/flow.ts's startSearch.
+        -- Tracking starts the moment this ships -- there is no historical backfill.
+        CREATE TABLE IF NOT EXISTS search_requests (
+          id SERIAL PRIMARY KEY,
+          phone TEXT NOT NULL,
+          action TEXT NOT NULL CHECK (action IN ('buy', 'sell')),
+          query TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS search_requests_recent ON search_requests (created_at DESC);
+        CREATE INDEX IF NOT EXISTS search_requests_by_phone ON search_requests (phone, created_at DESC);
         `
       )
       .then(() => undefined);
@@ -329,7 +342,8 @@ export async function _resetDbForTests(): Promise<void> {
   await getPool().query(`
     DROP TABLE IF EXISTS
       reconciliation_runs, postings_meta, billing_ledger, approvals, match_recipients, matches,
-      market_update_deliveries, posting_images, postings, linked_identities, canonical_users
+      market_update_deliveries, posting_images, postings, search_requests, linked_identities,
+      canonical_users
     CASCADE
   `);
   schemaReady = null;

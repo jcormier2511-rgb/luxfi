@@ -47,8 +47,10 @@ main { max-width: 1000px; margin: 0 auto; padding: 22px 28px 50px; display: grid
 .badge.ok { background: #dcfce7; color: #166534; }
 .badge.bad { background: #fee2e2; color: #991b1b; }
 .badge.unknown { background: #e5e7eb; color: #374151; }
-ul.plain { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+ul.plain, ol.plain { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
 .full { grid-column: 1 / -1; }
+.card table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.card th, .card td { text-align: left; padding: 5px 6px; border-bottom: 1px solid #e5e7eb; }
 form.login { max-width: 340px; margin: 90px auto; padding: 26px; border: 1px solid #e2e4e8; border-radius: 10px; background: #fff; }
 form.login h1 { font-size: 15px; margin: 0 0 16px; font-weight: 600; }
 form.login input { width: 100%; padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
@@ -272,6 +274,74 @@ function renderContactsCard(contacts: AdminDashboardData["contacts"]): string {
   </section>`;
 }
 
+function renderMembershipCard(metrics: AdminDashboardData["metrics"], metricsError: string | null): string {
+  if (!metrics) {
+    return `<section class="card">
+      <h2>Membership</h2>
+      ${badge("metrics", false)}
+      <dl><dt>Error</dt><dd>${escapeHtml(metricsError ?? "unknown error")}</dd></dl>
+    </section>`;
+  }
+  const m = metrics.membership;
+  return `<section class="card">
+    <h2>Membership</h2>
+    <dl>
+      <dt>Total users</dt><dd>${m.totalUsers}</dd>
+      <dt>Paid</dt><dd>${m.paid}</dd>
+      <dt>Trial (active)</dt><dd>${m.trial}</dd>
+      <dt>Non-paying (trial exhausted)</dt><dd>${m.nonPaying}</dd>
+      <dt>Canceled (approx.)</dt><dd>${m.canceledApprox}</dd>
+    </dl>
+    <p class="muted">"Canceled" is approximated: no live cancellation event is tracked anywhere yet, so this
+      counts accounts with no active plan that have approved at least one match before -- it can't
+      distinguish an actual downgrade from someone who simply never converted past their trial.</p>
+  </section>`;
+}
+
+function renderPaymentsCard(metrics: AdminDashboardData["metrics"]): string {
+  if (!metrics) return "";
+  const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+  return `<section class="card">
+    <h2>Payments</h2>
+    <dl>
+      <dt>Year to date</dt><dd>${fmt(metrics.payments.yearToDateCents)}</dd>
+      <dt>Current month</dt><dd>${fmt(metrics.payments.currentMonthCents)}</dd>
+    </dl>
+    <p class="muted">No live payment processor is wired up yet (see "Not yet wired up" in the README) --
+      every ledger entry is $0 by design. This will start reflecting real revenue automatically once one exists.</p>
+  </section>`;
+}
+
+function renderTopRequestsCard(metrics: AdminDashboardData["metrics"]): string {
+  if (!metrics) return "";
+  const rows = metrics.topRequests.length
+    ? `<ol class="plain">${metrics.topRequests.map((t) => `<li>${escapeHtml(t.query)} — ${t.count}</li>`).join("")}</ol>`
+    : `<p class="muted">No searches logged yet.</p>`;
+  return `<section class="card">
+    <h2>Top requests (last 30 days)</h2>
+    ${rows}
+    <p class="muted">Tracking started when this feature shipped -- no historical backfill.</p>
+  </section>`;
+}
+
+function renderActivityCard(metrics: AdminDashboardData["metrics"]): string {
+  if (!metrics) return "";
+  const rows = metrics.activityByUser.length
+    ? `<table><thead><tr><th>Phone</th><th>Searches</th><th>Approvals</th><th>Last active</th></tr></thead><tbody>${metrics.activityByUser
+        .map(
+          (a) =>
+            `<tr><td>${escapeHtml(a.phone)}</td><td>${a.searches}</td><td>${a.approvals}</td><td>${
+              a.lastActiveAt ? escapeHtml(a.lastActiveAt) : "—"
+            }</td></tr>`
+        )
+        .join("")}</tbody></table>`
+    : `<p class="muted">No user activity recorded yet.</p>`;
+  return `<section class="card full">
+    <h2>Activity by user (top 20, most recent first)</h2>
+    ${rows}
+  </section>`;
+}
+
 export function renderDashboard(data: AdminDashboardData): string {
   return `<!doctype html>
 <html>
@@ -289,12 +359,16 @@ export function renderDashboard(data: AdminDashboardData): string {
   <main>
     ${renderWhapiCard(data.whapi)}
     ${renderDatabaseCard(data.database)}
+    ${renderMembershipCard(data.metrics, data.metricsError)}
+    ${renderPaymentsCard(data.metrics)}
+    ${renderTopRequestsCard(data.metrics)}
     ${renderMarketUpdatesCard(data.marketUpdates)}
     ${renderPostingsV4Card(data.postingsV4)}
     ${renderWatchfactsCard(data.watchfacts)}
     ${renderAiMatchingCard(data.aiMatching)}
     ${renderDeploymentCard(data.deployment)}
     ${renderContactsCard(data.contacts)}
+    ${renderActivityCard(data.metrics)}
   </main>
   <footer>Read-only status — generated at ${escapeHtml(data.generatedAt)}. Only the contacts upload above changes anything.</footer>
 </body>

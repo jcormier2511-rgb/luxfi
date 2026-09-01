@@ -8,7 +8,8 @@ process.env.WEBHOOK_TOKEN = "test";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const entitlements = require("./entitlementStore") as typeof import("./entitlementStore");
-const { getEntitlement, setManualOverride, setPlan, recordBillingRequested, _resetDbForTests, _closePoolForTests } = entitlements;
+const { getEntitlement, setManualOverride, setPlan, recordBillingRequested, listAllEntitlements, _resetDbForTests, _closePoolForTests } =
+  entitlements;
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { weeklyLimitFor } = require("./plans") as typeof import("./plans");
 
@@ -75,6 +76,18 @@ test("setPlan assigns a tier; setPlan(phone, null) clears it back to no plan", a
   assert.equal(inactive.plan, null);
   assert.equal(inactive.paymentAuthorized, false);
   assert.equal(inactive.paymentStatus, "inactive");
+});
+
+test("listAllEntitlements only returns rows that actually exist, and never inserts one as a side effect", async () => {
+  await _resetDbForTests();
+  await setPlan("15555555555", "tier2");
+  // Never touched by getEntitlement/setPlan/etc. -- must simply be absent, not defaulted-and-inserted.
+  const untouchedPhone = "15556666666";
+
+  const map = await listAllEntitlements();
+  assert.equal(map.size, 1, "only the one real row should exist");
+  assert.equal(map.get("15555555555")?.plan, "tier2");
+  assert.equal(map.has(untouchedPhone), false, "a phone with no history must not appear, and must not have been inserted");
 });
 
 test("weeklyLimitFor: flat-fee tiers cap the week; tier3 and the legacy override are unlimited; no plan is locked", async () => {

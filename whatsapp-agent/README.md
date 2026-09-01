@@ -388,6 +388,24 @@ booleans like "configured" and non-secret operational values.
 https://<your-railway-domain>/admin
 ```
 
+### Membership & activity metrics
+
+The dashboard also includes:
+
+- **Membership** — total users, paid, trial (active), non-paying (trial exhausted, never
+  upgraded), and canceled. "Canceled" is **approximated**: there is no live cancellation event
+  tracked anywhere (`setPlan` just overwrites the current row, no history is kept), so it counts
+  accounts with no active plan that have approved at least one match before — it can't
+  distinguish an actual downgrade from someone who simply never converted past their trial.
+- **Payments** — year-to-date and current-month totals from `billing_ledger`. Always **$0**
+  today, since no live payment processor is wired up (see "Not yet wired up" below) — built now
+  so it starts reflecting real revenue automatically the moment one exists.
+- **Top requests** — the most common search terms over the last 30 days. Tracking
+  (`search_requests`, populated from `conversation/flow.ts`'s `startSearch`) started when this
+  feature shipped; there is no historical backfill.
+- **Activity by user** — the 20 most recently active users, with their search and approval
+  counts.
+
 ## Not yet wired up
 
 - No real billing — `approvedCount` is tracked per contact and `account_entitlements` in
