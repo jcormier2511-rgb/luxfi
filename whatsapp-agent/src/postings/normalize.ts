@@ -36,7 +36,7 @@ const PRICE_PATTERN = new RegExp(`\\$\\s?${NUM}\\b` + `|\\b${CURRENCY_CODE}\\s?$
 // Trailing separator group allows for real reference shapes beyond a single dash/slash suffix:
 // Patek uses a dot ("3510.50") and can chain more than one separator ("5712/1A-001"), so the
 // group repeats (`*`) and accepts `.` alongside `-`/`/`.
-const REFERENCE_PATTERN = /(?<!\$\s?)\b(\d{4,6}[A-Z]{0,3}(?:[-/.][A-Z0-9]+)*)\b/i;
+const REFERENCE_PATTERN = /(?<!\$\s?)\b(\d{4,6}[A-Z]{0,3}(?:[-/.][A-Z0-9]+)*|\d{3}(?:\.[A-Z0-9]+){2,})\b/i;
 const BRAND_LIST = [
   "rolex",
   "patek philippe",

@@ -10,6 +10,7 @@ import { sendText } from "../channels";
 import { config } from "../config";
 import { isPostingMonitoringEnabled } from "../admin/store";
 import { markPendingEscrowOffer } from "../conversation/stateStore";
+import { getListingLimits } from "./listingConfig";
 
 /**
  * Not filtered by platform: a canonical user has exactly one linked identity in this MVP
@@ -99,11 +100,22 @@ async function notifyOneRecipient(
   // becomes allowed again later, this stays retryable rather than permanently skipped.
   if (!await isPostingMonitoringEnabled(self)) return;
 
+  const { maxMatchesPerListing } = await getListingLimits();
+  const shown = await withSchema(pool=>pool.query(`SELECT count(*)::int n FROM match_recipients mr JOIN matches m ON m.id=mr.match_id WHERE mr.recipient_canonical_user_id=$1 AND mr.delivered_at IS NOT NULL AND ($2=m.fs_posting_id OR $2=m.wtb_posting_id)`,[recipientCanonicalUserId,self.id]));
+  if(Number(shown.rows[0]?.n??0)>=maxMatchesPerListing){
+    // Keep durable ownership/decision state without claiming this candidate was presented.
+    // Reconciliation can promote it later if the administrator raises the limit.
+    await withSchema(pool=>pool.query(`INSERT INTO match_recipients(match_id,recipient_canonical_user_id,match_revision) VALUES($1,$2,$3) ON CONFLICT(match_id,recipient_canonical_user_id,match_revision) DO NOTHING`,[matchId,recipientCanonicalUserId,revision]));
+    return;
+  }
+
   const claimed = await withSchema((pool) =>
     pool.query(
       `INSERT INTO match_recipients (match_id, recipient_canonical_user_id, match_revision, notified_at)
        VALUES ($1,$2,$3, now())
-       ON CONFLICT (match_id, recipient_canonical_user_id, match_revision) DO NOTHING
+       ON CONFLICT (match_id, recipient_canonical_user_id, match_revision) DO UPDATE
+         SET notified_at=now()
+         WHERE match_recipients.delivered_at IS NULL AND match_recipients.decision='pending'
        RETURNING id`,
       [matchId, recipientCanonicalUserId, revision]
     )
@@ -130,8 +142,10 @@ async function notifyOneRecipient(
 
   try {
     await sendText(phone, formatMatchMessage(matchId, self, counterpart, reasons, imageUrl));
+    await withSchema(pool=>pool.query(`UPDATE match_recipients SET delivered_at=now() WHERE match_id=$1 AND recipient_canonical_user_id=$2 AND match_revision=$3`,[matchId,recipientCanonicalUserId,revision]));
   } catch (err) {
     console.error(`[postings] failed to deliver match notification ${matchId} to ${phone}:`, err);
+    await withSchema(pool=>pool.query(`DELETE FROM match_recipients WHERE match_id=$1 AND recipient_canonical_user_id=$2 AND match_revision=$3 AND decision='pending'`,[matchId,recipientCanonicalUserId,revision]));
     await recordNotificationFailure((err as Error).message);
   }
 }

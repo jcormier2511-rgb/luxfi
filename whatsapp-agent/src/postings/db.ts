@@ -229,6 +229,7 @@ async function ensureSchema(): Promise<void> {
         ALTER TABLE postings ADD COLUMN IF NOT EXISTS renewed_at TIMESTAMPTZ;
         ${CAP_ACTIVE_POSTING_EXPIRATIONS_SQL}
         ALTER TABLE matches ADD COLUMN IF NOT EXISTS connected_at TIMESTAMPTZ;
+        ALTER TABLE match_recipients ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
 
         -- Lets the v3 on-demand flow's own approvals share this table (see the CREATE TABLE
         -- approvals comment above) — an existing deployed database still has the original

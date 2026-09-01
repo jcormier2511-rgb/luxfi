@@ -650,8 +650,19 @@ function intakeSlots(text: string, reference: string | null) {
     text.match(/\b(?:in|from|located in|based in)\s+(?:the\s+)?(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\b/i)?.[1] ??
     text.match(/^\s*(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\s*$/i)?.[1];
   const condition = text.match(/\b(pre[- ]?owned|used|unworn|brand new|new|mint|any condition)\b/i)?.[1];
-  const dial = text.match(/\b(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)\b/i)?.[1];
-  return { reference: extractReference(text), price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial };
+  const dial = text.match(/^\s*(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)?\s*$/i)?.[1] ?? text.match(/\b(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)\b/i)?.[1];
+  const normalized=normalizeText(text);
+  const brand=normalized.brand||undefined;
+  const itemPhrase=stripLeadingIntent(text)
+    .replace(/^(?:it(?:'s| is)|this is)\s+(?:a\s+)?/i, "")
+    .replace(new RegExp(`\\b${(brand??"").replace(/\s+/g,"\\s+")}\\b`,"i"), "")
+    .replace(extractReference(text)??"","")
+    .replace(/(?:under|max(?:imum)?|budget|asking|price|for)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
+    .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
+    .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
+  const model=brand&&itemPhrase ? itemPhrase : undefined;
+  const boxPapers=/\b(full set|box(?: and | & |\/)?papers?|papers)\b/i.exec(text)?.[1]; const year=/\b(19\d{2}|20\d{2})\b/.exec(text)?.[1];
+  return { reference: extractReference(text), price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial,brand,model,boxPapers,year };
 }
 
 function dialRelevant(reference: string | null): boolean { return /^(116500LN|126500LN)$/i.test(reference ?? ""); }
@@ -659,25 +670,28 @@ function dialRelevant(reference: string | null): boolean { return /^(116500LN|12
 function applySellSlots(p: PendingSellIntake, text: string): boolean {
   const s = intakeSlots(text, p.reference); let changed = false;
   if (s.reference) { p.reference = s.reference; changed = true; }
+  if(s.brand){p.brand=s.brand;changed=true;} if(s.model){p.model=s.model;changed=true;} if(s.boxPapers){p.boxPapers=s.boxPapers;changed=true;} if(s.year){p.year=s.year;changed=true;}
   if (containsKnownBrand(text) || s.reference) { p.description = stripLeadingIntent(text); changed = true; }
   if (s.price !== undefined) { p.price = s.price; p.currency = s.currency; changed = true; }
   if (s.location) { p.location = s.location; changed = true; }
   if (s.condition) { p.condition = s.condition; changed = true; }
-  if (s.dial) { p.dialColor = s.dial; changed = true; }
+  if (s.dial) { p.dialColor = /^any$/i.test(s.dial) ? "either" : s.dial; changed = true; }
   return changed;
 }
 function applyBuySlots(p: PendingBuyIntake, text: string): boolean {
   const s = intakeSlots(text, p.reference); let changed = false;
   if (s.reference) { p.reference = s.reference; changed = true; }
+  if(s.brand){p.brand=s.brand;changed=true;} if(s.model){p.model=s.model;changed=true;} if(s.boxPapers){p.boxPapers=s.boxPapers;changed=true;} if(s.year){p.year=s.year;changed=true;}
   if (containsKnownBrand(text) || s.reference) { p.description = stripLeadingIntent(text); changed = true; }
   if (s.price !== undefined) { p.budget = s.price; p.currency = s.currency; changed = true; }
   if (s.location) { p.location = s.location; changed = true; }
   if (s.condition) { p.condition = s.condition; changed = true; }
-  if (s.dial) { p.dialColor = s.dial; changed = true; }
+  if (s.dial) { p.dialColor = /^any$/i.test(s.dial) ? "either" : s.dial; changed = true; }
   return changed;
 }
 function nextSell(p: PendingSellIntake): string | null {
-  if (!p.reference && !containsKnownBrand(p.description)) { p.step="details"; return SELL_DETAILS_QUESTION; }
+  if (!p.brand && !p.reference) { p.step="details"; return SELL_DETAILS_QUESTION; }
+  if (!p.reference && !p.referenceSkipped) { p.step="details"; return "Do you have the reference number? You can reply skip if you don't know it."; }
   if (p.price === undefined) { p.step="price"; return SELL_PRICE_QUESTION; }
   if (dialRelevant(p.reference) && !p.dialColor) { p.step="dial"; return "Is it the black dial, white dial, or another color?"; }
   if (!p.condition) { p.step="condition"; return CONDITION_INTAKE_QUESTION; }
@@ -686,7 +700,8 @@ function nextSell(p: PendingSellIntake): string | null {
   p.step="confirm"; return null;
 }
 function nextBuy(p: PendingBuyIntake): string | null {
-  if (!p.reference && !containsKnownBrand(p.description)) { p.step="details"; return "What would you like to buy? Please include the brand, model, or reference."; }
+  if (!p.brand && !p.reference) { p.step="details"; return "What would you like to buy? Please include the brand and model."; }
+  if (!p.reference && !p.referenceSkipped) { p.step="details"; return "Do you have the reference number? You can reply skip if you don't know it."; }
   if (p.budget === undefined) { p.step="budget"; return BUY_BUDGET_QUESTION; }
   if (dialRelevant(p.reference) && !p.dialColor) { p.step="dial"; return DIAL_INTAKE_QUESTION; }
   if (!p.condition) { p.step="condition"; return BUY_CONDITION_QUESTION; }
@@ -695,8 +710,9 @@ function nextBuy(p: PendingBuyIntake): string | null {
 }
 const confirmed = (text: string) => /^(yes|yep|yeah|confirm|correct|sure|ok(?:ay)?|start|do it)\b/i.test(text.trim());
 const cash = (n: number, c = "USD") => `${c === "USD" ? "$" : c+" "}${n.toLocaleString("en-US")}`;
-const sellSummary = (p: PendingSellIntake) => `I have: FS ${p.description}${p.dialColor ? `, ${p.dialColor} dial` : ""}, ${p.condition}, ${p.location}, asking ${cash(p.price!,p.currency)}. Photo: ${p.imageUrl ? "attached" : "none"}. Should I start monitoring?`;
-const buySummary = (p: PendingBuyIntake) => `I have: WTB ${p.description}${p.dialColor ? `, ${p.dialColor} dial` : ""}, ${p.condition}, ${p.location}, maximum ${cash(p.budget!,p.currency)}. Should I start monitoring?`;
+const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{const priceLabel=type==="FS"?`asking ${cash(price,p.currency)}`:`maximum ${cash(price,p.currency)}`;return [`I have: ${type} ${p.description}${p.dialColor?`, ${p.dialColor} dial`:""}${p.condition?`, ${p.condition}`:""}${p.location?`, ${p.location}`:""}, ${priceLabel}. Should I start monitoring?`,`${type} listing review`,`Brand: ${p.brand||"Not provided"}`,`Model: ${p.model||"Not provided"}`,`Reference: ${p.reference||"Not provided"}`,p.dialColor&&`Dial: ${p.dialColor}`,p.condition&&`Condition: ${p.condition}`,`Price: ${cash(price,p.currency)}`,p.location&&`Location: ${p.location}`,p.boxPapers&&`Box/Papers: ${p.boxPapers}`,p.year&&`Year: ${p.year}`,`Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}. Should I start monitoring?`,`Reply confirm to activate, or send a correction.`].filter(Boolean).join("\n");};
+const sellSummary = (p: PendingSellIntake) => review("FS",p,p.price!);
+const buySummary = (p: PendingBuyIntake) => review("WTB",p,p.budget!);
 
 /**
  * A "sell" request has no live automatic buyer-matching wired up yet — there's nothing to
@@ -761,11 +777,13 @@ async function persistSellIntake(state: ConversationState, pending: PendingSellI
  *  found a live buyer, rather than a blanket "not wired up yet" caveat. */
 async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingSellIntake!; const suppliedPhoto = Boolean(imageUrl); if(imageUrl)p.imageUrl=imageUrl;
-  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const {matchesFound}=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,imageUrl:p.imageUrl}); messages.push(matchesFound?`Your listing is active. I found ${matchesFound} potential buyer${matchesFound===1?"":"s"}.`:"Your listing is active. I'll keep monitoring for a qualifying buyer."); state.pendingSellIntake=undefined; return; }
+  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const {matchesFound}=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(matchesFound?`Your listing is active. I found ${matchesFound} potential buyer${matchesFound===1?"":"s"}.`:"Your listing is active. I'll keep monitoring for a qualifying buyer."); state.pendingSellIntake=undefined; return; }
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
+  const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your listing draft open."); messages.push(nextSell(p)??sellSummary(p)); return; }
-  const changed=applySellSlots(p,text) || suppliedPhoto || skippedPhoto;
+  const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&Boolean(text.trim()); if(freeLocation)p.location=text.trim();
+  const changed=applySellSlots(p,text) || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
   if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
   else if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open."); }
   messages.push(nextSell(p)??sellSummary(p));
@@ -775,7 +793,9 @@ async function handleBuyIntakeAnswer(state: ConversationState, text: string, mes
   const p=state.pendingBuyIntake!;
   if(p.step==="confirm" && confirmed(text)){ const {matchesFound}=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(matchesFound?`Your request is active. I found ${matchesFound} potential listing${matchesFound===1?"":"s"}.`:"Your request is active. I'll keep monitoring for matching inventory."); state.pendingBuyIntake=undefined; return; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
-  const changed=applyBuySlots(p,text);
+  const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
+  const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&Boolean(text.trim()); if(freeLocation)p.location=text.trim();
+  const changed=applyBuySlots(p,text)||skippedReference||freeLocation;
   if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
   else if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your request draft open."); }
   messages.push(nextBuy(p)??buySummary(p));
