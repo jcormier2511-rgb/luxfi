@@ -13,8 +13,18 @@ import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { getActiveListings, getSyncStatus, searchListingsForDiagnostics } from "./watchfacts/inventoryDb";
-import { getEntitlement, setManualOverride, setPlan } from "./billing/entitlementStore";
+import { getEntitlement, setManualOverride, setPlan, getCheckoutSession, markCheckoutSessionStatus, activateMembership, cancelMembership, findPhoneByAuthnetSubscriptionId } from "./billing/entitlementStore";
 import { isPlanKey } from "./billing/plans";
+import {
+  isAuthorizeNetConfigured,
+  createHostedPaymentPageToken,
+  hostedPaymentFormActionUrl,
+  getTransactionDetails,
+  createArbSubscription,
+  verifyWebhookSignature as verifyAuthorizeNetSignature,
+  AuthorizeNetWebhookEvent,
+} from "./billing/authorizeNet";
+import { recordMembershipPayment } from "./postings/approvalUsage";
 import { handleIncomingSellerPhoto } from "./matching/photoRequests";
 import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation } from "./postings/notify";
 import { runReconciliation } from "./postings/matching";
@@ -192,6 +202,58 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
 /** Processes the payload received by the live /webhook (WhatsApp) route after its immediate ACK. */
 export async function handleWebhookPayload(body: IncomingWebhook): Promise<void> {
   await processIncomingMessages(extractIncomingMessages(body));
+}
+
+/**
+ * Processes one verified Authorize.net webhook event after POST /webhook/authorizenet's
+ * immediate ACK. Exported (mirroring handleWebhookPayload above) so tests can drive it directly
+ * without needing a live signed HTTP request.
+ *
+ * net.authorize.payment.authcapture.created: the ONLY successful-payment path — looks up the
+ * full transaction (for the profile ids Accept Hosted's createProfile:true produced, and the
+ * checkoutSessionId/phone/plan carried through as userFields), sets up ARB for month 2 onward
+ * against that same payment profile, activates the membership, and records the real charge in
+ * billing_ledger. Guards against replays/unknown sessions by only acting on a still-"pending"
+ * checkout session.
+ *
+ * subscription suspended/cancelled/terminated: treated identically (revoke the membership) —
+ * Authorize.net's own docs describe "suspended" narrowly (first payment after creation/edit
+ * declined), but there's no safe reading where an account keeps an active plan while its
+ * subscription is in any of these three states, so all three clear it the same way.
+ */
+export async function handleAuthorizeNetWebhookEvent(event: AuthorizeNetWebhookEvent): Promise<void> {
+  if (event.eventType === "net.authorize.payment.authcapture.created") {
+    const transId = event.payload.id;
+    if (!transId) return;
+    const details = await getTransactionDetails(transId);
+    if (details.responseCode !== "1" || !details.checkoutSessionId || !details.phone || !details.plan) return;
+    const session = await getCheckoutSession(details.checkoutSessionId);
+    if (!session || session.status !== "pending") return;
+    if (!details.customerProfileId || !details.customerPaymentProfileId) {
+      await markCheckoutSessionStatus(session.id, "failed", transId);
+      return;
+    }
+    const subscriptionId = await createArbSubscription({
+      plan: details.plan,
+      customerProfileId: details.customerProfileId,
+      customerPaymentProfileId: details.customerPaymentProfileId,
+    });
+    await activateMembership(details.phone, details.plan, {
+      customerProfileId: details.customerProfileId,
+      paymentProfileId: details.customerPaymentProfileId,
+      subscriptionId,
+    });
+    await recordMembershipPayment(details.phone, details.settleAmountCents, "membership_payment");
+    await markCheckoutSessionStatus(session.id, "completed", transId);
+    return;
+  }
+
+  if (event.payload.entityName === "subscription" && /\.(suspended|cancelled|terminated)$/.test(event.eventType)) {
+    const subscriptionId = event.payload.id;
+    if (!subscriptionId) return;
+    const phone = await findPhoneByAuthnetSubscriptionId(subscriptionId);
+    if (phone) await cancelMembership(phone);
+  }
 }
 
 function verifyWhatsAppSignature(rawBody: Buffer, signature: string | undefined): boolean {
@@ -379,6 +441,66 @@ export function createServer() {
       if (message) await processIncomingMessages([message]);
     } catch (err) {
       console.error("[webhook/sms] failed handling message:", err);
+    }
+  });
+
+  // Real payment link Fi sends in chat (see conversation/flow.ts's join/upgrade handling and
+  // billing/entitlementStore.ts's createCheckoutSession) — a whatsapp-agent-hosted page whose
+  // ONLY job is to auto-submit the Accept Hosted token to Authorize.net's own hosted payment
+  // page, since that page requires a POSTed form field rather than a plain URL. The token is
+  // generated fresh on click (Accept Hosted tokens expire 15 minutes after issuance) rather
+  // than up front when the checkout session is created, so a link sitting unread in chat for a
+  // day still works the moment it's opened.
+  app.get("/pay/:id", async (req, res) => {
+    if (!isAuthorizeNetConfigured()) {
+      return res.status(503).type("text/plain").send("Payments are not configured yet.");
+    }
+    const session = await getCheckoutSession(req.params.id);
+    if (!session) {
+      return res.status(404).type("text/plain").send("This payment link is invalid or has expired.");
+    }
+    if (session.status !== "pending") {
+      return res.type("text/plain").send("This payment link has already been used.");
+    }
+    let token: string;
+    try {
+      token = await createHostedPaymentPageToken({ checkoutSessionId: session.id, phone: session.phone, plan: session.plan });
+    } catch (err) {
+      console.error("[GET /pay/:id] failed to create hosted payment page token:", err);
+      return res.status(502).type("text/plain").send("Payments are temporarily unavailable — please try again in a moment.");
+    }
+    // Auto-submitting form, not a redirect: Accept Hosted requires the token as a POSTed form
+    // field, not a query parameter. Escaped defensively even though the token is Authorize.net's
+    // own API response, never user input.
+    const escapedToken = token.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    res.type("html").send(
+      `<!doctype html><html><body onload="document.forms[0].submit()">` +
+        `<form method="POST" action="${hostedPaymentFormActionUrl()}"><input type="hidden" name="token" value="${escapedToken}"></form>` +
+        `<p>Redirecting to secure payment…</p></body></html>`
+    );
+  });
+
+  // Authorize.net webhook receiver — the ONLY non-admin path that can activate or cancel a Fi
+  // membership (see handleAuthorizeNetWebhookEvent above). Register this exact URL (this
+  // deployment's base URL + /webhook/authorizenet) in the Authorize.net Merchant Interface
+  // under Account > Settings > Webhooks, subscribed to at least:
+  // net.authorize.payment.authcapture.created, net.authorize.customer.subscription.suspended,
+  // net.authorize.customer.subscription.cancelled, net.authorize.customer.subscription.terminated.
+  // Fails closed (503) while AUTHORIZENET_SIGNATURE_KEY is unset, same posture as every other
+  // webhook here.
+  app.post("/webhook/authorizenet", async (req, res) => {
+    if (!config.billing.authorizeNet.signatureKey) {
+      return res.status(503).json({ error: "AUTHORIZENET_SIGNATURE_KEY is not configured" });
+    }
+    const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+    if (!rawBody || !verifyAuthorizeNetSignature(rawBody, req.header("x-anet-signature"))) {
+      return res.sendStatus(401);
+    }
+    res.sendStatus(200); // ack immediately — Authorize.net retries on slow/failed responses
+    try {
+      await handleAuthorizeNetWebhookEvent(req.body as AuthorizeNetWebhookEvent);
+    } catch (err) {
+      console.error("[webhook/authorizenet] failed handling event:", (req.body as AuthorizeNetWebhookEvent)?.eventType, err);
     }
   });
 

@@ -136,6 +136,24 @@ export async function recordApprovalEventForPhone(
 }
 
 /**
+ * Records a REAL membership charge (see billing/authorizeNet.ts + POST /webhook/authorizenet
+ * in server.ts) — match_id NULL since this isn't tied to any one match. Every other
+ * billing_ledger row (recordApprovalEvent above) is always amount_cents=0; this is the one
+ * write path where a nonzero amount is ever expected, and is what makes the admin dashboard's
+ * Payments card (admin/metrics.ts) show real revenue instead of always $0.
+ */
+export async function recordMembershipPayment(phone: string, amountCents: number, billingStatus: "membership_payment" | "membership_refund"): Promise<void> {
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
+  await withSchema((pool) =>
+    pool.query(`INSERT INTO billing_ledger (canonical_user_id, match_id, amount_cents, currency, billing_status) VALUES ($1, NULL, $2, 'USD', $3)`, [
+      canonicalUserId,
+      amountCents,
+      billingStatus,
+    ])
+  );
+}
+
+/**
  * Fills in the counterpart's contact info on an already-recorded approval, exactly when v4's
  * approveMatch determines it's actually safe to reveal (mutual confirmation complete, or no
  * counterpart WhatsApp identity to wait on) — the same moment the live "You're connected!"

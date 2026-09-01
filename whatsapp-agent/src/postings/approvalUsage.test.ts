@@ -84,7 +84,21 @@ async function burnTrial(buyerPhone: string): Promise<void> {
 }
 
 test("evaluateApprovalGate: pure decision logic for each usage shape", () => {
-  const base = { canonicalUserId: 1, entitlement: { phone: "x", manualOverrideEnabled: false, membershipVerified: null, paymentAuthorized: null, paymentStatus: null, plan: null } };
+  const base = {
+    canonicalUserId: 1,
+    entitlement: {
+      phone: "x",
+      manualOverrideEnabled: false,
+      membershipVerified: null,
+      paymentAuthorized: null,
+      paymentStatus: null,
+      plan: null,
+      authnetCustomerProfileId: null,
+      authnetPaymentProfileId: null,
+      authnetSubscriptionId: null,
+      canceledAt: null,
+    },
+  };
 
   assert.deepEqual(
     evaluateApprovalGate({ ...base, totalApproved: 0, isComplimentary: true, weeklyLimit: 0, weeklyUsed: 0 }),

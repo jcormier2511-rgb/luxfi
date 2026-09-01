@@ -393,26 +393,62 @@ https://<your-railway-domain>/admin
 The dashboard also includes:
 
 - **Membership** — total users, paid, trial (active), non-paying (trial exhausted, never
-  upgraded), and canceled. "Canceled" is **approximated**: there is no live cancellation event
-  tracked anywhere (`setPlan` just overwrites the current row, no history is kept), so it counts
-  accounts with no active plan that have approved at least one match before — it can't
-  distinguish an actual downgrade from someone who simply never converted past their trial.
-- **Payments** — year-to-date and current-month totals from `billing_ledger`. Always **$0**
-  today, since no live payment processor is wired up (see "Not yet wired up" below) — built now
-  so it starts reflecting real revenue automatically the moment one exists.
+  upgraded), and canceled. "Canceled" is still **approximated** (counts accounts with no active
+  plan that have approved at least one match before) for any account that has never gone
+  through the real Authorize.net flow below — an account that cancels through that flow instead
+  gets a real `account_entitlements.canceled_at` timestamp, though the dashboard count itself
+  doesn't yet distinguish the two sources.
+- **Payments** — year-to-date and current-month totals from `billing_ledger`. **$0** until
+  Authorize.net is configured (see "Real payments (Authorize.net)" below); once a membership is
+  actually charged, this reflects the real revenue automatically.
 - **Top requests** — the most common search terms over the last 30 days. Tracking
   (`search_requests`, populated from `conversation/flow.ts`'s `startSearch`) started when this
   feature shipped; there is no historical backfill.
 - **Activity by user** — the 20 most recently active users, with their search and approval
   counts.
 
+## Real payments (Authorize.net)
+
+Fi memberships can now be charged for real, through Authorize.net — Accept Hosted for the
+first month (a hosted, Authorize.net-served payment page, so this server never touches card
+data) plus ARB (Automated Recurring Billing) for month 2 onward, billed against the payment
+profile Accept Hosted's first charge creates. See `src/billing/authorizeNet.ts` for the client,
+`src/billing/entitlementStore.ts` for `activateMembership`/`cancelMembership`/checkout-session
+storage, and `handleAuthorizeNetWebhookEvent` in `src/server.ts` for the event handling.
+
+**Setup:**
+1. In the Authorize.net Merchant Interface, go to **Account → Settings → Security Settings →
+   General Security Settings → API Credentials and Keys** and generate/copy the **API Login ID**
+   and **Transaction Key**, and separately the **API Signature Key** (same page area — used to
+   verify webhook authenticity, not the same as the transaction key).
+2. Set these directly as **Railway environment variables** — never paste a live key into chat,
+   a PR, or anywhere else; treat them exactly like `TWILIO_AUTH_TOKEN`/`TELEGRAM_BOT_TOKEN`:
+   - `AUTHORIZENET_API_LOGIN_ID`
+   - `AUTHORIZENET_TRANSACTION_KEY`
+   - `AUTHORIZENET_SIGNATURE_KEY`
+   - `AUTHORIZENET_ENVIRONMENT` — `sandbox` (default) or `production`. Verify a full test
+     charge end-to-end in `sandbox` (test card numbers from Authorize.net's docs) before
+     switching to `production`.
+   - `PUBLIC_BASE_URL` must already be set (see step 7a above) — it's what `join`/`upgrade`'s
+     payment link and the hosted page's return URL point back to.
+3. In the Merchant Interface, go to **Account → Settings → Webhooks**, add an endpoint at
+   `https://<your-railway-domain>/webhook/authorizenet`, and subscribe it to at least:
+   `net.authorize.payment.authcapture.created`, `net.authorize.customer.subscription.suspended`,
+   `net.authorize.customer.subscription.cancelled`, `net.authorize.customer.subscription.terminated`.
+
+**Behavior:** while any of the three credentials above are unset, `join`/`upgrade` fall back to
+the original admin-review message (`recordBillingRequested` — an admin manually assigns a plan
+via `POST /admin/entitlement/plan`). Once configured, `join` (tier1) and `upgrade tier1/2/3`
+send a real `/pay/<id>` link instead; once Authorize.net confirms the charge, the webhook
+activates the membership, sets up ARB for future months, and records the real amount in
+`billing_ledger` — automatically, no admin step. A subscription suspended/cancelled/terminated
+event clears the plan and sets `account_entitlements.canceled_at`, the real signal behind the
+admin dashboard's "canceled" count (previously always approximated — see below). The manual
+admin path (`setPlan`/`setManualOverride`) still works alongside this for comps, disputes, or
+accounts handled outside the automatic flow.
+
 ## Not yet wired up
 
-- No real billing — `approvedCount` is tracked per contact and `account_entitlements` in
-  Postgres tracks the unlock state, but nothing is ever charged (no payment processor wired
-  in). The only unlock path is an admin action (`POST /admin/entitlement/override`); schema
-  has placeholder columns (`membershipVerified`, `paymentAuthorized`, `paymentStatus`) ready
-  for when a processor/membership check exists.
 - No "Fi Intelligence" data (dealer reputation/vouch, price trend, market range, price signal,
   authenticity check) — Match Cards ship without that block per spec §2 until a real data
   source for any of it exists.

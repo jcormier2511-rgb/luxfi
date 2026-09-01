@@ -12,14 +12,18 @@ export interface PlanDef {
   key: PlanKey;
   label: string;
   priceLabel: string;
+  /** Same amount as priceLabel, in cents — the numeric form billing/authorizeNet.ts charges
+   *  and billing_ledger.amount_cents records, kept alongside the display string so the two can
+   *  never drift out of sync. */
+  priceCents: number;
   /** Approved-match introductions allowed per rolling 7-day window. null = unlimited. */
   weeklyLimit: number | null;
 }
 
 export const MEMBERSHIP_PLANS: Record<PlanKey, PlanDef> = {
-  tier1: { key: "tier1", label: "Tier 1", priceLabel: "$50/month", weeklyLimit: 5 },
-  tier2: { key: "tier2", label: "Tier 2", priceLabel: "$150/month", weeklyLimit: 20 },
-  tier3: { key: "tier3", label: "Tier 3", priceLabel: "$300/month", weeklyLimit: null },
+  tier1: { key: "tier1", label: "Tier 1", priceLabel: "$50/month", priceCents: 5000, weeklyLimit: 5 },
+  tier2: { key: "tier2", label: "Tier 2", priceLabel: "$150/month", priceCents: 15000, weeklyLimit: 20 },
+  tier3: { key: "tier3", label: "Tier 3", priceLabel: "$300/month", priceCents: 30000, weeklyLimit: null },
 };
 
 export function isPlanKey(value: string): value is PlanKey {

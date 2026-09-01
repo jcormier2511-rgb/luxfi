@@ -8,8 +8,21 @@ process.env.WEBHOOK_TOKEN = "test";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const entitlements = require("./entitlementStore") as typeof import("./entitlementStore");
-const { getEntitlement, setManualOverride, setPlan, recordBillingRequested, listAllEntitlements, _resetDbForTests, _closePoolForTests } =
-  entitlements;
+const {
+  getEntitlement,
+  setManualOverride,
+  setPlan,
+  recordBillingRequested,
+  listAllEntitlements,
+  activateMembership,
+  cancelMembership,
+  findPhoneByAuthnetSubscriptionId,
+  createCheckoutSession,
+  getCheckoutSession,
+  markCheckoutSessionStatus,
+  _resetDbForTests,
+  _closePoolForTests,
+} = entitlements;
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { weeklyLimitFor } = require("./plans") as typeof import("./plans");
 
@@ -105,6 +118,59 @@ test("weeklyLimitFor: flat-fee tiers cap the week; tier3 and the legacy override
     null,
     "an override takes precedence over a lower-tier plan"
   );
+});
+
+test("activateMembership sets plan + Authorize.net identifiers and clears any prior cancellation", async () => {
+  await _resetDbForTests();
+  const phone = "15557778888";
+  await cancelMembership(phone); // pretend this account canceled once before
+
+  const e = await activateMembership(phone, "tier2", { customerProfileId: "cp1", paymentProfileId: "pp1", subscriptionId: "sub1" });
+  assert.equal(e.plan, "tier2");
+  assert.equal(e.paymentAuthorized, true);
+  assert.equal(e.paymentStatus, "active");
+  assert.equal(e.authnetCustomerProfileId, "cp1");
+  assert.equal(e.authnetPaymentProfileId, "pp1");
+  assert.equal(e.authnetSubscriptionId, "sub1");
+  assert.equal(e.canceledAt, null, "re-subscribing clears the earlier cancellation");
+});
+
+test("cancelMembership clears the plan, marks canceled_at, and keeps the subscription id as a record", async () => {
+  await _resetDbForTests();
+  const phone = "15557778889";
+  await activateMembership(phone, "tier1", { customerProfileId: "cp2", paymentProfileId: "pp2", subscriptionId: "sub2" });
+
+  const canceled = await cancelMembership(phone);
+  assert.equal(canceled.plan, null);
+  assert.equal(canceled.paymentAuthorized, false);
+  assert.equal(canceled.paymentStatus, "canceled");
+  assert.ok(canceled.canceledAt);
+  assert.equal(canceled.authnetSubscriptionId, "sub2", "the id stays as a record of what was canceled");
+});
+
+test("findPhoneByAuthnetSubscriptionId resolves a live subscription id and returns null for an unknown one", async () => {
+  await _resetDbForTests();
+  await activateMembership("15557778890", "tier3", { customerProfileId: "cp3", paymentProfileId: "pp3", subscriptionId: "sub3" });
+
+  assert.equal(await findPhoneByAuthnetSubscriptionId("sub3"), "15557778890");
+  assert.equal(await findPhoneByAuthnetSubscriptionId("nonexistent"), null);
+});
+
+test("checkout sessions: created pending, retrievable by id, and status transitions record the Authorize.net trans id", async () => {
+  await _resetDbForTests();
+  const session = await createCheckoutSession("15559990000", "tier1");
+  assert.equal(session.status, "pending");
+  assert.equal(session.plan, "tier1");
+
+  const fetched = await getCheckoutSession(session.id);
+  assert.equal(fetched?.phone, "15559990000");
+
+  await markCheckoutSessionStatus(session.id, "completed", "txn123");
+  const completed = await getCheckoutSession(session.id);
+  assert.equal(completed?.status, "completed");
+  assert.equal(completed?.authnetTransId, "txn123");
+
+  assert.equal(await getCheckoutSession("does-not-exist"), null);
 });
 
 test("admin plan assignment creates briefing-eligible paid state; requested and cleared states remain ineligible", async () => {

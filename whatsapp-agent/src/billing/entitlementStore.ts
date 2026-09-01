@@ -1,17 +1,18 @@
 import { Pool } from "pg";
+import crypto from "crypto";
 import { config } from "../config";
 import { PlanKey } from "./plans";
 
 /**
  * Fi Build Spec v4 §11: after a canonical account's 3rd complimentary approval, further
- * approvals are locked until Fi billing is authorized. No payment processor exists yet
- * (spec §18 lists it as an explicitly deferred dependency), so the ONLY way to unlock
- * further approvals right now is an admin manually setting a plan (setPlan) or, for
- * backward compatibility, the older unlimited `manual_override_enabled` flag — never a live
- * charge, never self-service. `membershipVerified`/`paymentAuthorized`/`paymentStatus` are
- * placeholder columns: unused by any gating logic today, but present so wiring in real
- * WatchFacts membership verification or a payment processor later is an UPDATE to existing
- * rows, not another schema migration.
+ * approvals are locked until Fi billing is authorized. Two ways to unlock: the real one is a
+ * completed Authorize.net charge (see billing/authorizeNet.ts + POST /webhook/authorizenet in
+ * server.ts), which calls activateMembership below automatically; setPlan and the older
+ * unlimited `manual_override_enabled` flag remain as the admin-only manual fallback for
+ * accounts handled outside that flow (comps, disputes, migrating an existing member).
+ * `membershipVerified` stays an unused placeholder column (no real WatchFacts membership
+ * verification exists yet); `paymentAuthorized`/`paymentStatus` are now live, set by
+ * activateMembership/cancelMembership from real payment events.
  *
  * `plan` replaces the earlier "$50/month + $2/approved match, unlimited once a member" model
  * with a flat-fee, weekly-capped tier (see billing/plans.ts) — NULL means no active plan.
@@ -46,6 +47,30 @@ async function ensureSchema(): Promise<void> {
         ALTER TABLE account_entitlements DROP CONSTRAINT IF EXISTS account_entitlements_plan_check;
         ALTER TABLE account_entitlements ADD CONSTRAINT account_entitlements_plan_check
           CHECK (plan IS NULL OR plan IN ('tier1', 'tier2', 'tier3'));
+
+        -- Authorize.net CIM/ARB identifiers for the account's real recurring subscription (see
+        -- billing/authorizeNet.ts) -- set once the /webhook/authorizenet handler confirms a
+        -- successful first charge, cleared on cancellation. canceled_at is the real "this
+        -- account used to pay and no longer does" signal the admin dashboard's canceledApprox
+        -- metric (admin/metrics.ts) is a stand-in for until every existing paying account has
+        -- gone through this real payment flow at least once.
+        ALTER TABLE account_entitlements ADD COLUMN IF NOT EXISTS authnet_customer_profile_id TEXT;
+        ALTER TABLE account_entitlements ADD COLUMN IF NOT EXISTS authnet_payment_profile_id TEXT;
+        ALTER TABLE account_entitlements ADD COLUMN IF NOT EXISTS authnet_subscription_id TEXT;
+        ALTER TABLE account_entitlements ADD COLUMN IF NOT EXISTS canceled_at TIMESTAMPTZ;
+
+        -- One row per "Fi sent a payment link" attempt (see billing/checkoutStore.ts). Expires
+        -- unused after a day (checkoutStore.ts's own responsibility, not this schema) -- kept
+        -- indefinitely otherwise as the audit trail for what was ever charged and why.
+        CREATE TABLE IF NOT EXISTS checkout_sessions (
+          id TEXT PRIMARY KEY,
+          phone TEXT NOT NULL,
+          plan TEXT NOT NULL CHECK (plan IN ('tier1', 'tier2', 'tier3')),
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed')),
+          authnet_trans_id TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          completed_at TIMESTAMPTZ
+        );
         `
       )
       .then(() => undefined);
@@ -60,6 +85,10 @@ export interface Entitlement {
   paymentAuthorized: boolean | null;
   paymentStatus: string | null;
   plan: PlanKey | null;
+  authnetCustomerProfileId: string | null;
+  authnetPaymentProfileId: string | null;
+  authnetSubscriptionId: string | null;
+  canceledAt: string | null;
 }
 
 interface EntitlementRow {
@@ -69,6 +98,10 @@ interface EntitlementRow {
   payment_authorized: boolean | null;
   payment_status: string | null;
   plan: PlanKey | null;
+  authnet_customer_profile_id: string | null;
+  authnet_payment_profile_id: string | null;
+  authnet_subscription_id: string | null;
+  canceled_at: string | null;
 }
 
 function rowToEntitlement(row: EntitlementRow): Entitlement {
@@ -79,6 +112,10 @@ function rowToEntitlement(row: EntitlementRow): Entitlement {
     paymentAuthorized: row.payment_authorized,
     paymentStatus: row.payment_status,
     plan: row.plan,
+    authnetCustomerProfileId: row.authnet_customer_profile_id,
+    authnetPaymentProfileId: row.authnet_payment_profile_id,
+    authnetSubscriptionId: row.authnet_subscription_id,
+    canceledAt: row.canceled_at,
   };
 }
 
@@ -122,6 +159,62 @@ export async function setPlan(phone: string, plan: PlanKey | null): Promise<Enti
 }
 
 /**
+ * The real, automatic counterpart to setPlan/setManualOverride above — called only from
+ * POST /webhook/authorizenet once Authorize.net confirms a successful first charge (see
+ * billing/authorizeNet.ts). Stores the CIM/ARB identifiers needed to bill month 2 onward and
+ * to cancel later, and clears any prior canceled_at (a returning member re-subscribing is no
+ * longer canceled).
+ */
+export async function activateMembership(
+  phone: string,
+  plan: PlanKey,
+  authnet: { customerProfileId: string; paymentProfileId: string; subscriptionId: string }
+): Promise<Entitlement> {
+  await ensureSchema();
+  const result = await getPool().query(
+    `INSERT INTO account_entitlements
+       (phone, plan, payment_authorized, payment_status, authnet_customer_profile_id, authnet_payment_profile_id, authnet_subscription_id, canceled_at, updated_at)
+     VALUES ($1, $2, TRUE, 'active', $3, $4, $5, NULL, now())
+     ON CONFLICT (phone) DO UPDATE SET
+       plan = $2, payment_authorized = TRUE, payment_status = 'active',
+       authnet_customer_profile_id = $3, authnet_payment_profile_id = $4, authnet_subscription_id = $5,
+       canceled_at = NULL, updated_at = now()
+     RETURNING *`,
+    [phone, plan, authnet.customerProfileId, authnet.paymentProfileId, authnet.subscriptionId]
+  );
+  return rowToEntitlement(result.rows[0] as EntitlementRow);
+}
+
+/**
+ * Looks up which phone an Authorize.net ARB subscriptionId belongs to — needed by
+ * POST /webhook/authorizenet's subscription-suspended/cancelled/terminated handling, which
+ * only carries the subscriptionId, not the phone.
+ */
+export async function findPhoneByAuthnetSubscriptionId(subscriptionId: string): Promise<string | null> {
+  await ensureSchema();
+  const result = await getPool().query(`SELECT phone FROM account_entitlements WHERE authnet_subscription_id = $1`, [subscriptionId]);
+  return result.rows.length > 0 ? (result.rows[0].phone as string) : null;
+}
+
+/**
+ * Called from POST /webhook/authorizenet on a subscription-suspended/cancelled/terminated
+ * event — the real "canceled" signal, replacing the admin dashboard's canceledApprox
+ * heuristic (admin/metrics.ts) for any account that has gone through this real payment flow.
+ * Leaves authnet_subscription_id in place as a record of what was canceled.
+ */
+export async function cancelMembership(phone: string): Promise<Entitlement> {
+  await ensureSchema();
+  const result = await getPool().query(
+    `INSERT INTO account_entitlements (phone, plan, payment_authorized, payment_status, canceled_at, updated_at)
+     VALUES ($1, NULL, FALSE, 'canceled', now(), now())
+     ON CONFLICT (phone) DO UPDATE SET plan = NULL, payment_authorized = FALSE, payment_status = 'canceled', canceled_at = now(), updated_at = now()
+     RETURNING *`,
+    [phone]
+  );
+  return rowToEntitlement(result.rows[0] as EntitlementRow);
+}
+
+/**
  * Records that a user typed "join" post-trial — a signal for an admin to review, NOT a
  * self-service unlock (spec §11.2: "record a pending-billing state; do not silently provide
  * a paid connection"). Never sets manual_override_enabled.
@@ -154,8 +247,48 @@ export async function listAllEntitlements(): Promise<Map<string, Entitlement>> {
   return map;
 }
 
+export interface CheckoutSession {
+  id: string;
+  phone: string;
+  plan: PlanKey;
+  status: "pending" | "completed" | "failed";
+  authnetTransId: string | null;
+}
+
+function rowToCheckoutSession(row: { id: string; phone: string; plan: PlanKey; status: string; authnet_trans_id: string | null }): CheckoutSession {
+  return { id: row.id, phone: row.phone, plan: row.plan, status: row.status as CheckoutSession["status"], authnetTransId: row.authnet_trans_id };
+}
+
+/**
+ * Created when a user replies "join"/"upgrade" (see conversation/flow.ts) and Authorize.net is
+ * configured — the id is what GET /pay/:id and the eventual webhook correlate back to a
+ * phone+plan, so it's opaque and unguessable (crypto.randomUUID) rather than a short/sequential
+ * value someone could enumerate to trigger another phone's checkout page.
+ */
+export async function createCheckoutSession(phone: string, plan: PlanKey): Promise<CheckoutSession> {
+  await ensureSchema();
+  const id = crypto.randomUUID();
+  const result = await getPool().query(`INSERT INTO checkout_sessions (id, phone, plan) VALUES ($1, $2, $3) RETURNING *`, [id, phone, plan]);
+  return rowToCheckoutSession(result.rows[0]);
+}
+
+export async function getCheckoutSession(id: string): Promise<CheckoutSession | null> {
+  await ensureSchema();
+  const result = await getPool().query(`SELECT * FROM checkout_sessions WHERE id = $1`, [id]);
+  return result.rows.length > 0 ? rowToCheckoutSession(result.rows[0]) : null;
+}
+
+export async function markCheckoutSessionStatus(id: string, status: "completed" | "failed", authnetTransId?: string): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `UPDATE checkout_sessions SET status = $2, authnet_trans_id = coalesce($3, authnet_trans_id), completed_at = now() WHERE id = $1`,
+    [id, status, authnetTransId ?? null]
+  );
+}
+
 /** Test-only escape hatch, mirroring inventoryDb.ts's pattern. */
 export async function _resetDbForTests(): Promise<void> {
+  await getPool().query(`DROP TABLE IF EXISTS checkout_sessions`);
   await getPool().query(`DROP TABLE IF EXISTS account_entitlements`);
   schemaReady = null;
   await ensureSchema();

@@ -53,6 +53,28 @@ export const config = {
     sessionSecret: required("ADMIN_SESSION_SECRET", process.env.NODE_ENV === "test" ? "test-only-admin-session-secret" : undefined),
     initial: { name: process.env.ADMIN_INITIAL_NAME ?? "", username: process.env.ADMIN_INITIAL_USERNAME ?? "", email: process.env.ADMIN_INITIAL_EMAIL ?? "", passwordHash: process.env.ADMIN_INITIAL_PASSWORD_HASH ?? "" },
   },
+  // Real payment processing for Fi membership tiers (billing/authorizeNet.ts) — Accept Hosted
+  // for a PCI-scope-minimizing hosted payment page (Fi never touches card data) plus ARB
+  // (Automated Recurring Billing) for the recurring months after the first charge. Inert with
+  // these unset, same posture as every other channel credential in this file: billing/
+  // authorizeNet.ts's isAuthorizeNetConfigured() gates every call, so an unset key set never
+  // silently attempts a live charge. Get these from the Authorize.net Merchant Interface —
+  // Account > Settings > Security Settings > General Security Settings > API Credentials and
+  // Keys (API Login ID + Transaction Key) and ... > API Signature Key (Signature Key, used to
+  // verify webhook authenticity) — and set them directly as Railway environment variables,
+  // never pasted into a chat/PR, same as TWILIO_AUTH_TOKEN/TELEGRAM_BOT_TOKEN above.
+  billing: {
+    authorizeNet: {
+      apiLoginId: process.env.AUTHORIZENET_API_LOGIN_ID ?? "",
+      transactionKey: process.env.AUTHORIZENET_TRANSACTION_KEY ?? "",
+      // HMAC-SHA512 key Authorize.net signs each webhook body with (X-ANET-Signature header) —
+      // separate from the transaction key above, generated on the same Merchant Interface page.
+      signatureKey: process.env.AUTHORIZENET_SIGNATURE_KEY ?? "",
+      // "sandbox" (apitest.authorize.net) until verified end-to-end against a real test card;
+      // "production" (api.authorize.net) only once that's confirmed working.
+      environment: (process.env.AUTHORIZENET_ENVIRONMENT ?? "sandbox").toLowerCase() === "production" ? "production" : "sandbox",
+    },
+  },
   outreach: {
     introMessage:
       process.env.INTRO_MESSAGE ??

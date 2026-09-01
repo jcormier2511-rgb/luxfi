@@ -6,8 +6,9 @@ import { requestPhotosForMatch } from "../matching/photoRequests";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
-import { recordBillingRequested } from "../billing/entitlementStore";
-import { MEMBERSHIP_PLANS } from "../billing/plans";
+import { recordBillingRequested, getEntitlement, createCheckoutSession } from "../billing/entitlementStore";
+import { MEMBERSHIP_PLANS, PlanKey } from "../billing/plans";
+import { isAuthorizeNetConfigured } from "../billing/authorizeNet";
 import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, getApprovedMatchesSummary } from "../postings/approvalUsage";
 import { getOrCreateCanonicalUser } from "../postings/identity";
 import { platformForIdentity } from "../channels/identity";
@@ -887,10 +888,45 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     }
   }
 
-  if (/^join$/i.test(text.trim())) {
-    // Not a self-service unlock — there's no live payment processor to authorize against.
-    // Records intent for an admin to review; only POST /admin/entitlement/override actually
-    // enables further approvals (see handleDecision).
+  const upgradeMatch = /^upgrade(?:\s+(tier1|tier2|tier3))?$/i.exec(text.trim());
+  if (/^join$/i.test(text.trim()) || upgradeMatch) {
+    // "join" always means tier1 (the plan conversionPitch/noPlanMessage advertise); "upgrade"
+    // with no tier shows the picker below rather than assuming one.
+    const requestedPlan: PlanKey | null = /^join$/i.test(text.trim())
+      ? "tier1"
+      : upgradeMatch![1]
+      ? (upgradeMatch![1].toLowerCase() as PlanKey)
+      : null;
+
+    if (requestedPlan && isAuthorizeNetConfigured()) {
+      // The real path: a live, hosted checkout link (see billing/authorizeNet.ts + GET /pay/:id
+      // in server.ts) that activates the membership automatically once Authorize.net confirms
+      // payment — no admin step in between.
+      const session = await createCheckoutSession(state.phone, requestedPlan);
+      const planDef = MEMBERSHIP_PLANS[requestedPlan];
+      state.hired = true;
+      saveState(state);
+      return {
+        state,
+        messages: [
+          `Here's your secure payment link for ${planDef.label} (${planDef.priceLabel}):\n${config.publicBaseUrl}/pay/${session.id}\n\n` +
+            `Once payment goes through I'll unlock your membership automatically — no need to message me again.`,
+        ],
+      };
+    }
+
+    if (!requestedPlan) {
+      // Bare "upgrade" — show the tiers roomier than whatever the account currently has.
+      const entitlement = await getEntitlement(state.phone);
+      const options = (Object.values(MEMBERSHIP_PLANS) as (typeof MEMBERSHIP_PLANS)[PlanKey][])
+        .filter((p) => p.key !== entitlement.plan)
+        .map((p) => `Reply "upgrade ${p.key}" for ${p.label} (${p.priceLabel}${p.weeklyLimit === null ? ", unlimited" : `, ${p.weeklyLimit}/week`})`)
+        .join("\n");
+      return { state, messages: [options || "You're already on our top tier."] };
+    }
+
+    // No live payment processor configured yet — not a self-service unlock. Records intent for
+    // an admin to review; only POST /admin/entitlement/plan actually assigns a plan in that case.
     await recordBillingRequested(state.phone);
     state.hired = true; // informational only now — reflects "has asked to join", not entitlement
     saveState(state);
