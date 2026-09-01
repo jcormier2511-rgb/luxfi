@@ -93,11 +93,14 @@ export async function createHostedPaymentPageToken(params: { checkoutSessionId: 
     transactionRequest: {
       transactionType: "authCaptureTransaction",
       amount: (planDef.priceCents / 100).toFixed(2),
-      order: { invoiceNumber: params.checkoutSessionId.slice(0, 20), description: `Fi ${planDef.label} membership` },
       // Auto-creates a CIM customer + payment profile from this first charge, so ARB can bill
       // month 2 onward against customerProfileId/customerPaymentProfileId without Fi ever
-      // seeing or storing the card itself.
+      // seeing or storing the card itself. Authorize.net's JSON API is XML underneath, so
+      // transactionRequest's fields must appear in the AnetApiSchema.xsd sequence order --
+      // profile comes before order (confirmed against a live E00003 error: putting order first
+      // gets rejected as an "invalid child element 'profile'" once order has been parsed).
       profile: { createProfile: true },
+      order: { invoiceNumber: params.checkoutSessionId.slice(0, 20), description: `Fi ${planDef.label} membership` },
       userFields: [
         { name: "checkoutSessionId", value: params.checkoutSessionId } satisfies UserField,
         { name: "phone", value: params.phone } satisfies UserField,
