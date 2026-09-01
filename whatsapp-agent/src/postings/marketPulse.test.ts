@@ -22,8 +22,6 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
 
   await db.withSchema((pool) => pool.query(`
     UPDATE inventory_listings SET is_active=false WHERE external_id='inactive';
-    CREATE TABLE raw_dealer_blast (id text, reference text, type text);
-    INSERT INTO raw_dealer_blast VALUES ('raw-only','126500LN','FS');
     INSERT INTO postings
       (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,status,expires_at)
     VALUES

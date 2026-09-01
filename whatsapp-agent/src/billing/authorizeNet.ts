@@ -121,7 +121,9 @@ export async function createHostedPaymentPageToken(params: { checkoutSessionId: 
           settingValue: JSON.stringify({
             showReceipt: true,
             url: returnBase ? `${returnBase}/pay/complete` : undefined,
-            urlText: "Done — return to Fi",
+            // Plain ASCII only -- an em dash here got rejected live as E00013 "invalid
+            // characters" (confirmed against a real sandbox response).
+            urlText: "Done - Return to Fi",
             cancelUrl: returnBase ? `${returnBase}/pay/${params.checkoutSessionId}` : undefined,
             cancelUrlText: "Cancel",
           }),
