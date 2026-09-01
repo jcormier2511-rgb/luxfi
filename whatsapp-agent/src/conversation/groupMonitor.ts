@@ -138,6 +138,9 @@ export async function handleGroupMessage(
   const type: ListingType | null = classifyText(text);
   if (!type) return;
 
+  const allowed = await isPostingMonitoringEnabled({ source_type: "chat", source_chat_id: groupId, type });
+  if (!allowed) return;
+
   const rows = await buildGroupRows(groupId, senderPhone, senderName, type, text);
   rows.forEach(appendGroupListing);
   console.log(
@@ -153,9 +156,6 @@ export async function handleGroupMessage(
   // sends a message itself, so this gate can never cause a duplicate ack/match card/intro.
   // PostgreSQL is authoritative once any approved-group record exists. The env list remains a
   // migration fallback only; its historical "*" value is never accepted in production.
-  const allowed = await isPostingMonitoringEnabled({ source_type: "chat", source_chat_id: groupId });
-  if (!allowed) return;
-
   try {
     await ingestAndMatch({
       platform: "whatsapp",

@@ -11,6 +11,7 @@ import { config } from "../config";
 import { isPostingMonitoringEnabled } from "../admin/store";
 import { markPendingEscrowOffer } from "../conversation/stateStore";
 import { getListingLimits } from "./listingConfig";
+import { saveMoreContext } from "./moreContext";
 
 /**
  * Not filtered by platform: a canonical user has exactly one linked identity in this MVP
@@ -115,7 +116,7 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
  * request/response turn the way the v3 flow's numbered list is — the recipient needs a way
  * to say which match they mean.
  */
-function formatMatchMessage(
+export function formatMatchMessage(
   matchId: number,
   self: PostingRow,
   counterpart: PostingRow,
@@ -131,6 +132,13 @@ function formatMatchMessage(
     (reasons.length ? `\n\nWhy it matched:\n${reasons.map((r) => `- ${r}`).join("\n")}` : "") +
     `\n\nReply "approve ${matchId}" to connect, or "pass ${matchId}" to skip.`
   );
+}
+
+function groupMatchMessage(matchId:number,self:PostingRow,counterpart:PostingRow,reasons:string[],imageUrl:string|null):string{
+  const watch=[self.brand,self.model,self.reference].filter(Boolean).join(" ")||self.original_text.slice(0,80);
+  const intro=self.type==="WTB"?`Hi — I’m Fi from WatchFacts. I saw your request for ${watch} and found a potential match.`:`Hi — I’m Fi from WatchFacts. I saw you’re selling ${watch} and found a potential buyer.`;
+  const more=self.type==="WTB"?`I can also show you other available ${watch} listings on WatchFacts. Reply MORE.`:`I can also show you other relevant buyer opportunities on WatchFacts. Reply MORE.`;
+  return `${intro}\n\n${formatMatchMessage(matchId,self,counterpart,reasons,imageUrl)}\n\n${more}`;
 }
 
 /**
@@ -197,8 +205,10 @@ async function notifyOneRecipient(
   }
 
   try {
-    await sendText(phone, formatMatchMessage(matchId, self, counterpart, reasons, imageUrl));
+    const fromGroup=self.source_type==="chat"&&Boolean(self.source_chat_id);
+    await sendText(phone, fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl));
     await withSchema(pool=>pool.query(`UPDATE match_recipients SET delivered_at=now() WHERE match_id=$1 AND recipient_canonical_user_id=$2 AND match_revision=$3`,[matchId,recipientCanonicalUserId,revision]));
+    if(fromGroup)await saveMoreContext(recipientCanonicalUserId,platformForIdentity(phone),self,counterpart,matchId);
   } catch (err) {
     console.error(`[postings] failed to deliver match notification ${matchId} to ${phone}:`, err);
     await withSchema(pool=>pool.query(`DELETE FROM match_recipients WHERE match_id=$1 AND recipient_canonical_user_id=$2 AND match_revision=$3 AND decision='pending'`,[matchId,recipientCanonicalUserId,revision]));
