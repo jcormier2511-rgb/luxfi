@@ -168,6 +168,7 @@ const STATUS_COMMAND = /^status\b/i;
 // Broadened past the exact word "listings" for the same reason — "listing summary", "my
 // listing", and "summary" are all natural ways to ask for the same thing.
 const LISTINGS_COMMAND = /^(my\s+)?(listings?(\s+summary)?|summary)\b/i;
+const MY_ACTIVE_LISTINGS_COMMAND = /^(?:what\s+are\s+my\s+listings?|show\s+(?:me\s+)?my\s+(?:listings?|fs|wtb)|my\s+listings|what\s+am\s+i\s+(?:selling|buying)|my\s+active\s+tasks?|what\s+are\s+you\s+monitoring\s+for\s+me)\s*[?.!]*$/i;
 
 /** "Show prices in EUR" / "Use HKD as my preferred currency" — automatic currency conversion
  *  (src/fx/) display preference. Returns the requested ISO code (uppercased, NOT yet validated
@@ -259,13 +260,37 @@ function formatPendingListingsSummary(state: ConversationState): string {
 async function formatMyListingsSummary(phone: string): Promise<string> {
   const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
   const postings = await getActivePostingsForUser(canonicalUserId);
-  if (postings.length === 0) return "You don't have any active WTB or FS listings being monitored right now.";
-  const lines = postings.map((p, i) => {
-    const label = p.reference ? `${p.brand || ""} ${p.reference}`.trim() : p.original_text.slice(0, 80);
-    const priceLine = p.price ? ` — $${p.price}` : "";
-    return `${i + 1}. [${p.type}] ${label}${priceLine}`;
-  });
-  return "Your active listings:\n\n" + lines.join("\n");
+  if (postings.length === 0) return "You don’t have any active buy or sell tasks right now.\nTell me what you want to buy or sell and I’ll start working on it.";
+  const lines = postings.map((p, i) => `${i + 1}. ${formatStructuredPosting(p)}`);
+  return `You currently have ${postings.length} active task${postings.length === 1 ? "" : "s"}:\n\n${lines.join("\n\n")}`;
+}
+
+function formatAmount(value: string, currency: string): string {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return currency === "USD" ? `$${value}` : `${currency} ${value}`;
+  const formatted = amount.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return currency === "USD" ? `$${formatted}` : `${currency} ${formatted}`;
+}
+
+/** Uses only persisted structured columns; the original message is deliberately not re-parsed. */
+function formatStructuredPosting(p: import("../postings/postingsStore").PostingRow): string {
+  const identity = [p.brand, p.model, p.reference].filter(Boolean).join(" ");
+  return [
+    `${p.type} —${identity ? ` ${identity}` : ""}`,
+    p.dial ? `${p.dial} dial` : "",
+    p.condition,
+    p.price ? `${p.type === "FS" ? "Asking" : "Budget"}: ${formatAmount(p.price, p.currency || "USD")}` : "",
+    p.location,
+  ].filter(Boolean).join("\n");
+}
+
+function formatActiveAcknowledgment(p: import("../postings/postingsStore").PostingRow, matchesFound: number): string {
+  const heading = p.type === "FS" ? "Your FS listing is active:" : "Your WTB request is active:";
+  const details = formatStructuredPosting(p).replace(/^(?:FS|WTB) —\s*/, "");
+  const outcome = matchesFound
+    ? `I found ${matchesFound} potential ${p.type === "FS" ? "buyer" : "listing"}${matchesFound === 1 ? "" : "s"}.`
+    : `I’ll keep monitoring for a qualifying ${p.type === "FS" ? "buyer" : "seller"}.`;
+  return `${heading}\n\n${details}\n\n${outcome}`;
 }
 
 /** "status" — a quick, honest snapshot of trial/plan usage and anything still awaiting a
@@ -780,7 +805,7 @@ async function persistSellIntake(state: ConversationState, pending: PendingSellI
  *  found a live buyer, rather than a blanket "not wired up yet" caveat. */
 async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingSellIntake!; const suppliedPhoto = Boolean(imageUrl); if(imageUrl)p.imageUrl=imageUrl;
-  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const {matchesFound}=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(matchesFound?`Your listing is active. I found ${matchesFound} potential buyer${matchesFound===1?"":"s"}.`:"Your listing is active. I'll keep monitoring for a qualifying buyer."); state.pendingSellIntake=undefined; return; }
+  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingSellIntake=undefined; return; }
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
@@ -794,7 +819,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
 
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingBuyIntake!;
-  if(p.step==="confirm" && confirmed(text)){ const {matchesFound}=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(matchesFound?`Your request is active. I found ${matchesFound} potential listing${matchesFound===1?"":"s"}.`:"Your request is active. I'll keep monitoring for matching inventory."); state.pendingBuyIntake=undefined; return; }
+  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingBuyIntake=undefined; return; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&Boolean(text.trim()); if(freeLocation)p.location=text.trim();
@@ -955,6 +980,11 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
   if (STATUS_COMMAND.test(text.trim())) {
     await handleStatusCommand(state, messages);
+    saveState(state);
+    return { state, messages };
+  }
+  if (MY_ACTIVE_LISTINGS_COMMAND.test(text.trim())) {
+    messages.push(await formatMyListingsSummary(state.phone));
     saveState(state);
     return { state, messages };
   }

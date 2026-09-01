@@ -4,6 +4,10 @@ import fs from "fs"; import os from "os"; import path from "path";
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),"luxfi-slots-")); process.env.PERSIST_DIR=dir; process.env.NODE_ENV="test"; process.env.WEBHOOK_TOKEN="test";
 const {handleIncomingMessage}=require("./flow") as typeof import("./flow"); const {resetState}=require("./stateStore") as typeof import("./stateStore");
 after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+const persistedRow = (input: import("../postings/postingsStore").DirectSellPostingInput, type: "FS" | "WTB") => ({
+  type, brand: input.brand ?? "", model: input.model ?? "", reference: input.reference ?? "", dial: input.dialColor ?? "",
+  condition: input.condition ?? "", price: input.price === null ? null : String(input.price), currency: input.currency ?? "USD", location: input.location ?? "",
+} as import("../postings/postingsStore").PostingRow);
 
 test("WTB fills fields in any order, accepts multiple slots and corrections, then confirms",async()=>{
  const p="15550002001"; resetState(p);
@@ -45,7 +49,7 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
   const saved: import("../postings/postingsStore").DirectSellPostingInput[] = [];
   t.mock.method(ingest, "ingestDirectBuyPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => {
     saved.push(input);
-    return { matchesFound: 0 };
+    return { matchesFound: 0, posting: persistedRow(input, "WTB") };
   });
 
   const summary = await handleIncomingMessage(phone, "WTB Rolex 116500LN white dial pre-owned in the US for $28,000");
@@ -65,6 +69,8 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
     phone,
     senderName: undefined,
     description: "Rolex 116500LN white dial pre-owned in the US for $28,000",
+    brand: "rolex",
+    model: "white",
     reference: "116500LN",
     price: 30000,
     currency: "USD",
@@ -73,6 +79,8 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
     location: "US",
   });
   assert.equal(confirmed.state.pendingBuyIntake, undefined);
+  assert.match(confirmed.messages.join("\n"), /Your WTB request is active:[\s\S]*rolex white 116500LN[\s\S]*white dial[\s\S]*Budget: \$30,000[\s\S]*qualifying seller/i);
+  assert.doesNotMatch(confirmed.messages.join("\n"), /raw/i, "acknowledgment is rendered from the persisted structured fields");
   assert.match(confirmed.messages[0], /request is active/i);
 });
 
@@ -84,7 +92,7 @@ test("FS confirmation boundary persists and activates every parsed field exactly
   const inventoryWrites: Parameters<typeof inventory.upsertListings>[0][] = [];
   const activations: import("../postings/postingsStore").DirectSellPostingInput[] = [];
   t.mock.method(inventory, "upsertListings", async (rows: Parameters<typeof inventory.upsertListings>[0]) => { inventoryWrites.push(rows); });
-  t.mock.method(ingest, "ingestDirectSellPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => { activations.push(input); return { matchesFound: 0 }; });
+  t.mock.method(ingest, "ingestDirectSellPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => { activations.push(input); return { matchesFound: 0, posting: persistedRow(input, "FS") }; });
 
   const photoPrompt = await handleIncomingMessage(phone, "FS Rolex 116500LN black dial unworn in Canada for 28500");
   assert.match(photoPrompt.messages.at(-1)!, /attach a photo/i);
@@ -120,7 +128,7 @@ test("an original-message FS photo stays in the draft and appears in the confirm
   let inventoryWrites = 0;
   let activations = 0;
   t.mock.method(inventory, "upsertListings", async () => { inventoryWrites++; });
-  t.mock.method(ingest, "ingestDirectSellPosting", async () => { activations++; return { matchesFound: 0 }; });
+  t.mock.method(ingest, "ingestDirectSellPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => { activations++; return { matchesFound: 0, posting: persistedRow(input, "FS") }; });
 
   const summary = await handleIncomingMessage(
     phone,
