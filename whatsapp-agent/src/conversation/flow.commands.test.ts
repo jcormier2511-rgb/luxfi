@@ -54,6 +54,38 @@ test('required: "help" shows the Fi menu', async () => {
   assert.match(result.messages[0], /"status"/);
 });
 
+test('required: "/help" shows the Fi menu and never gets replaced by onboarding', async () => {
+  const phone = "19991110011";
+  resetState(phone);
+  const help = await handleIncomingMessage(phone, "/help");
+  assert.match(help.messages[0], /here's what I can do/i);
+  assert.match(help.messages[0], /"cancel"/);
+  assert.doesNotMatch(help.messages[0], /personal luxury concierge/i);
+
+  const ordinary = await handleIncomingMessage(phone, "hello");
+  assert.match(ordinary.messages[0], /personal luxury concierge/i, "help must not consume first-contact onboarding");
+});
+
+test('required: "/start" returns the configured onboarding intro', async () => {
+  const phone = "19991110012";
+  resetState(phone);
+  const result = await handleIncomingMessage(phone, "/start");
+  assert.match(result.messages[0], /personal luxury concierge/i);
+  assert.equal(result.state.stage, "active");
+});
+
+test("help and onboarding routing are identical across WhatsApp, Telegram, and SMS identities", async () => {
+  for (const identity of ["whatsapp:19991110013", "telegram:991110014", "sms:19991110015"]) {
+    resetState(identity);
+    const help = await handleIncomingMessage(identity, "help");
+    assert.match(help.messages[0], /here's what I can do/i, `${identity}: help must be deterministic`);
+    const ordinary = await handleIncomingMessage(identity, "hello");
+    assert.match(ordinary.messages[0], /personal luxury concierge/i, `${identity}: ordinary first contact gets onboarding`);
+    const later = await handleIncomingMessage(identity, "hello");
+    assert.doesNotMatch(later.messages[0], /personal luxury concierge/i, `${identity}: onboarding is one-shot`);
+  }
+});
+
 test('"menu" is a synonym for "help"', async () => {
   resetState("19991110002");
   const result = await handleIncomingMessage("19991110002", "menu");

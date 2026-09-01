@@ -160,11 +160,9 @@ function parsePhotoRequestCommand(text: string): number | null {
   return m[1] ? parseInt(m[1], 10) : 1;
 }
 
-// "start" is folded in here too (for anyone not currently opted-out — see isOptOut/the
-// opted_out branch above, checked first and separately) — a real reported gap: someone who
-// got lost mid-conversation naturally reached for "start" expecting it to reorient them, and
-// got the generic "reply approve/pass..." reminder instead.
-const MENU_COMMAND = /^(help|menu|start)\b/i;
+// Help/menu intentionally exclude START: START has distinct reset/onboarding behavior below,
+// while help must always return the complete deterministic menu without consuming onboarding.
+const MENU_COMMAND = /^(?:help|menu)\b/i;
 const CANCEL_COMMAND = /^cancel\b/i;
 const STATUS_COMMAND = /^status\b/i;
 // Broadened past the exact word "listings" for the same reason — "listing summary", "my
@@ -1020,14 +1018,9 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   const state = getState(phone);
   const messages: string[] = [];
   const firstName = contact?.name?.trim().split(/\s+/)[0] || "there";
-
-  // First-contact state must be consumed before any deterministic command can return early.
-  // Previously help/start/market commands bypassed the later `stage === new` block entirely.
-  if (state.stage === "new") {
-    messages.push(config.fiFlow.introMessage);
-    state.stage = "active";
-    saveState(state);
-  }
+  // Telegram commonly prefixes bot commands with "/" (and may append "@botname"). Keep one
+  // normalized deterministic-command surface across Telegram, WhatsApp, and SMS.
+  const commandText = text.trim().replace(/^\/([a-z]+)(?:@[a-z0-9_]+)?\b/i, "$1");
 
   // Deterministic, database-only command. It intentionally runs before AI routing and never
   // invokes a Telegram/WhatsApp history API; the inbound webhook is merely the delivery path.
@@ -1040,7 +1033,8 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   // START is a universal conversational reset, not only an opt-out recovery command. A user
   // with old pending matches must be able to begin again instead of being trapped behind the
   // approve/pass reminder shown in the reported live conversation.
-  if (normalize(text) === "start") {
+  if (normalize(commandText) === "start") {
+    const slashStart = /^\/start(?:@[a-z0-9_]+)?\b/i.test(text.trim());
     state.stage = "active";
     state.pendingMatches = undefined;
     state.pendingPreferenceCollection = undefined;
@@ -1049,7 +1043,14 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     state.pendingBuyIntake = undefined;
     state.pendingReplacementRequest = undefined;
     saveState(state);
-    return { state, messages: messages.length ? messages : ["Hi, I'm Fi — here's what I can do: tell me naturally what you're looking to buy or sell, or ask me anything about your listings."] };
+    return {
+      state,
+      messages: [
+        slashStart
+          ? config.fiFlow.introMessage
+          : "Hi, I'm Fi — here's what I can do: tell me naturally what you're looking to buy or sell, or ask me anything about your listings.",
+      ],
+    };
   }
 
   if (isOptOut(text)) {
@@ -1121,7 +1122,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   // none of them ever depends on AI, and none of them can be blocked by a mid-interview question
   // or a pending match. "hi"/"hello"/"menu" are folded into "help" (spec: "'hi' should return
   // the Fi menu, not force approve/pass").
-  if (MENU_COMMAND.test(text.trim())) {
+  if (MENU_COMMAND.test(commandText)) {
     messages.push(FI_MENU);
     saveState(state);
     return { state, messages };
@@ -1296,6 +1297,18 @@ export async function handleIncomingMessage(phone: string, text: string, contact
 
   const resolved = await resolveItemRequests(phone, text);
   const parsed = resolved.items;
+
+  // Onboarding belongs after deterministic commands: help/status/listing management/etc. must
+  // always retain their command semantics on a brand-new account. The first ordinary inbound
+  // message consumes this one-shot state and may then continue into normal intent handling.
+  if (state.stage === "new") {
+    messages.push(config.fiFlow.introMessage);
+    state.stage = "active";
+    if (parsed.length === 0) {
+      saveState(state);
+      return { state, messages };
+    }
+  }
 
   if (parsed.length === 0) {
     if (decision) {
