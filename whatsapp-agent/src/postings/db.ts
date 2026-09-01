@@ -46,10 +46,18 @@ function getPool(): Pool {
   return pool;
 }
 
+// PostgreSQL's CREATE TABLE IF NOT EXISTS can still race while both sessions create the
+// table's implicit composite pg_type. Serialize the complete additive migration across
+// replicas (not merely within this Node process) to avoid pg_type_typname_nsp_index errors.
+async function runSchemaSql(sql:string):Promise<void> {
+  const client=await getPool().connect();
+  try { await client.query("BEGIN"); await client.query("SELECT pg_advisory_xact_lock(7272026)"); await client.query(sql); await client.query("COMMIT"); }
+  catch(error){await client.query("ROLLBACK");throw error;} finally{client.release();}
+}
+
 async function ensureSchema(): Promise<void> {
   if (!schemaReady) {
-    schemaReady = getPool()
-      .query(
+    schemaReady = runSchemaSql(
         `
         CREATE TABLE IF NOT EXISTS canonical_users (
           id SERIAL PRIMARY KEY,
@@ -291,9 +299,49 @@ async function ensureSchema(): Promise<void> {
         );
         CREATE INDEX IF NOT EXISTS search_requests_recent ON search_requests (created_at DESC);
         CREATE INDEX IF NOT EXISTS search_requests_by_phone ON search_requests (phone, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS lifecycle_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        INSERT INTO lifecycle_settings(key,value) VALUES
+          ('MORNING_BRIEFING_ENABLED','true'),('MORNING_BRIEFING_LOCAL_HOUR','8'),
+          ('MORNING_BRIEFING_DEFAULT_TIMEZONE','America/New_York'),('MORNING_BRIEFING_MAX_POSTINGS','10'),
+          ('DORMANT_REENGAGEMENT_ENABLED','true'),('DORMANT_AFTER_DAYS','5'),
+          ('DORMANT_REPEAT_DAYS','14'),('DORMANT_LOCAL_SEND_HOUR','10'),
+          ('DORMANT_MESSAGE_TEMPLATE','Hi {{first_name}}, checking in to see if you have any tasks for me. Remember, I work 24/7 to help you find buyers, sellers, and opportunities to make more money. Let me know how I can best serve you.')
+        ON CONFLICT(key) DO NOTHING;
+        CREATE TABLE IF NOT EXISTS user_lifecycle (
+          canonical_user_id INTEGER PRIMARY KEY REFERENCES canonical_users(id) ON DELETE CASCADE,
+          channel TEXT NOT NULL,
+          identity TEXT NOT NULL,
+          first_name TEXT,
+          timezone TEXT,
+          last_inbound_at TIMESTAMPTZ NOT NULL,
+          last_dormant_message_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS lifecycle_deliveries (
+          id BIGSERIAL PRIMARY KEY,
+          canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL CHECK(kind IN ('morning_briefing','dormant')),
+          local_date DATE NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('sending','delivered','failed')),
+          claimed_at TIMESTAMPTZ NOT NULL DEFAULT now(), delivered_at TIMESTAMPTZ, error TEXT,
+          UNIQUE(canonical_user_id,kind,local_date)
+        );
+        CREATE TABLE IF NOT EXISTS briefing_posting_state (
+          canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id) ON DELETE CASCADE,
+          posting_id INTEGER NOT NULL REFERENCES postings(id) ON DELETE CASCADE,
+          last_briefing_at TIMESTAMPTZ NOT NULL,
+          current_match_ids INTEGER[] NOT NULL DEFAULT '{}',
+          known_match_ids INTEGER[] NOT NULL DEFAULT '{}',
+          PRIMARY KEY(canonical_user_id,posting_id)
+        );
+        CREATE INDEX IF NOT EXISTS lifecycle_due ON user_lifecycle(last_inbound_at,last_dormant_message_at);
         `
-      )
-      .then(() => undefined);
+      );
   }
   await schemaReady;
 }
@@ -343,7 +391,7 @@ export async function _resetDbForTests(): Promise<void> {
     DROP TABLE IF EXISTS
       reconciliation_runs, postings_meta, billing_ledger, approvals, match_recipients, matches,
       market_update_deliveries, posting_images, postings, search_requests, linked_identities,
-      canonical_users
+      briefing_posting_state, lifecycle_deliveries, user_lifecycle, lifecycle_settings, canonical_users
     CASCADE
   `);
   schemaReady = null;

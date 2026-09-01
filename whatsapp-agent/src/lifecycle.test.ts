@@ -1,0 +1,12 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+process.env.NODE_ENV="test"; process.env.WEBHOOK_TOKEN="test";
+import { formatBriefing, formatDormant, localClock } from "./lifecycle";
+import { PostingRow } from "./postings/postingsStore";
+const posting=(type:"FS"|"WTB",extra:Partial<PostingRow>={}):PostingRow=>({id:1,source_platform:"whatsapp",source_type:"direct",source_chat_id:null,source_message_id:null,external_listing_id:null,canonical_user_id:1,source_identity:"15551234567",type,original_text:"",brand:"Rolex",model:"Daytona",reference:"116500LN",dial:"black dial",condition:"",price:null,currency:"USD",location:"",contact_name:"John",contact_phone:"15551234567",detail_url:"",status:"active",approved_match_count:0,expires_at:"2099-01-01",reminder_sent_for_expires_at:null,...extra});
+test("briefing preserves watch detail and current/new counts",()=>{const text=formatBriefing("John",[{posting:posting("WTB"),count:3,newCount:2,hasPrior:true}]);assert.match(text,/Good morning, John/);assert.match(text,/WTB — Rolex Daytona 116500LN black dial/);assert.match(text,/3 active sellers/);assert.match(text,/\+2 new since yesterday/);});
+test("FS wording counts active buyers and omits zero new",()=>{const text=formatBriefing(null,[{posting:posting("FS"),count:4,newCount:0,hasPrior:true}]);assert.match(text,/4 active buyers/);assert.doesNotMatch(text,/\+0 new/);});
+test("zero matches has natural monitoring copy",()=>{const text=formatBriefing(null,[{posting:posting("WTB"),count:0,newCount:0,hasPrior:false}]);assert.match(text,/No active matches yet/);assert.match(text,/still monitoring/);});
+test("multiple postings combine and excess tasks summarize",()=>{const text=formatBriefing("J",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:false},{posting:posting("FS",{id:2,brand:"Patek Philippe",model:"Nautilus",reference:"5712G"}),count:2,newCount:0,hasPrior:false}],3);assert.match(text,/Rolex/);assert.match(text,/Patek Philippe/);assert.match(text,/Plus 3 more active tasks/);});
+test("dormant copy personalizes and has clean fallback",()=>{const t="Hi {{first_name}}, checking in.";assert.equal(formatDormant(t,"Ana"),"Hi Ana, checking in.");assert.equal(formatDormant(t,null),"Hi, checking in.");});
+test("local clock respects user timezone",()=>{const at=new Date("2026-09-01T12:00:00Z");assert.deepEqual(localClock(at,"America/New_York"),{date:"2026-09-01",hour:8});assert.deepEqual(localClock(at,"Pacific/Honolulu"),{date:"2026-09-01",hour:2});});
