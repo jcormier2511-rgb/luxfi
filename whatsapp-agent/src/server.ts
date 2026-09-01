@@ -32,6 +32,8 @@ import { getOrCreateCanonicalUser } from "./postings/identity";
 import { getPosting, extendPosting, getOwnPostingForMatch } from "./postings/postingsStore";
 import { getV4OperationalStatus } from "./postings/status";
 import { initSchema } from "./postings/db";
+import { handleCoverageCommand } from "./fulfillment/coverage";
+import { handleOpportunityResponse, listCoverageAdmin } from "./fulfillment/service";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
@@ -176,6 +178,9 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
       }
       if (message.imageUrl && await handleIncomingSellerPhoto(message.phone, message.imageUrl)) continue;
 
+      const fulfillmentReply = await handleOpportunityResponse(message.phone, message.text) ?? await handleCoverageCommand(message.phone, message.text);
+      if (fulfillmentReply !== null) { await sendText(message.phone, fulfillmentReply); continue; }
+
       const directReply = await tryHandleDirectPostingDecision(message.phone, message.text);
       if (directReply !== null) {
         await sendText(message.phone, directReply);
@@ -306,7 +311,7 @@ export function createServer() {
     const data = await buildAdminDashboardData();
     res.type("html").send(renderDashboard(data));
   });
-  for(const kind of ["users","groups","administrators"] as const) app.get(`/admin/${kind}`,async(req,res)=>{const ctx=await adminContext(req).catch(()=>null);if(!ctx)return res.status(401).type('html').send(renderLoginPage());if(kind==='administrators'&&ctx.admin.role!=='owner')return res.status(403).send('Owner role required');res.type('html').send(renderManagementPage(kind))});
+  for(const kind of ["users","groups","administrators","coverage"] as const) app.get(`/admin/${kind}`,async(req,res)=>{const ctx=await adminContext(req).catch(()=>null);if(!ctx)return res.status(401).type('html').send(renderLoginPage());if(kind==='administrators'&&ctx.admin.role!=='owner')return res.status(403).send('Owner role required');res.type('html').send(renderManagementPage(kind))});
 
   app.post("/admin/login", express.urlencoded({ extended: false }), async (req, res) => {
     await adminReady;
@@ -336,6 +341,7 @@ export function createServer() {
   app.get("/admin/api/users/template.csv",(_q,res)=>res.type("text/csv").attachment("approved-users-template.csv").send(USER_CSV_SAMPLE));
   app.get("/admin/api/users/export.csv",api(async(_q,res)=>res.type("text/csv").attachment("approved-users.csv").send(await exportUsersCsv())));
   app.get("/admin/api/groups",api(async(req,res)=>res.json(await listGroups(String(req.query.q||''),String(req.query.status||'')))));
+  app.get("/admin/api/coverage",api(async(_req,res)=>res.json(await listCoverageAdmin())));
   app.post("/admin/api/groups",api(async(req,res,ctx)=>res.status(201).json(await saveGroup(ctx.admin,req.body)),true));
   app.put("/admin/api/groups/:id",api(async(req,res,ctx)=>res.json(await saveGroup(ctx.admin,req.body,Number(req.params.id))),true));
   app.delete("/admin/api/groups/:id",api(async(req,res,ctx)=>{await deleteGroup(ctx.admin,Number(req.params.id));res.json({ok:true})},true));
