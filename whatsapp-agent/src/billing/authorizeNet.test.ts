@@ -49,7 +49,7 @@ test("createHostedPaymentPageToken sends merchantAuthentication, the plan's doll
   assert.equal(req.merchantAuthentication.transactionKey, "test-transaction-key");
   assert.equal(req.transactionRequest.amount, "150.00", "tier2 is $150/month");
   assert.equal(req.transactionRequest.profile.createProfile, true);
-  const fields: { name: string; value: string }[] = req.transactionRequest.userFields;
+  const fields: { name: string; value: string }[] = req.transactionRequest.userFields.userField;
   assert.equal(fields.find((f) => f.name === "checkoutSessionId")?.value, "sess-1");
   assert.equal(fields.find((f) => f.name === "phone")?.value, "15551234567");
   assert.equal(fields.find((f) => f.name === "plan")?.value, "tier2");

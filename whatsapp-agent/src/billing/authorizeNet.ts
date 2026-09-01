@@ -101,11 +101,16 @@ export async function createHostedPaymentPageToken(params: { checkoutSessionId: 
       // gets rejected as an "invalid child element 'profile'" once order has been parsed).
       profile: { createProfile: true },
       order: { invoiceNumber: params.checkoutSessionId.slice(0, 20), description: `Fi ${planDef.label} membership` },
-      userFields: [
-        { name: "checkoutSessionId", value: params.checkoutSessionId } satisfies UserField,
-        { name: "phone", value: params.phone } satisfies UserField,
-        { name: "plan", value: params.plan } satisfies UserField,
-      ],
+      // userFields is itself a wrapper element around repeated userField entries (same shape
+      // getTransactionDetails already parses on the read side below) -- a bare array here is
+      // rejected the same way order-before-profile was (E00003, "invalid child element 'name'").
+      userFields: {
+        userField: [
+          { name: "checkoutSessionId", value: params.checkoutSessionId } satisfies UserField,
+          { name: "phone", value: params.phone } satisfies UserField,
+          { name: "plan", value: params.plan } satisfies UserField,
+        ],
+      },
     },
     hostedPaymentSettings: {
       setting: [
