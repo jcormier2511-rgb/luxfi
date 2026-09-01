@@ -108,6 +108,7 @@ export interface PendingSellIntake {
   step: SellIntakeStep;
   description: string; // accumulated free-text description, starting from the original message
   reference: string | null;
+  referenceSkipped?: boolean;
   brand?: string;
   model?: string;
   boxPapers?: string;
@@ -127,6 +128,7 @@ export interface PendingBuyIntake {
   step: "details" | "budget" | "condition" | "location" | "dial" | "confirm";
   description: string;
   reference: string | null;
+  referenceSkipped?: boolean;
   brand?: string;
   model?: string;
   boxPapers?: string;

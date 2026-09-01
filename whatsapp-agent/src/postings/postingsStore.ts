@@ -35,6 +35,17 @@ export interface PostingRow {
 
 const REQUEST_LIFETIME_MS = 15 * 24 * 60 * 60 * 1000;
 
+function inferDirectModel(description:string,brand:string,reference:string|null):string {
+  if(!brand)return "";
+  return description
+    .replace(/^(?:FS|WTB|WTS|sell(?:ing)?|buy(?:ing)?|looking for|I (?:want to|have))\b[\s:,-]*/i,"")
+    .replace(new RegExp(`\\b${brand.replace(/\s+/g,"\\s+")}\\b`,"i"),"")
+    .replace(reference??"","")
+    .replace(/\b(?:black|white|blue|green|silver|champagne)\s+dial\b.*$/i,"")
+    .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|for|under|budget)\b.*$/i,"")
+    .trim();
+}
+
 function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === null || a === undefined || a === "") return b === null || b === undefined || b === "";
   return String(a) === String(b);
@@ -207,7 +218,7 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
       `INSERT INTO postings
          (source_platform, source_type, canonical_user_id, source_identity,
           type, original_text, brand, model, reference, dial, condition, box_papers, year, price, currency, location, contact_name, contact_phone, status, expires_at)
-       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'active',$17)
+       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'active',$18)
        RETURNING *`,
       [
         platform,
@@ -216,7 +227,7 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
         input.type ?? "FS",
         input.description,
         input.brand ?? normalized.brand,
-        input.model ?? "",
+        input.model ?? inferDirectModel(input.description,input.brand??normalized.brand,input.reference),
         input.reference ?? "",
         input.dialColor ?? "",
         input.condition ?? "",

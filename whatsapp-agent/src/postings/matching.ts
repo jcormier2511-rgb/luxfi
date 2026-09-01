@@ -192,10 +192,11 @@ export async function runReconciliation(): Promise<ReconciliationResult> {
           const result = await scoreMatchWithCurrency(fs, wtb);
           if (!result) continue;
           const { matchId, revision, isNewOrChanged } = await upsertMatch(fs.id, wtb.id, result);
-          if (isNewOrChanged) {
-            matchesCreatedOrChanged++;
-            await notifyMatch(matchId, revision);
-          }
+          if (isNewOrChanged) matchesCreatedOrChanged++;
+          // notifyMatch is idempotent for already-delivered recipients. Calling it for an
+          // unchanged pair lets a previously capped or transiently failed candidate become
+          // presentable after an administrator raises the listing limit or delivery recovers.
+          await notifyMatch(matchId, revision);
         }
       }
 
