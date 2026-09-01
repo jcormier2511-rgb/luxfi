@@ -250,7 +250,11 @@ test("natural listing-management variants use the same behavior for WhatsApp and
     resetState(phone);
     await createDirectPosting({ phone, type: "FS", description: "Omega Speedmaster", brand: "Omega", model: "Speedmaster", reference: "310.30", price: 7000 });
   }
-  for (const [phone, query] of [[identities[0], "show my FS"], [identities[1], "what are you monitoring for me"]]) {
+  for (const [phone, query] of [
+    [identities[0], "show my FS"],
+    [identities[0], "i need to edit my listings"],
+    [identities[1], "what are you monitoring for me"],
+  ]) {
     const result = await handleIncomingMessage(phone, query);
     assert.match(result.messages.join("\n"), /1\. FS — Omega Speedmaster 310\.30/);
     assert.doesNotMatch(result.messages.join("\n"), /Try "buy:/);

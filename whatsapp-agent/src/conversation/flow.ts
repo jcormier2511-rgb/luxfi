@@ -168,9 +168,9 @@ const MENU_COMMAND = /^(help|menu|start)\b/i;
 const CANCEL_COMMAND = /^cancel\b/i;
 const STATUS_COMMAND = /^status\b/i;
 // Broadened past the exact word "listings" for the same reason — "listing summary", "my
-// listing", and "summary" are all natural ways to ask for the same thing.
+// listing", "edit my listings", and "summary" are all natural ways to ask for the same thing.
 const LISTINGS_COMMAND = /^(my\s+)?(listings?(\s+summary)?|summary)\b/i;
-const MY_ACTIVE_LISTINGS_COMMAND = /^(?:what\s+are\s+my\s+listings?|show\s+(?:me\s+)?my\s+(?:listings?|fs|wtb)|my\s+listings|what\s+am\s+i\s+(?:selling|buying)|my\s+active\s+tasks?|what\s+are\s+you\s+monitoring\s+for\s+me)\s*[?.!]*$/i;
+const MY_ACTIVE_LISTINGS_COMMAND = /^(?:what\s+are\s+my\s+listings?|show\s+(?:me\s+)?my\s+(?:listings?|fs|wtb)|my\s+listings|(?:i\s+(?:need|want|would\s+like)\s+to\s+)?(?:edit|manage)\s+my\s+listings?|what\s+am\s+i\s+(?:selling|buying)|my\s+active\s+tasks?|what\s+are\s+you\s+monitoring\s+for\s+me)\s*[?.!]*$/i;
 
 /** "Show prices in EUR" / "Use HKD as my preferred currency" — automatic currency conversion
  *  (src/fx/) display preference. Returns the requested ISO code (uppercased, NOT yet validated
