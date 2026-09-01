@@ -232,6 +232,32 @@ async function ensureSchema(): Promise<void> {
         );
         INSERT INTO postings_meta (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
+        CREATE TABLE IF NOT EXISTS wtb_coverage (
+          id SERIAL PRIMARY KEY,
+          canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id) ON DELETE CASCADE,
+          brand TEXT NOT NULL,
+          model TEXT NOT NULL DEFAULT '', reference TEXT NOT NULL DEFAULT '',
+          region TEXT NOT NULL DEFAULT '', min_budget NUMERIC, max_budget NUMERIC,
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused')),
+          cadence TEXT NOT NULL DEFAULT 'immediate' CHECK(cadence IN ('immediate','digest')),
+          notification_count INTEGER NOT NULL DEFAULT 0,
+          last_notification_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE(canonical_user_id, brand, model, reference)
+        );
+        CREATE TABLE IF NOT EXISTS wtb_fulfillment_opportunities (
+          id SERIAL PRIMARY KEY, wtb_posting_id INTEGER NOT NULL REFERENCES postings(id) ON DELETE CASCADE,
+          dealer_canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id) ON DELETE CASCADE,
+          source TEXT NOT NULL CHECK(source IN ('known_inventory','coverage')),
+          source_inventory_id TEXT, status TEXT NOT NULL DEFAULT 'pending',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(), responded_at TIMESTAMPTZ,
+          UNIQUE(wtb_posting_id,dealer_canonical_user_id)
+        );
+        CREATE TABLE IF NOT EXISTS canonical_notification_preferences (
+          canonical_user_id INTEGER PRIMARY KEY REFERENCES canonical_users(id) ON DELETE CASCADE,
+          preferred_identity_id INTEGER REFERENCES linked_identities(id), wtb_alerts_paused BOOLEAN NOT NULL DEFAULT false
+        );
+
         -- Additive migrations for columns introduced after their table's original
         -- CREATE TABLE — CREATE TABLE IF NOT EXISTS silently skips a table that already
         -- exists, so a column added later needs its own idempotent ADD COLUMN IF NOT EXISTS
@@ -404,6 +430,7 @@ export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>)
 export async function _resetDbForTests(): Promise<void> {
   await getPool().query(`
     DROP TABLE IF EXISTS
+      wtb_fulfillment_opportunities, wtb_coverage, canonical_notification_preferences,
       reconciliation_runs, postings_meta, billing_ledger, approvals, match_recipients, matches,
       market_update_deliveries, posting_images, postings, search_requests, linked_identities,
       briefing_posting_state, lifecycle_deliveries, fi_returning_campaign_deliveries,

@@ -11,6 +11,7 @@ import {
 import { runImmediateMatch } from "./matching";
 import { sendText } from "../channels";
 import { publishConfirmedListing } from "./groupPublishing";
+import { fulfillWtb } from "../fulfillment/service";
 
 /**
  * Spec §4.1/§4.2: a new or materially-changed posting is immediately tested against every
@@ -24,7 +25,7 @@ export async function ingestAndMatch(input: ChatPostingInput): Promise<void> {
 
   if (!result.materialChange) return;
 
-  const { matchesFound } = await runImmediateMatch(result.posting);
+  const { matchesFound } = result.posting.type === "WTB" ? { matchesFound: (await fulfillWtb(result.posting)).explicitMatches } : await runImmediateMatch(result.posting);
   if (matchesFound === 0 && result.created) {
     try {
       await sendText(
@@ -56,7 +57,7 @@ export interface DirectSellIngestResult {
 export async function ingestDirectSellPosting(input: DirectSellPostingInput): Promise<DirectSellIngestResult> {
   const posting = await createDirectPosting(input);
   await publishConfirmedListing(posting);
-  const { matchesFound } = await runImmediateMatch(posting);
+  const { matchesFound } = posting.type === "WTB" ? { matchesFound: (await fulfillWtb(posting)).explicitMatches } : await runImmediateMatch(posting);
   return { matchesFound, posting };
 }
 
@@ -64,7 +65,7 @@ export async function ingestDirectSellPosting(input: DirectSellPostingInput): Pr
 export async function ingestDirectBuyPosting(input: DirectSellPostingInput): Promise<DirectSellIngestResult> {
   const posting = await createDirectPosting({ ...input, type: "WTB" });
   await publishConfirmedListing(posting);
-  const { matchesFound } = await runImmediateMatch(posting);
+  const { explicitMatches: matchesFound } = await fulfillWtb(posting);
   return { matchesFound, posting };
 }
 
