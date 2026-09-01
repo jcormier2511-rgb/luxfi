@@ -6,6 +6,7 @@ import {
   ApiFsListing,
   createDirectPosting,
   DirectSellPostingInput,
+  PostingRow,
 } from "./postingsStore";
 import { runImmediateMatch } from "./matching";
 import { sendText } from "../channels";
@@ -38,6 +39,7 @@ export async function ingestAndMatch(input: ChatPostingInput): Promise<void> {
 
 export interface DirectSellIngestResult {
   matchesFound: number;
+  posting: PostingRow;
 }
 
 /**
@@ -55,7 +57,7 @@ export async function ingestDirectSellPosting(input: DirectSellPostingInput): Pr
   const posting = await createDirectPosting(input);
   await publishConfirmedListing(posting);
   const { matchesFound } = await runImmediateMatch(posting);
-  return { matchesFound };
+  return { matchesFound, posting };
 }
 
 /** Saves a completed private buyer request before attempting any inventory search. */
@@ -63,7 +65,7 @@ export async function ingestDirectBuyPosting(input: DirectSellPostingInput): Pro
   const posting = await createDirectPosting({ ...input, type: "WTB" });
   await publishConfirmedListing(posting);
   const { matchesFound } = await runImmediateMatch(posting);
-  return { matchesFound };
+  return { matchesFound, posting };
 }
 
 /**

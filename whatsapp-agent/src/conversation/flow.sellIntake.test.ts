@@ -87,7 +87,7 @@ test("required: seller details are collected, summarized, and only saved after c
   assert.match(summary.messages.join("\n"), /Photo: none.*Should I start monitoring\?/);
   assert.ok(summary.state.pendingSellIntake, "summary is still an unsaved draft");
   const confirmed = await handleIncomingMessage(phone, "yes");
-  assert.match(confirmed.messages.join("\n"), /listing is active/i);
+  assert.match(confirmed.messages.join("\n"), /Your FS listing is active:[\s\S]*Rolex Submariner 116610LV[\s\S]*Asking: \$14,500[\s\S]*USA[\s\S]*qualifying buyer/i);
   assert.equal(confirmed.state.pendingSellIntake, undefined);
 });
 
@@ -112,7 +112,7 @@ test("required: confirmation creates a direct FS posting and immediately matches
   assert.match(summary.messages.at(-1)!, /Photo: none.*Should I start monitoring\?/);
   assert.equal(sent.length, 0, "no match notification before confirmation");
   const confirmed = await handleIncomingMessage(phone, "yes");
-  assert.match(confirmed.messages.join("\n"), /listing is active.*found 1 potential buyer/i);
+  assert.match(confirmed.messages.join("\n"), /listing is active[\s\S]*found 1 potential buyer/i);
   assert.ok(sent.some((m)=>m.phone==="19991110000" && /Potential Match/.test(m.message)));
 });
 

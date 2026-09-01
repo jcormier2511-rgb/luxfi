@@ -25,6 +25,8 @@ const entitlements = require("../billing/entitlementStore") as typeof import("..
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { resetState } = require("./stateStore") as typeof import("./stateStore");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { createDirectPosting, closePosting } = require("../postings/postingsStore") as typeof import("../postings/postingsStore");
 
 after(async () => {
   await inventoryDb._closePoolForTests();
@@ -203,8 +205,8 @@ test("required: option 3 shows a real active listing created via the sell-intake
   await handleIncomingMessage(phone, "listings");
   const result = await handleIncomingMessage(phone, "3");
   const joined = result.messages.join("\n");
-  assert.match(joined, /Your active listings/);
-  assert.match(joined, /\[FS\]/);
+  assert.match(joined, /You currently have 1 active task/);
+  assert.match(joined, /FS —/);
   assert.match(joined, /116610LV/);
 });
 
@@ -220,5 +222,45 @@ test("required: option 3 says there are no active listings for a contact who has
 
   await handleIncomingMessage(phone, "listings");
   const result = await handleIncomingMessage(phone, "3");
-  assert.match(result.messages.join("\n"), /don't have any active WTB or FS listings/i);
+  assert.match(result.messages.join("\n"), /don’t have any active buy or sell tasks/i);
+});
+
+test('natural "what are my listings" returns numbered active FS and WTB structured tasks and excludes inactive tasks', async () => {
+  const phone = "19992230011";
+  resetState(phone);
+  await postingsDb._resetDbForTests();
+  await createDirectPosting({ phone, type: "FS", description: "raw text must not be displayed", brand: "Rolex", model: "Daytona", reference: "126500LN", dialColor: "White", condition: "Used", price: 38000, currency: "USD", location: "Miami" });
+  await createDirectPosting({ phone, type: "WTB", description: "different raw text", brand: "Rolex", model: "Daytona", reference: "116500LN", dialColor: "Black", price: 28500, currency: "USD", location: "USA" });
+  const closed = await createDirectPosting({ phone, type: "FS", description: "closed watch", brand: "Patek Philippe", reference: "5711", price: 90000 });
+  await closePosting(closed.id, "sold");
+
+  const result = await handleIncomingMessage(phone, "what are my listings");
+  const text = result.messages.join("\n");
+  assert.match(text, /You currently have 2 active tasks:/);
+  assert.match(text, /1\. WTB — Rolex Daytona 116500LN[\s\S]*Black dial[\s\S]*Budget: \$28,500[\s\S]*USA/);
+  assert.match(text, /2\. FS — Rolex Daytona 126500LN[\s\S]*White dial[\s\S]*Used[\s\S]*Asking: \$38,000[\s\S]*Miami/);
+  assert.doesNotMatch(text, /5711|raw text|different raw text/);
+  assert.doesNotMatch(text, /Try "buy:/, "management queries never reach the generic fallback");
+});
+
+test("natural listing-management variants use the same behavior for WhatsApp and Telegram identities", async () => {
+  await postingsDb._resetDbForTests();
+  const identities = ["19992230012", "telegram:9230012"];
+  for (const phone of identities) {
+    resetState(phone);
+    await createDirectPosting({ phone, type: "FS", description: "Omega Speedmaster", brand: "Omega", model: "Speedmaster", reference: "310.30", price: 7000 });
+  }
+  for (const [phone, query] of [[identities[0], "show my FS"], [identities[1], "what are you monitoring for me"]]) {
+    const result = await handleIncomingMessage(phone, query);
+    assert.match(result.messages.join("\n"), /1\. FS — Omega Speedmaster 310\.30/);
+    assert.doesNotMatch(result.messages.join("\n"), /Try "buy:/);
+  }
+});
+
+test("natural listing-management query returns the exact empty state", async () => {
+  const phone = "19992230013";
+  resetState(phone);
+  await postingsDb._resetDbForTests();
+  const result = await handleIncomingMessage(phone, "my active tasks");
+  assert.equal(result.messages.join("\n"), "You don’t have any active buy or sell tasks right now.\nTell me what you want to buy or sell and I’ll start working on it.");
 });
