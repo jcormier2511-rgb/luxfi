@@ -46,6 +46,8 @@ export const config = {
   server: {
     port: Number(process.env.PORT ?? 3000),
     webhookToken: required("WEBHOOK_TOKEN", "change-me"),
+    whatsappWebhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN ?? "",
+    whatsappAppSecret: process.env.WHATSAPP_APP_SECRET ?? "",
   },
   admin: {
     sessionSecret: required("ADMIN_SESSION_SECRET", process.env.NODE_ENV === "test" ? "test-only-admin-session-secret" : undefined),
