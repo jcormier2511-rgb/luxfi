@@ -24,6 +24,7 @@ import { CURRENCY_CODES } from "../fx/currency";
 import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
 import { upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
+import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -987,6 +988,12 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     messages.push(await formatMyListingsSummary(state.phone));
     saveState(state);
     return { state, messages };
+  }
+  if (MORE_COMMAND.test(text.trim())) {
+    const userId=await getOrCreateCanonicalUser(platformForIdentity(phone),phone);
+    messages.push(await formatMoreResults(userId));
+    saveState(state);
+    return {state,messages};
   }
   // Listing-summary requests must remain deterministic: the general-chat model has no access
   // to the user's approved, pending, or active listings and must never invent that data.

@@ -138,6 +138,9 @@ export async function handleGroupMessage(
   const type: ListingType | null = classifyText(text);
   if (!type) return;
 
+  // Preserve the established v3 capture path independently of the v4 rollout flag. The
+  // authorization check below deliberately gates only automatic postings ingestion/matching;
+  // with v4 disabled this CSV remains the silent, read-only legacy inventory source.
   const rows = await buildGroupRows(groupId, senderPhone, senderName, type, text);
   rows.forEach(appendGroupListing);
   console.log(
@@ -153,7 +156,7 @@ export async function handleGroupMessage(
   // sends a message itself, so this gate can never cause a duplicate ack/match card/intro.
   // PostgreSQL is authoritative once any approved-group record exists. The env list remains a
   // migration fallback only; its historical "*" value is never accepted in production.
-  const allowed = await isPostingMonitoringEnabled({ source_type: "chat", source_chat_id: groupId });
+  const allowed = await isPostingMonitoringEnabled({ source_type: "chat", source_chat_id: groupId, type });
   if (!allowed) return;
 
   try {
