@@ -53,6 +53,7 @@ import { Administrator, authenticate, deleteGroup, deleteUser, exportUsersCsv, g
 import { buildAdminDashboardData } from "./admin/dashboard";
 import { renderDashboard, renderLoginPage, renderManagementPage } from "./admin/view";
 import { getListingLimits, listPushGroups, savePushGroup, setListingLimits } from "./postings/listingConfig";
+import { getLifecycleSettings, recordInboundActivity, setLifecycleSettings } from "./lifecycle";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
 // (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
@@ -167,6 +168,7 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
 
   for (const message of filtered) {
     try {
+      await recordInboundActivity(message.phone, message.senderName);
       if (message.isGroup) {
         await handleGroupMessage(message.id, message.groupId!, message.phone, message.senderName, message.text, message.imageUrl);
         continue;
@@ -726,6 +728,15 @@ export function createServer() {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(await runOpenAiDiagnosticCall());
+  });
+
+  app.get("/admin/lifecycle-settings", async (req,res)=>{
+    if(req.query.token!==config.server.webhookToken)return res.status(401).json({error:"invalid token"});
+    res.json(await getLifecycleSettings());
+  });
+  app.post("/admin/lifecycle-settings", express.json(), async (req,res)=>{
+    if(req.query.token!==config.server.webhookToken)return res.status(401).json({error:"invalid token"});
+    try{await setLifecycleSettings(req.body??{});res.json({ok:true,settings:await getLifecycleSettings()});}catch(e){res.status(400).json({error:(e as Error).message});}
   });
 
   // Fi Concierge expansion, Stage 1: Group Registry (additive to the existing
