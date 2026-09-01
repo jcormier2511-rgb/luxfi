@@ -1,4 +1,5 @@
 import express from "express";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { config, isConciergeAdminPhone } from "./config";
@@ -185,12 +186,26 @@ export async function handleWebhookPayload(body: IncomingWebhook): Promise<void>
   await processIncomingMessages(extractIncomingMessages(body));
 }
 
+function verifyWhatsAppSignature(rawBody: Buffer, signature: string | undefined): boolean {
+  if (!config.server.whatsappAppSecret || !signature?.startsWith("sha256=")) return false;
+  const supplied = signature.slice("sha256=".length);
+  if (!/^[a-fA-F0-9]{64}$/.test(supplied)) return false;
+  const expected = crypto.createHmac("sha256", config.server.whatsappAppSecret).update(rawBody).digest();
+  return crypto.timingSafeEqual(expected, Buffer.from(supplied, "hex"));
+}
+
 export function createServer() {
   const app = express();
   // Railway terminates TLS at its nearest proxy. Trust exactly that hop so Express derives
   // req.secure and the throttling client IP from Railway's X-Forwarded-* headers.
   app.set("trust proxy", 1);
-  app.use(express.json());
+  // Meta signs the exact bytes sent on the wire. Keep those bytes alongside the parsed JSON;
+  // re-serializing req.body can change whitespace/key ordering and invalidate a genuine event.
+  app.use(express.json({
+    verify: (req, _res, body) => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(body);
+    },
+  }));
   const adminReady = initAdminSchema();
 
   app.get("/health", (_req, res) => {
@@ -286,6 +301,28 @@ export function createServer() {
     res.status(200).json({ ok: true });
 
     await handleWebhookPayload(req.body as IncomingWebhook);
+  });
+
+  app.get("/webhook/whatsapp", (req, res) => {
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+    if (config.server.whatsappWebhookVerifyToken && mode === "subscribe" &&
+        token === config.server.whatsappWebhookVerifyToken && typeof challenge === "string") {
+      return res.status(200).type("text/plain").send(challenge);
+    }
+    return res.sendStatus(403);
+  });
+
+  app.post("/webhook/whatsapp", (req, res) => {
+    if (!config.server.whatsappAppSecret) {
+      return res.status(503).json({ error: "WHATSAPP_APP_SECRET is not configured" });
+    }
+    const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+    if (!rawBody || !verifyWhatsAppSignature(rawBody, req.header("x-hub-signature-256"))) {
+      return res.sendStatus(401);
+    }
+    return res.sendStatus(200);
   });
 
   // Telegram Bot API webhook receiver. Register via a one-time
