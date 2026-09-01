@@ -21,8 +21,8 @@ import { detectCurrency } from "../matching/currency";
 
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
-import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
-import { upsertListings } from "../watchfacts/inventoryDb";
+import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch } from "../postings/normalize";
+import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
 import { formatMarketPulse, getMarketPulse } from "../postings/marketPulse";
@@ -160,17 +160,16 @@ function parsePhotoRequestCommand(text: string): number | null {
   return m[1] ? parseInt(m[1], 10) : 1;
 }
 
-// "start" is folded in here too (for anyone not currently opted-out — see isOptOut/the
-// opted_out branch above, checked first and separately) — a real reported gap: someone who
-// got lost mid-conversation naturally reached for "start" expecting it to reorient them, and
-// got the generic "reply approve/pass..." reminder instead.
-const MENU_COMMAND = /^(help|menu|start)\b/i;
+// Help/menu intentionally exclude START: START has distinct reset/onboarding behavior below,
+// while help must always return the complete deterministic menu without consuming onboarding.
+const MENU_COMMAND = /^(?:help|menu)\b/i;
 const CANCEL_COMMAND = /^cancel\b/i;
 const STATUS_COMMAND = /^status\b/i;
 // Broadened past the exact word "listings" for the same reason — "listing summary", "my
 // listing", "edit my listings", and "summary" are all natural ways to ask for the same thing.
 const LISTINGS_COMMAND = /^(my\s+)?(listings?(\s+summary)?|summary)\b/i;
 const MY_ACTIVE_LISTINGS_COMMAND = /^(?:what\s+are\s+my\s+listings?|show\s+(?:me\s+)?my\s+(?:listings?|fs|wtb)|my\s+listings|(?:i\s+(?:need|want|would\s+like)\s+to\s+)?(?:edit|manage)\s+my\s+listings?|what\s+am\s+i\s+(?:selling|buying)|my\s+active\s+tasks?|what\s+are\s+you\s+monitoring\s+for\s+me)\s*[?.!]*$/i;
+const CURRENT_INVENTORY_COMMAND = /^(?:show(?:\s+me)?\s+(?:current\s+|watchfacts\s+|available\s+)?listings|show(?:\s+me)?\s+inventory|what(?:'s|\s+is)\s+available|current\s+listings)(?:\s+for\s+.+|\s+.+)?[?.!]*$/i;
 
 /** "Show prices in EUR" / "Use HKD as my preferred currency" — automatic currency conversion
  *  (src/fx/) display preference. Returns the requested ISO code (uppercased, NOT yet validated
@@ -284,6 +283,70 @@ function formatStructuredPosting(p: import("../postings/postingsStore").PostingR
     p.price ? `${p.type === "FS" ? "Asking" : "Budget"}: ${formatAmount(p.price, p.currency || "USD")}` : "",
     p.location,
   ].filter(Boolean).join("\n");
+}
+
+function listingIdentityText(listing: InventoryListing): string {
+  return [listing.brand, listing.item, listing.ref, listing.description].filter(Boolean).join(" ").toLowerCase();
+}
+
+function formatCurrentInventory(listings: InventoryListing[], requestLabel: string): string {
+  if (listings.length === 0) {
+    return "I don’t see any current WatchFacts listings that fit this request right now. I’ll keep monitoring.";
+  }
+  const cards = listings.map((listing, index) => {
+    const itemAlreadyHasIdentity = listing.item && [listing.brand, listing.ref].filter(Boolean).every((part) => listing.item.toLowerCase().includes(part.toLowerCase()));
+    const title = itemAlreadyHasIdentity ? listing.item : [listing.brand, listing.item, listing.ref].filter(Boolean).join(" ");
+    return [
+      `${index + 1}. ${title}`,
+      listing.condition || "",
+      listing.price && !/^ask$/i.test(listing.price) ? formatAmount(listing.price, listing.nativeCurrency || listing.priceCurrency || "USD") : "",
+      listing.location || "",
+      listing.detailUrl ? `Source: ${listing.detailUrl}` : "",
+      listing.imageUrl ? `Photo: ${listing.imageUrl}` : "",
+    ].filter(Boolean).join("\n   ");
+  });
+  return `Here ${listings.length === 1 ? "is" : "are"} ${listings.length} current WatchFacts listing${listings.length === 1 ? "" : "s"} for ${requestLabel}:\n\n${cards.join("\n\n")}`;
+}
+
+/** Reads only the normalized, active WatchFacts inventory. The command is resolved before AI
+ * chat, and context comes from persisted posting columns rather than re-parsing old messages. */
+async function handleCurrentInventoryCommand(state: ConversationState, text: string): Promise<string> {
+  const explicitReference = extractReference(text);
+  let active: import("../postings/postingsStore").PostingRow[] = [];
+  let context: { type: "FS" | "WTB"; brand?: string | null; model?: string | null; reference?: string | null } | undefined;
+
+  if (explicitReference) {
+    context = { type: state.pendingSellIntake ? "FS" : "WTB", reference: explicitReference };
+  } else if (state.pendingBuyIntake) {
+    context = { type: "WTB", ...state.pendingBuyIntake };
+  } else if (state.pendingSellIntake) {
+    context = { type: "FS", ...state.pendingSellIntake };
+  } else {
+    const userId = await getOrCreateCanonicalUser(platformForIdentity(state.phone), state.phone);
+    active = await getActivePostingsForUser(userId);
+    if (active.length === 1) context = active[0];
+    else if (active.length > 1) return "Which listing or watch do you mean? Please include the reference number.";
+  }
+
+  if (!context) return "Which watch do you mean? Please include the brand, model, or reference number.";
+  const desiredType = context.type === "WTB" ? "FS" : "WTB";
+  const requestedReference = explicitReference || context.reference || undefined;
+  const terms = (explicitReference ? [] : [context.brand, context.model]).filter((value): value is string => Boolean(value)).map((value) => value.toLowerCase());
+  const all = await getActiveListings(desiredType);
+  const seen = new Set<string>();
+  const relevant = all.filter((listing) => {
+    if (listing.source !== "WF" || (!listing.ref && !listing.brand && !listing.item)) return false;
+    if (listing.contactPhone && listing.contactPhone === state.phone) return false;
+    if (requestedReference && !listing.ref) return false;
+    if (requestedReference && !referencesMatch(requestedReference, listing.ref)) return false;
+    if (terms.length && !terms.every((term) => listingIdentityText(listing).includes(term))) return false;
+    const key = [listing.type, listing.ref.toUpperCase(), listing.price, listing.contactPhone, listing.detailUrl || listing.description].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 5);
+  const label = [context.brand, context.model, explicitReference || context.reference].filter(Boolean).join(" ") || "this request";
+  return formatCurrentInventory(relevant, label);
 }
 
 function formatActiveAcknowledgment(p: import("../postings/postingsStore").PostingRow, matchesFound: number): string {
@@ -719,6 +782,104 @@ function applyBuySlots(p: PendingBuyIntake, text: string): boolean {
   if (s.dial) { p.dialColor = /^any$/i.test(s.dial) ? "either" : s.dial; changed = true; }
   return changed;
 }
+
+function looksLikePriceAnswer(text: string): boolean {
+  const value = text.trim();
+  if (/^(?:[$€£]|(?:USD|CAD|HKD|EUR|GBP|AED|SGD|JPY|CNY|RMB|CHF)\b)/i.test(value)) return true;
+  if (/(?:USD|CAD|HKD|EUR|GBP|AED|SGD|JPY|CNY|RMB|CHF)\s*$/i.test(value)) return true;
+  // Preserve common six-digit numeric manufacturer references (for example Rolex 116500),
+  // while rejecting the reported ambiguous five-digit asking-price reply (38000).
+  return /^\d{5}(?:[,.]\d+)?\s*[kK]?$/.test(value);
+}
+
+function applyNamedIdentityCorrections(p: PendingSellIntake | PendingBuyIntake, text: string): boolean {
+  let changed = false;
+  if (/\bbrand\b/i.test(text)) {
+    const brand = normalizeText(text).brand;
+    if (brand) { p.brand = brand; changed = true; }
+  }
+  const model = /\bmodel\s+(?:to|is)\s+([^,.;]+)/i.exec(text)?.[1]?.trim();
+  if (model) { p.model = model; changed = true; }
+  if (/\b(?:reference|ref)\b/i.test(text)) {
+    const reference = extractReference(text);
+    if (reference && !looksLikePriceAnswer(reference)) { p.reference = reference; changed = true; }
+  }
+  return changed;
+}
+
+/** Applies a reply only to the slot Fi asked for. Confirmation-time corrections are accepted
+ * only when the field is named, preventing a price-only edit from ever touching identity. */
+function applyScopedSellAnswer(p: PendingSellIntake, text: string): boolean {
+  if (/\b(?:change|update|make|set)\b[\s\S]*\b(?:price|asking)\b|\b(?:price|asking)\b[\s\S]*\b(?:to|is)\b/i.test(text)) {
+    const price = extractListingAmount(text, p.reference);
+    if (price === undefined) return false;
+    p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD";
+    const slots = intakeSlots(text, p.reference);
+    if (slots.condition) p.condition = slots.condition;
+    if (slots.dial) p.dialColor = slots.dial;
+    if (slots.location) p.location = slots.location;
+    return true;
+  }
+  if (p.step === "price") {
+    const price = extractListingAmount(text, p.reference);
+    if (price === undefined) return false;
+    p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; return true;
+  }
+  if (p.step === "details" && /^\s*\d{6}\s*$/.test(text)) {
+    p.reference = text.trim();
+    return true;
+  }
+  if (p.step === "confirm") {
+    let changed = false;
+    if (/\b(?:price|asking)\b/i.test(text)) {
+      const price = extractListingAmount(text, p.reference); if (price !== undefined) { p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; changed = true; }
+    }
+    changed = applyNamedIdentityCorrections(p, text) || changed;
+    const slots = intakeSlots(text, p.reference);
+    if (slots.condition) { p.condition = slots.condition; changed = true; }
+    if (slots.dial) { p.dialColor = slots.dial; changed = true; }
+    if (slots.location) { p.location = slots.location; changed = true; }
+    return changed;
+  }
+  if (p.step === "details" && looksLikePriceAnswer(text)) return false;
+  return applySellSlots(p, text);
+}
+
+function applyScopedBuyAnswer(p: PendingBuyIntake, text: string): boolean {
+  if (/\b(?:change|update|make|set)\b[\s\S]*\b(?:price|budget|maximum|max)\b|\b(?:price|budget|maximum|max)\b[\s\S]*\b(?:to|is)\b/i.test(text)) {
+    const budget = extractListingAmount(text, p.reference);
+    if (budget === undefined) return false;
+    p.budget = budget; p.currency = detectCurrency(text) ?? p.currency ?? "USD";
+    const slots = intakeSlots(text, p.reference);
+    if (slots.condition) p.condition = slots.condition;
+    if (slots.dial) p.dialColor = slots.dial;
+    if (slots.location) p.location = slots.location;
+    return true;
+  }
+  if (p.step === "budget") {
+    const budget = extractListingAmount(text, p.reference);
+    if (budget === undefined) return false;
+    p.budget = budget; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; return true;
+  }
+  if (p.step === "details" && /^\s*\d{6}\s*$/.test(text)) {
+    p.reference = text.trim();
+    return true;
+  }
+  if (p.step === "confirm") {
+    let changed = false;
+    if (/\b(?:price|budget|maximum|max)\b/i.test(text)) {
+      const budget = extractListingAmount(text, p.reference); if (budget !== undefined) { p.budget = budget; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; changed = true; }
+    }
+    changed = applyNamedIdentityCorrections(p, text) || changed;
+    const slots = intakeSlots(text, p.reference);
+    if (slots.condition) { p.condition = slots.condition; changed = true; }
+    if (slots.dial) { p.dialColor = slots.dial; changed = true; }
+    if (slots.location) { p.location = slots.location; changed = true; }
+    return changed;
+  }
+  if (p.step === "details" && looksLikePriceAnswer(text)) return false;
+  return applyBuySlots(p, text);
+}
 function nextSell(p: PendingSellIntake): string | null {
   if (!p.brand && !p.reference) { p.step="details"; return SELL_DETAILS_QUESTION; }
   if (!p.reference && !p.referenceSkipped) { p.step="details"; return "Do you have the reference number? You can reply skip if you don't know it."; }
@@ -813,7 +974,8 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your listing draft open."); messages.push(nextSell(p)??sellSummary(p)); return; }
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&Boolean(text.trim()); if(freeLocation)p.location=text.trim();
-  const changed=applySellSlots(p,text) || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
+  const changed=applyScopedSellAnswer(p,text) || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
+  if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
   else if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open."); }
   messages.push(nextSell(p)??sellSummary(p));
@@ -825,7 +987,8 @@ async function handleBuyIntakeAnswer(state: ConversationState, text: string, mes
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&Boolean(text.trim()); if(freeLocation)p.location=text.trim();
-  const changed=applyBuySlots(p,text)||skippedReference||freeLocation;
+  const changed=applyScopedBuyAnswer(p,text)||skippedReference||freeLocation;
+  if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
   else if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your request draft open."); }
   messages.push(nextBuy(p)??buySummary(p));
@@ -882,19 +1045,23 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   const state = getState(phone);
   const messages: string[] = [];
   const firstName = contact?.name?.trim().split(/\s+/)[0] || "there";
+  // Telegram commonly prefixes bot commands with "/" (and may append "@botname"). Keep one
+  // normalized deterministic-command surface across Telegram, WhatsApp, and SMS.
+  const commandText = text.trim().replace(/^\/([a-z]+)(?:@[a-z0-9_]+)?\b/i, "$1");
 
   // Deterministic, database-only command. It intentionally runs before AI routing and never
   // invokes a Telegram/WhatsApp history API; the inbound webhook is merely the delivery path.
   if (/\bmarket\s+pulse\b/i.test(text)) {
     const reference = extractReference(text);
-    if (!reference) return { state, messages: ["Please include an exact watch reference, for example: Market Pulse 126500LN."] };
-    return { state, messages: [formatMarketPulse(await getMarketPulse(reference))] };
+    if (!reference) return { state, messages: [...messages, "Please include an exact watch reference, for example: Market Pulse 126500LN."] };
+    return { state, messages: [...messages, formatMarketPulse(await getMarketPulse(reference))] };
   }
 
   // START is a universal conversational reset, not only an opt-out recovery command. A user
   // with old pending matches must be able to begin again instead of being trapped behind the
   // approve/pass reminder shown in the reported live conversation.
-  if (normalize(text) === "start") {
+  if (normalize(commandText) === "start") {
+    const slashStart = /^\/start(?:@[a-z0-9_]+)?\b/i.test(text.trim());
     state.stage = "active";
     state.pendingMatches = undefined;
     state.pendingPreferenceCollection = undefined;
@@ -905,14 +1072,18 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     saveState(state);
     return {
       state,
-      messages: ["Hi, I'm Fi — here's what I can do: tell me naturally what you're looking to buy or sell, or ask me anything about your listings."],
+      messages: [
+        slashStart
+          ? config.fiFlow.introMessage
+          : "Hi, I'm Fi — here's what I can do: tell me naturally what you're looking to buy or sell, or ask me anything about your listings.",
+      ],
     };
   }
 
   if (isOptOut(text)) {
     state.stage = "opted_out";
     saveState(state);
-    return { state, messages: ["You're unsubscribed — you won't hear from Fi again. Reply START anytime to opt back in."] };
+    return { state, messages: [...messages, "You're unsubscribed — you won't hear from Fi again. Reply START anytime to opt back in."] };
   }
 
   if (state.stage === "opted_out") {
@@ -978,7 +1149,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   // none of them ever depends on AI, and none of them can be blocked by a mid-interview question
   // or a pending match. "hi"/"hello"/"menu" are folded into "help" (spec: "'hi' should return
   // the Fi menu, not force approve/pass").
-  if (MENU_COMMAND.test(text.trim())) {
+  if (MENU_COMMAND.test(commandText)) {
     messages.push(FI_MENU);
     saveState(state);
     return { state, messages };
@@ -995,6 +1166,11 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
   if (MY_ACTIVE_LISTINGS_COMMAND.test(text.trim())) {
     messages.push(await formatMyListingsSummary(state.phone));
+    saveState(state);
+    return { state, messages };
+  }
+  if (CURRENT_INVENTORY_COMMAND.test(text.trim())) {
+    messages.push(await handleCurrentInventoryCommand(state, text));
     saveState(state);
     return { state, messages };
   }
@@ -1149,6 +1325,9 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   const resolved = await resolveItemRequests(phone, text);
   const parsed = resolved.items;
 
+  // Onboarding belongs after deterministic commands: help/status/listing management/etc. must
+  // always retain their command semantics on a brand-new account. The first ordinary inbound
+  // message consumes this one-shot state and may then continue into normal intent handling.
   if (state.stage === "new") {
     messages.push(config.fiFlow.introMessage);
     state.stage = "active";

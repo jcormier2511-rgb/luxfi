@@ -146,3 +146,97 @@ test("an original-message FS photo stays in the draft and appears in the confirm
   assert.equal(inventoryWrites, 1);
   assert.equal(activations, 1);
 });
+
+test("reference and price remain independent through price and reference corrections", async () => {
+  const phone = "15550002008"; resetState(phone);
+  await handleIncomingMessage(phone, "FS Rolex Daytona 126500LN white dial for 38000, pre-owned in USA", undefined, "https://example.test/watch.jpg");
+  const priceEdit = await handleIncomingMessage(phone, "change price to 36500");
+  assert.equal(priceEdit.state.pendingSellIntake?.reference, "126500LN");
+  assert.equal(priceEdit.state.pendingSellIntake?.price, 36500);
+  assert.match(priceEdit.messages.at(-1)!, /Reference: 126500LN[\s\S]*Price: \$36,500/);
+  const referenceEdit = await handleIncomingMessage(phone, "change reference to 126500LN");
+  assert.equal(referenceEdit.state.pendingSellIntake?.reference, "126500LN");
+  assert.equal(referenceEdit.state.pendingSellIntake?.price, 36500);
+});
+
+test("a bare price answer updates only price and a price-shaped reference answer is rejected", async () => {
+  const phone = "15550002009"; resetState(phone);
+  const pricePrompt = await handleIncomingMessage(phone, "FS Rolex Daytona 126500LN");
+  assert.match(pricePrompt.messages.at(-1)!, /asking price/i);
+  const priced = await handleIncomingMessage(phone, "38000");
+  assert.equal(priced.state.pendingSellIntake?.reference, "126500LN");
+  assert.equal(priced.state.pendingSellIntake?.price, 38000);
+
+  const ambiguousPhone = "15550002010"; resetState(ambiguousPhone);
+  await handleIncomingMessage(ambiguousPhone, "FS Rolex Daytona");
+  const ambiguous = await handleIncomingMessage(ambiguousPhone, "38000");
+  assert.equal(ambiguous.state.pendingSellIntake?.reference, null);
+  assert.match(ambiguous.messages.join("\n"), /looks like a price, not a reference/i);
+
+  const qualifiedPhone = "15550002012"; resetState(qualifiedPhone);
+  await handleIncomingMessage(qualifiedPhone, "FS Rolex Daytona");
+  const qualified = await handleIncomingMessage(qualifiedPhone, "USD 38000");
+  assert.equal(qualified.state.pendingSellIntake?.reference, null, "a currency-qualified price must not become identity");
+  assert.match(qualified.messages.join("\n"), /looks like a price, not a reference/i);
+});
+
+test("a common six-digit numeric manufacturer reference remains valid", async () => {
+  const phone = "15550002013"; resetState(phone);
+  await handleIncomingMessage(phone, "FS Rolex Daytona");
+  const referenced = await handleIncomingMessage(phone, "116500");
+  assert.equal(referenced.state.pendingSellIntake?.reference, "116500");
+  assert.match(referenced.messages.at(-1)!, /asking price/i);
+});
+
+test("confirmation-time brand and model corrections preserve price and reference", async () => {
+  const phone = "15550002014"; resetState(phone);
+  await handleIncomingMessage(phone, "FS Rolex Daytona 126500LN white dial for 38000, pre-owned in USA", undefined, "https://example.test/watch.jpg");
+  const brand = await handleIncomingMessage(phone, "change brand to Omega");
+  assert.equal(brand.state.pendingSellIntake?.brand, "omega");
+  assert.equal(brand.state.pendingSellIntake?.reference, "126500LN");
+  assert.equal(brand.state.pendingSellIntake?.price, 38000);
+  const model = await handleIncomingMessage(phone, "change model to Speedmaster");
+  assert.equal(model.state.pendingSellIntake?.model, "Speedmaster");
+  assert.equal(model.state.pendingSellIntake?.reference, "126500LN");
+  assert.equal(model.state.pendingSellIntake?.price, 38000);
+});
+
+test("first contact intro is shared by Telegram and WhatsApp identities and sent once", async () => {
+  for (const identity of ["telegram:99101", "whatsapp:15559910101"]) {
+    resetState(identity);
+    const first = await handleIncomingMessage(identity, "hi");
+    assert.match(first.messages[0], /Fi/i);
+    const second = await handleIncomingMessage(identity, "hi");
+    assert.equal(second.messages.filter((message) => message === first.messages[0]).length, 0);
+  }
+});
+
+test("current WatchFacts command uses active opposite-side inventory, deduplicates, and caps at five", async (t) => {
+  const phone = "15550002011"; resetState(phone);
+  await handleIncomingMessage(phone, "WTB Rolex Daytona 126500LN for 40000");
+  const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
+  const rows = Array.from({ length: 7 }, (_, index) => ({
+    id: `wf-${index}`, type: "FS" as const, category: "watches", item: "Daytona", brand: "Rolex", ref: "126500LN",
+    condition: "New", price: String(28000 + index), location: "Miami", contactName: "Dealer", contactPhone: String(index),
+    source: "WF", rating: "", description: `Rolex Daytona 126500LN ${index}`, detailUrl: `https://watchfacts.example/${index}`,
+  }));
+  rows.splice(1, 0, { ...rows[0], id: "duplicate" });
+  t.mock.method(inventory, "getActiveListings", async (type?: "FS" | "WTB") => rows.filter((row) => !type || row.type === type));
+  const result = await handleIncomingMessage(phone, "show current listings");
+  assert.match(result.messages.at(-1)!, /5 current WatchFacts listings/);
+  assert.match(result.messages.at(-1)!, /126500LN/);
+  assert.doesNotMatch(result.messages.at(-1)!, /6\. /);
+});
+
+test("current inventory compares formatted references canonically", async (t) => {
+  const phone = "15550002015"; resetState(phone);
+  const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
+  t.mock.method(inventory, "getActiveListings", async () => [{
+    id: "formatted", type: "FS", category: "watches", item: "Cosmograph", brand: "Rolex", ref: "1165080013",
+    condition: "New", price: "50000", location: "NY", contactName: "Dealer", contactPhone: "2", source: "WF",
+    rating: "", description: "Rolex 1165080013",
+  }]);
+  const result = await handleIncomingMessage(phone, "current listings for 116508-0013");
+  assert.match(result.messages.at(-1)!, /1165080013/);
+  assert.doesNotMatch(result.messages.at(-1)!, /don’t see any/i);
+});
