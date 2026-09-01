@@ -9,6 +9,7 @@ import {
 } from "./postingsStore";
 import { runImmediateMatch } from "./matching";
 import { sendText } from "../channels";
+import { publishConfirmedListing } from "./groupPublishing";
 
 /**
  * Spec §4.1/§4.2: a new or materially-changed posting is immediately tested against every
@@ -52,6 +53,7 @@ export interface DirectSellIngestResult {
  */
 export async function ingestDirectSellPosting(input: DirectSellPostingInput): Promise<DirectSellIngestResult> {
   const posting = await createDirectPosting(input);
+  await publishConfirmedListing(posting);
   const { matchesFound } = await runImmediateMatch(posting);
   return { matchesFound };
 }
@@ -59,6 +61,7 @@ export async function ingestDirectSellPosting(input: DirectSellPostingInput): Pr
 /** Saves a completed private buyer request before attempting any inventory search. */
 export async function ingestDirectBuyPosting(input: DirectSellPostingInput): Promise<DirectSellIngestResult> {
   const posting = await createDirectPosting({ ...input, type: "WTB" });
+  await publishConfirmedListing(posting);
   const { matchesFound } = await runImmediateMatch(posting);
   return { matchesFound };
 }

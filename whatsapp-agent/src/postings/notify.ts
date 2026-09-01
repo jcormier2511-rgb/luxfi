@@ -10,6 +10,7 @@ import { sendText } from "../channels";
 import { config } from "../config";
 import { isPostingMonitoringEnabled } from "../admin/store";
 import { markPendingEscrowOffer } from "../conversation/stateStore";
+import { getListingLimits } from "./listingConfig";
 
 /**
  * Not filtered by platform: a canonical user has exactly one linked identity in this MVP
@@ -98,6 +99,10 @@ async function notifyOneRecipient(
   // nothing gets marked "notified" for a message that was never actually sent — if the group
   // becomes allowed again later, this stays retryable rather than permanently skipped.
   if (!await isPostingMonitoringEnabled(self)) return;
+
+  const { maxMatchesPerListing } = await getListingLimits();
+  const shown = await withSchema(pool=>pool.query(`SELECT count(*)::int n FROM match_recipients mr JOIN matches m ON m.id=mr.match_id WHERE mr.recipient_canonical_user_id=$1 AND mr.notified_at IS NOT NULL AND ($2=m.fs_posting_id OR $2=m.wtb_posting_id)`,[recipientCanonicalUserId,self.id]));
+  if(Number(shown.rows[0]?.n??0)>=maxMatchesPerListing)return;
 
   const claimed = await withSchema((pool) =>
     pool.query(

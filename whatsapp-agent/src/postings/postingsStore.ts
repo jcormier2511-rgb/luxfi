@@ -18,6 +18,8 @@ export interface PostingRow {
   model: string;
   reference: string;
   dial?: string;
+  box_papers?: string;
+  year?: string;
   condition: string;
   price: string | null; // NUMERIC comes back as string from pg
   currency: string;
@@ -175,6 +177,11 @@ export interface DirectSellPostingInput {
   condition?: string;
   location?: string;
   dialColor?: string;
+  brand?: string;
+  model?: string;
+  boxPapers?: string;
+  year?: string;
+  notes?: string;
   currency?: string;
   imageUrl?: string;
 }
@@ -199,8 +206,8 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
     const insert = await pool.query<PostingRow>(
       `INSERT INTO postings
          (source_platform, source_type, canonical_user_id, source_identity,
-          type, original_text, brand, reference, dial, condition, price, currency, location, contact_name, contact_phone, status, expires_at)
-       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',$15)
+          type, original_text, brand, model, reference, dial, condition, box_papers, year, price, currency, location, contact_name, contact_phone, status, expires_at)
+       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'active',$17)
        RETURNING *`,
       [
         platform,
@@ -208,10 +215,13 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
         input.phone,
         input.type ?? "FS",
         input.description,
-        normalized.brand,
+        input.brand ?? normalized.brand,
+        input.model ?? "",
         input.reference ?? "",
         input.dialColor ?? "",
         input.condition ?? "",
+        input.boxPapers ?? "",
+        input.year ?? "",
         input.price,
         input.currency ?? normalized.currency,
         input.location ?? "",
