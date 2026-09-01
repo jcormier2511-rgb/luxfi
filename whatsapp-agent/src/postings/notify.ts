@@ -44,7 +44,10 @@ async function getMatchWithPostings(
 
 function watchLabel(posting: PostingRow): string {
   const structured = [posting.brand, posting.model, posting.reference].filter(Boolean).join(" ");
-  if (structured) return structured;
+  // Parser-derived brand/model values may be normalized to lowercase. When no reference was
+  // captured, retain the original listing's human-readable casing instead of
+  // degrading durable approval summaries (for example, "FS Rolex MUTUAL1 ..." -> "rolex").
+  if (structured && posting.reference) return structured;
   return posting.original_text.slice(0, 80);
 }
 
@@ -121,7 +124,10 @@ function formatMatchMessage(
 ): string {
   const roleLabel = self.type === "FS" ? "Buyer" : "Seller";
   return (
-    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl)) +
+    // Keep the established notification discriminator as well as the numeric ID. Besides being
+    // useful to people scanning a chat, downstream channel consumers and the PR #20 regression
+    // suite intentionally recognize automatic notifications by the "Potential Match" heading.
+    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl), "Potential Match") +
     (reasons.length ? `\n\nWhy it matched:\n${reasons.map((r) => `- ${r}`).join("\n")}` : "") +
     `\n\nReply "approve ${matchId}" to connect, or "pass ${matchId}" to skip.`
   );
