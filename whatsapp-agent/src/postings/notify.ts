@@ -54,7 +54,7 @@ function watchLabel(posting: PostingRow): string {
  * request/response turn the way the v3 flow's numbered list is — the recipient needs a way
  * to say which match they mean.
  */
-function formatMatchMessage(
+export function formatMatchMessage(
   matchId: number,
   self: PostingRow,
   counterpart: PostingRow,
@@ -62,14 +62,22 @@ function formatMatchMessage(
   imageUrl: string | null
 ): string {
   const roleLabel = self.type === "FS" ? "Buyer" : "Seller";
-  const priceLabel = counterpart.price !== null ? `$${counterpart.price}` : "price on ask";
+  const priceLabel = counterpart.price !== null
+    ? `${counterpart.currency === "USD" ? "$" : `${counterpart.currency} `}${Number(counterpart.price).toLocaleString("en-US")}`
+    : "price on ask";
+  const product = [counterpart.brand, counterpart.model, counterpart.reference].filter(Boolean).join(" ") || watchLabel(counterpart);
   return (
-    `Potential Match\n` +
+    `Potential Match ${matchId}\n` +
     `${roleLabel}: ${counterpart.contact_name || "Unnamed"}\n` +
-    `Type: ${counterpart.type}\n` +
-    `Watch: ${watchLabel(counterpart)}\n` +
-    `Asking/Bid: ${priceLabel}\n` +
-    `Location: ${counterpart.location || "Not specified"}\n\n` +
+    `${product}\n` +
+    (counterpart.dial ? `Dial: ${counterpart.dial}\n` : "") +
+    (counterpart.year ? `Year: ${counterpart.year}\n` : "") +
+    (counterpart.box_papers ? `Box/papers: ${counterpart.box_papers}\n` : "") +
+    `Price: ${priceLabel}\n` +
+    `Condition: ${counterpart.condition || "Not specified"}\n` +
+    `Location: ${counterpart.location || "Not specified"}\n` +
+    (counterpart.detail_url ? `Source: ${counterpart.detail_url}\n` : "") +
+    `\n` +
     reasons.map((r) => `- ${r}`).join("\n") +
     (imageUrl ? `\n\nPhoto: ${imageUrl}` : "") +
     `\n\nReply "approve ${matchId}" to connect, or "pass ${matchId}" to skip.`

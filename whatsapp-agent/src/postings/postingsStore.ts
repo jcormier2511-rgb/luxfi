@@ -18,7 +18,10 @@ export interface PostingRow {
   model: string;
   reference: string;
   dial?: string;
+  material?: string;
+  year?: string;
   condition: string;
+  box_papers?: string;
   price: string | null; // NUMERIC comes back as string from pg
   currency: string;
   location: string;
@@ -175,8 +178,11 @@ export interface DirectSellPostingInput {
   condition?: string;
   location?: string;
   dialColor?: string;
+  year?: string;
+  boxPapers?: string;
   currency?: string;
   imageUrl?: string;
+  detailUrl?: string;
 }
 
 /**
@@ -193,14 +199,19 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
   const platform = platformForIdentity(input.phone);
   const canonicalUserId = await getOrCreateCanonicalUser(platform, input.phone);
   const normalized = normalizeText(input.description);
+  const model = input.description
+    .replace(new RegExp(normalized.brand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "ig"), "")
+    .replace(input.reference ?? "", "")
+    .replace(/^\s*(?:FS|WTB|for sale|sell(?:ing)?|buy(?:ing)?)\s*:?\s*/i, "")
+    .trim();
   const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
 
   return withSchema(async (pool) => {
     const insert = await pool.query<PostingRow>(
       `INSERT INTO postings
          (source_platform, source_type, canonical_user_id, source_identity,
-          type, original_text, brand, reference, dial, condition, price, currency, location, contact_name, contact_phone, status, expires_at)
-       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',$15)
+          type, original_text, brand, model, reference, dial, year, condition, box_papers, price, currency, location, contact_name, contact_phone, detail_url, status, expires_at)
+       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'active',$19)
        RETURNING *`,
       [
         platform,
@@ -209,14 +220,18 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
         input.type ?? "FS",
         input.description,
         normalized.brand,
+        model,
         input.reference ?? "",
         input.dialColor ?? "",
+        input.year ?? "",
         input.condition ?? "",
+        input.boxPapers ?? "",
         input.price,
         input.currency ?? normalized.currency,
         input.location ?? "",
         input.senderName || input.phone,
         input.phone,
+        input.detailUrl ?? "",
         expiresAt,
       ]
     );

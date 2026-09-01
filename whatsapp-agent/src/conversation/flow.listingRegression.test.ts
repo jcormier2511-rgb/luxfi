@@ -89,14 +89,16 @@ test("FS confirmation boundary persists and activates every parsed field exactly
   const photoPrompt = await handleIncomingMessage(phone, "FS Rolex 116500LN black dial unworn in Canada for 28500");
   assert.match(photoPrompt.messages.at(-1)!, /attach a photo/i);
   const summary = await handleIncomingMessage(phone, "skip");
-  assert.match(summary.messages.at(-1)!, /Photo: none.*Should I start monitoring\?/);
+  assert.match(summary.messages.at(-1)!, /Photo: none[\s\S]*Should I start monitoring\?/);
   assert.equal(inventoryWrites.length, 0, "summary must not persist inventory");
   assert.equal(activations.length, 0, "summary must not activate or match the listing");
 
   const correction = await handleIncomingMessage(phone, "Actually condition pre-owned and price $29,000");
   assert.equal(inventoryWrites.length, 0);
   assert.equal(activations.length, 0, "correction requires a fresh confirmation");
-  assert.match(correction.messages.at(-1)!, /pre-owned.*asking \$29,000.*Should I start monitoring\?/);
+  assert.match(correction.messages.at(-1)!, /Asking: \$29,000/);
+  assert.match(correction.messages.at(-1)!, /Condition: pre-owned/);
+  assert.match(correction.messages.at(-1)!, /Should I start monitoring\?/);
 
   await handleIncomingMessage(phone, "yes");
   assert.equal(inventoryWrites.length, 1, "confirmed seller inventory is persisted once");
@@ -128,7 +130,7 @@ test("an original-message FS photo stays in the draft and appears in the confirm
     undefined,
     "https://cdn.example/original.jpg"
   );
-  assert.match(summary.messages.at(-1)!, /Photo: attached.*Should I start monitoring\?/);
+  assert.match(summary.messages.at(-1)!, /Photo: attached[\s\S]*Should I start monitoring\?/);
   assert.equal(summary.state.pendingSellIntake?.imageUrl, "https://cdn.example/original.jpg");
   assert.equal(summary.state.pendingSellIntake?.currency, "EUR");
   assert.equal(inventoryWrites, 0);
@@ -137,4 +139,41 @@ test("an original-message FS photo stays in the draft and appears in the confirm
   await handleIncomingMessage(phone, "yes");
   assert.equal(inventoryWrites, 1);
   assert.equal(activations, 1);
+});
+
+test("brand and model survive reference and optional-detail collection one question at a time", async () => {
+  const phone = "telegram:listing-identity";
+  resetState(phone);
+  const details = await handleIncomingMessage(phone, "I want to sell a watch");
+  assert.equal(details.messages.length, 2, "onboarding plus exactly one workflow question");
+  assert.match(details.messages.at(-1)!, /brand, model/i);
+
+  const reference = await handleIncomingMessage(phone, "Rolex Daytona");
+  assert.equal(reference.messages.length, 1);
+  assert.match(reference.messages[0], /Do you have the reference number/i);
+  assert.equal(reference.state.pendingSellIntake?.description, "Rolex Daytona");
+
+  const price = await handleIncomingMessage(phone, "skip");
+  assert.equal(price.messages.length, 1);
+  assert.match(price.messages[0], /asking price/i);
+  const dial = await handleIncomingMessage(phone, "35000");
+  assert.equal(dial.state.pendingSellIntake?.description, "Rolex Daytona");
+  assert.equal(dial.state.pendingSellIntake?.reference, null);
+  assert.equal(dial.state.pendingSellIntake?.price, 35000);
+  assert.match(dial.messages[0], /dial color/i);
+
+  await handleIncomingMessage(phone, "black dial");
+  await handleIncomingMessage(phone, "skip"); // year
+  await handleIncomingMessage(phone, "full set");
+  await handleIncomingMessage(phone, "new");
+  await handleIncomingMessage(phone, "USA");
+  const summary = await handleIncomingMessage(phone, "skip");
+  assert.match(summary.messages[0], /Rolex Daytona/);
+  assert.match(summary.messages[0], /Reference: not provided/);
+  assert.match(summary.messages[0], /Asking: \$35,000/);
+  assert.match(summary.messages[0], /Dial: black/);
+  assert.match(summary.messages[0], /Box\/papers: full set/);
+  assert.match(summary.messages[0], /Condition: new/);
+  assert.match(summary.messages[0], /Location: USA/);
+  assert.match(summary.messages[0], /Photo: none/);
 });

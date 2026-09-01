@@ -161,6 +161,12 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
       }
       if (message.imageUrl && await handleIncomingSellerPhoto(message.phone, message.imageUrl)) continue;
 
+      const directPostingReply = await tryHandleDirectPostingDecision(message.phone, message.text);
+      if (directPostingReply !== null) {
+        await sendText(message.phone, directPostingReply);
+        continue;
+      }
+
       const v4Reply = await tryHandleV4Decision(message.phone, message.text);
       if (v4Reply !== null) {
         await sendText(message.phone, v4Reply);

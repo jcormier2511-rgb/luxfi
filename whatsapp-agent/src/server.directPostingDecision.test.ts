@@ -91,6 +91,16 @@ test("required: the seller can approve a direct-posting match via tryHandleDirec
   assert.match(reply!, /connected|as soon as the other side confirms/i);
 });
 
+test("a recently presented direct match remains approvable through the shared message pipeline", async (t) => {
+  await db._resetDbForTests();
+  const sellerPhone = "19990000013";
+  const { matchId, sent } = await seedMatch(t, sellerPhone);
+  sent.length = 0;
+  await server.processIncomingMessages([{ id: "approve-direct-1", phone: sellerPhone, text: `approve ${matchId}`, isGroup: false }]);
+  assert.ok(sent.some((message) => message.phone === sellerPhone && /connected|as soon as the other side confirms/i.test(message.message)));
+  assert.ok(!sent.some((message) => /no open matches/i.test(message.message)));
+});
+
 test("required: the seller can pass on a direct-posting match via tryHandleDirectPostingDecision with ENABLE_V4_POSTINGS unset", async (t) => {
   assert.equal(config.postingsV4.enabled, false);
   await db._resetDbForTests();

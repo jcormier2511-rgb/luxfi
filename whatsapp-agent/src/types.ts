@@ -96,7 +96,7 @@ export interface PendingNaturalFollowUp {
   missing: string[];
 }
 
-export type SellIntakeStep = "details" | "price" | "condition" | "location" | "dial" | "photo" | "confirm";
+export type SellIntakeStep = "details" | "reference" | "price" | "dial" | "year" | "boxPapers" | "condition" | "location" | "photo" | "confirm";
 
 /**
  * A "sell" request doesn't search anything live yet (there's no automatic buyer-matching for a
@@ -108,12 +108,19 @@ export interface PendingSellIntake {
   step: SellIntakeStep;
   description: string; // accumulated free-text description, starting from the original message
   reference: string | null;
+  referenceSkipped?: boolean;
   price?: number;
   currency?: string;
   priceText?: string; // the raw reply, kept for display when the number couldn't be parsed
   condition?: string;
   location?: string;
   dialColor?: string;
+  dialSkipped?: boolean;
+  year?: string;
+  yearSkipped?: boolean;
+  boxPapers?: string;
+  boxPapersSkipped?: boolean;
+  listingUrl?: string;
   imageUrl?: string;
   photoSkipped?: boolean;
 }
