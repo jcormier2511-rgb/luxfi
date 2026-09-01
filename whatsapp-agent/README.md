@@ -409,6 +409,33 @@ The dashboard also includes:
 
 ## Real payments (Authorize.net)
 
+## One-time old-Fi returning-user campaign
+
+This migration is deliberately **never scheduled or run at deploy time**. It considers only
+WhatsApp identities with a recorded direct inbound interaction; passive group participants and
+scraped/imported numbers without direct history are excluded. Blocked, inactive, opted-out,
+invalid, and previously-sent recipients are also excluded.
+
+Configure `FI_PUBLIC_PHONE_NUMBER` and an approved business-initiated WhatsApp template using
+`FI_RETURNING_TEMPLATE_NAME` / `FI_RETURNING_TEMPLATE_LANGUAGE`. The template has two body
+variables: the complete greeting (`Hi Ana, Fi here.` or `Hi, Fi here.`) and the public number.
+Meta requires an approved template for this re-engagement message when the 24-hour customer
+service window is closed, so the campaign uses the existing Whapi channel's template endpoint,
+not a second sender or unrestricted text delivery.
+
+Authenticated administrators can inspect `GET /admin/api/campaigns/fi-returning`. To preview
+without writes or delivery, POST `{"dryRun":true}`. To validate one eligible account, POST
+`{"confirm":true,"testRecipient":"13055551234"}`. A broad send requires the explicit body
+`{"confirm":true}`. The endpoint reports eligible/already-sent/excluded totals and exclusion
+reason counts. Delivery and the three-task promotion are persisted by canonical account; the
+unique account keys make reruns idempotent. `FI_RETURNING_RATE_PER_HOUR` controls pacing.
+
+The promotion extends the existing approved-match complimentary gate rather than introducing a
+second credit currency. Its grant and used count live in `fi_returning_promotions`; each of the
+recipient's next three approved matches consumes one promotional task. Campaign copy reuses the
+central Tier 1 `$50/month` price from `src/billing/plans.ts` and does not change subscription or
+payment enforcement.
+
 Fi memberships can now be charged for real, through Authorize.net — Accept Hosted for the
 first month (a hosted, Authorize.net-served payment page, so this server never touches card
 data) plus ARB (Automated Recurring Billing) for month 2 onward, billed against the payment

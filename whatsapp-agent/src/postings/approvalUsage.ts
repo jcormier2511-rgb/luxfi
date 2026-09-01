@@ -29,6 +29,7 @@ export interface ApprovalUsageSnapshot {
   /** Non-complimentary approvals in the last rolling 7 days — only meaningful when weeklyLimit is a number. */
   weeklyUsed: number;
   entitlement: Entitlement;
+  promotionalTasksRemaining?: number;
 }
 
 export type ApprovalGate =
@@ -58,10 +59,12 @@ export async function getApprovalUsage(phone: string): Promise<ApprovalUsageSnap
   return withSchema(async (pool) => {
     const userResult = await pool.query(`SELECT total_approved_count FROM canonical_users WHERE id=$1`, [canonicalUserId]);
     const totalApproved = (userResult.rows[0]?.total_approved_count as number) ?? 0;
-    const isComplimentary = totalApproved < config.trial.maxApprovedMatches;
+    const promo = await pool.query(`SELECT tasks_granted,tasks_used FROM fi_returning_promotions WHERE canonical_user_id=$1`, [canonicalUserId]);
+    const promotionalTasksRemaining = promo.rows[0] ? promo.rows[0].tasks_granted - promo.rows[0].tasks_used : 0;
+    const isComplimentary = totalApproved < config.trial.maxApprovedMatches || promotionalTasksRemaining > 0;
     const weeklyLimit = weeklyLimitFor(entitlement);
     const weeklyUsed = !isComplimentary && weeklyLimit !== null ? await getWeeklyApprovalCount(pool, canonicalUserId) : 0;
-    return { canonicalUserId, totalApproved, isComplimentary, weeklyLimit, weeklyUsed, entitlement };
+    return { canonicalUserId, totalApproved, isComplimentary, weeklyLimit, weeklyUsed, entitlement, promotionalTasksRemaining };
   });
 }
 
@@ -120,6 +123,10 @@ export async function recordApprovalEvent(
     [canonicalUserId, matchId, isComplimentary ? "complimentary" : "plan_included"]
   );
   await client.query(`UPDATE canonical_users SET total_approved_count = total_approved_count + 1 WHERE id=$1`, [canonicalUserId]);
+  // A returning-user grant is consumed first so the campaign truthfully makes the recipient's
+  // *next* three approvals complimentary, regardless of how much of the original trial remained.
+  if (isComplimentary) await client.query(`UPDATE fi_returning_promotions SET tasks_used=tasks_used+1
+    WHERE canonical_user_id=$1 AND tasks_used<tasks_granted`, [canonicalUserId]);
   return true;
 }
 
