@@ -172,6 +172,33 @@ test("a bare price answer updates only price and a price-shaped reference answer
   const ambiguous = await handleIncomingMessage(ambiguousPhone, "38000");
   assert.equal(ambiguous.state.pendingSellIntake?.reference, null);
   assert.match(ambiguous.messages.join("\n"), /looks like a price, not a reference/i);
+
+  const qualifiedPhone = "15550002012"; resetState(qualifiedPhone);
+  await handleIncomingMessage(qualifiedPhone, "FS Rolex Daytona");
+  const qualified = await handleIncomingMessage(qualifiedPhone, "USD 38000");
+  assert.equal(qualified.state.pendingSellIntake?.reference, null, "a currency-qualified price must not become identity");
+  assert.match(qualified.messages.join("\n"), /looks like a price, not a reference/i);
+});
+
+test("a common six-digit numeric manufacturer reference remains valid", async () => {
+  const phone = "15550002013"; resetState(phone);
+  await handleIncomingMessage(phone, "FS Rolex Daytona");
+  const referenced = await handleIncomingMessage(phone, "116500");
+  assert.equal(referenced.state.pendingSellIntake?.reference, "116500");
+  assert.match(referenced.messages.at(-1)!, /asking price/i);
+});
+
+test("confirmation-time brand and model corrections preserve price and reference", async () => {
+  const phone = "15550002014"; resetState(phone);
+  await handleIncomingMessage(phone, "FS Rolex Daytona 126500LN white dial for 38000, pre-owned in USA", undefined, "https://example.test/watch.jpg");
+  const brand = await handleIncomingMessage(phone, "change brand to Omega");
+  assert.equal(brand.state.pendingSellIntake?.brand, "omega");
+  assert.equal(brand.state.pendingSellIntake?.reference, "126500LN");
+  assert.equal(brand.state.pendingSellIntake?.price, 38000);
+  const model = await handleIncomingMessage(phone, "change model to Speedmaster");
+  assert.equal(model.state.pendingSellIntake?.model, "Speedmaster");
+  assert.equal(model.state.pendingSellIntake?.reference, "126500LN");
+  assert.equal(model.state.pendingSellIntake?.price, 38000);
 });
 
 test("first contact intro is shared by Telegram and WhatsApp identities and sent once", async () => {
@@ -199,4 +226,17 @@ test("current WatchFacts command uses active opposite-side inventory, deduplicat
   assert.match(result.messages.at(-1)!, /5 current WatchFacts listings/);
   assert.match(result.messages.at(-1)!, /126500LN/);
   assert.doesNotMatch(result.messages.at(-1)!, /6\. /);
+});
+
+test("current inventory compares formatted references canonically", async (t) => {
+  const phone = "15550002015"; resetState(phone);
+  const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
+  t.mock.method(inventory, "getActiveListings", async () => [{
+    id: "formatted", type: "FS", category: "watches", item: "Cosmograph", brand: "Rolex", ref: "1165080013",
+    condition: "New", price: "50000", location: "NY", contactName: "Dealer", contactPhone: "2", source: "WF",
+    rating: "", description: "Rolex 1165080013",
+  }]);
+  const result = await handleIncomingMessage(phone, "current listings for 116508-0013");
+  assert.match(result.messages.at(-1)!, /1165080013/);
+  assert.doesNotMatch(result.messages.at(-1)!, /don’t see any/i);
 });

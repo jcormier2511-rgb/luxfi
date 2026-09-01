@@ -21,7 +21,7 @@ import { detectCurrency } from "../matching/currency";
 
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
-import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText } from "../postings/normalize";
+import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch } from "../postings/normalize";
 import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
@@ -330,12 +330,15 @@ async function handleCurrentInventoryCommand(state: ConversationState, text: str
 
   if (!context) return "Which watch do you mean? Please include the brand, model, or reference number.";
   const desiredType = context.type === "WTB" ? "FS" : "WTB";
-  const terms = (explicitReference ? [explicitReference] : [context.reference, context.brand, context.model]).filter((value): value is string => Boolean(value)).map((value) => value.toLowerCase());
+  const requestedReference = explicitReference || context.reference || undefined;
+  const terms = (explicitReference ? [] : [context.brand, context.model]).filter((value): value is string => Boolean(value)).map((value) => value.toLowerCase());
   const all = await getActiveListings(desiredType);
   const seen = new Set<string>();
   const relevant = all.filter((listing) => {
     if (listing.source !== "WF" || (!listing.ref && !listing.brand && !listing.item)) return false;
     if (listing.contactPhone && listing.contactPhone === state.phone) return false;
+    if (requestedReference && !listing.ref) return false;
+    if (requestedReference && !referencesMatch(requestedReference, listing.ref)) return false;
     if (terms.length && !terms.every((term) => listingIdentityText(listing).includes(term))) return false;
     const key = [listing.type, listing.ref.toUpperCase(), listing.price, listing.contactPhone, listing.detailUrl || listing.description].join("|");
     if (seen.has(key)) return false;
@@ -780,8 +783,28 @@ function applyBuySlots(p: PendingBuyIntake, text: string): boolean {
   return changed;
 }
 
-function looksLikeBarePrice(text: string): boolean {
-  return /^\s*[$€£]?\s*\d{5,}(?:[,.]\d+)?\s*[kK]?\s*$/.test(text);
+function looksLikePriceAnswer(text: string): boolean {
+  const value = text.trim();
+  if (/^(?:[$€£]|(?:USD|CAD|HKD|EUR|GBP|AED|SGD|JPY|CNY|RMB|CHF)\b)/i.test(value)) return true;
+  if (/(?:USD|CAD|HKD|EUR|GBP|AED|SGD|JPY|CNY|RMB|CHF)\s*$/i.test(value)) return true;
+  // Preserve common six-digit numeric manufacturer references (for example Rolex 116500),
+  // while rejecting the reported ambiguous five-digit asking-price reply (38000).
+  return /^\d{5}(?:[,.]\d+)?\s*[kK]?$/.test(value);
+}
+
+function applyNamedIdentityCorrections(p: PendingSellIntake | PendingBuyIntake, text: string): boolean {
+  let changed = false;
+  if (/\bbrand\b/i.test(text)) {
+    const brand = normalizeText(text).brand;
+    if (brand) { p.brand = brand; changed = true; }
+  }
+  const model = /\bmodel\s+(?:to|is)\s+([^,.;]+)/i.exec(text)?.[1]?.trim();
+  if (model) { p.model = model; changed = true; }
+  if (/\b(?:reference|ref)\b/i.test(text)) {
+    const reference = extractReference(text);
+    if (reference && !looksLikePriceAnswer(reference)) { p.reference = reference; changed = true; }
+  }
+  return changed;
 }
 
 /** Applies a reply only to the slot Fi asked for. Confirmation-time corrections are accepted
@@ -802,21 +825,23 @@ function applyScopedSellAnswer(p: PendingSellIntake, text: string): boolean {
     if (price === undefined) return false;
     p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; return true;
   }
+  if (p.step === "details" && /^\s*\d{6}\s*$/.test(text)) {
+    p.reference = text.trim();
+    return true;
+  }
   if (p.step === "confirm") {
     let changed = false;
     if (/\b(?:price|asking)\b/i.test(text)) {
       const price = extractListingAmount(text, p.reference); if (price !== undefined) { p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; changed = true; }
     }
-    if (/\b(?:reference|ref)\b/i.test(text)) {
-      const reference = extractReference(text); if (reference && !looksLikeBarePrice(reference)) { p.reference = reference; changed = true; }
-    }
+    changed = applyNamedIdentityCorrections(p, text) || changed;
     const slots = intakeSlots(text, p.reference);
     if (slots.condition) { p.condition = slots.condition; changed = true; }
     if (slots.dial) { p.dialColor = slots.dial; changed = true; }
     if (slots.location) { p.location = slots.location; changed = true; }
     return changed;
   }
-  if (p.step === "details" && looksLikeBarePrice(text)) return false;
+  if (p.step === "details" && looksLikePriceAnswer(text)) return false;
   return applySellSlots(p, text);
 }
 
@@ -836,21 +861,23 @@ function applyScopedBuyAnswer(p: PendingBuyIntake, text: string): boolean {
     if (budget === undefined) return false;
     p.budget = budget; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; return true;
   }
+  if (p.step === "details" && /^\s*\d{6}\s*$/.test(text)) {
+    p.reference = text.trim();
+    return true;
+  }
   if (p.step === "confirm") {
     let changed = false;
     if (/\b(?:price|budget|maximum|max)\b/i.test(text)) {
       const budget = extractListingAmount(text, p.reference); if (budget !== undefined) { p.budget = budget; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; changed = true; }
     }
-    if (/\b(?:reference|ref)\b/i.test(text)) {
-      const reference = extractReference(text); if (reference && !looksLikeBarePrice(reference)) { p.reference = reference; changed = true; }
-    }
+    changed = applyNamedIdentityCorrections(p, text) || changed;
     const slots = intakeSlots(text, p.reference);
     if (slots.condition) { p.condition = slots.condition; changed = true; }
     if (slots.dial) { p.dialColor = slots.dial; changed = true; }
     if (slots.location) { p.location = slots.location; changed = true; }
     return changed;
   }
-  if (p.step === "details" && looksLikeBarePrice(text)) return false;
+  if (p.step === "details" && looksLikePriceAnswer(text)) return false;
   return applyBuySlots(p, text);
 }
 function nextSell(p: PendingSellIntake): string | null {
@@ -948,7 +975,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your listing draft open."); messages.push(nextSell(p)??sellSummary(p)); return; }
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&Boolean(text.trim()); if(freeLocation)p.location=text.trim();
   const changed=applyScopedSellAnswer(p,text) || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
-  if (!changed && p.step === "details" && looksLikeBarePrice(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
+  if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
   else if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open."); }
   messages.push(nextSell(p)??sellSummary(p));
@@ -961,7 +988,7 @@ async function handleBuyIntakeAnswer(state: ConversationState, text: string, mes
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&Boolean(text.trim()); if(freeLocation)p.location=text.trim();
   const changed=applyScopedBuyAnswer(p,text)||skippedReference||freeLocation;
-  if (!changed && p.step === "details" && looksLikeBarePrice(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
+  if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
   else if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your request draft open."); }
   messages.push(nextBuy(p)??buySummary(p));

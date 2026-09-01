@@ -86,6 +86,14 @@ test("help and onboarding routing are identical across WhatsApp, Telegram, and S
   }
 });
 
+test("a brand-new contact can opt out without receiving onboarding first", async () => {
+  const phone = "19991110016";
+  resetState(phone);
+  const result = await handleIncomingMessage(phone, "STOP");
+  assert.deepEqual(result.messages, ["You're unsubscribed — you won't hear from Fi again. Reply START anytime to opt back in."]);
+  assert.equal(result.state.stage, "opted_out");
+});
+
 test('"menu" is a synonym for "help"', async () => {
   resetState("19991110002");
   const result = await handleIncomingMessage("19991110002", "menu");
