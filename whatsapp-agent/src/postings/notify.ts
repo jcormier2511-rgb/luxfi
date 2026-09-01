@@ -43,8 +43,68 @@ async function getMatchWithPostings(
 }
 
 function watchLabel(posting: PostingRow): string {
-  if (posting.reference) return `${posting.brand || ""} ${posting.reference}`.trim();
+  const structured = [posting.brand, posting.model, posting.reference].filter(Boolean).join(" ");
+  // Parser-derived brand/model values may be normalized to lowercase. When no reference was
+  // captured, retain the original listing's human-readable casing instead of
+  // degrading durable approval summaries (for example, "FS Rolex MUTUAL1 ..." -> "rolex").
+  if (structured && posting.reference) return structured;
   return posting.original_text.slice(0, 80);
+}
+
+export interface MatchPresentation {
+  identity?: string;
+  brand?: string;
+  model?: string;
+  reference?: string;
+  dial?: string;
+  year?: string;
+  boxPapers?: string;
+  condition?: string;
+  price?: string;
+  currency?: string;
+  location?: string;
+  sourceId?: string;
+  sourceUrl?: string;
+  photoUrl?: string;
+}
+
+function presentationFor(posting: PostingRow, photoUrl?: string | null): MatchPresentation {
+  return {
+    identity: posting.contact_name || posting.source_identity || undefined,
+    brand: posting.brand || undefined,
+    model: posting.model || undefined,
+    reference: posting.reference || undefined,
+    dial: posting.dial || undefined,
+    year: posting.year || undefined,
+    boxPapers: posting.box_papers || undefined,
+    condition: posting.condition || undefined,
+    price: posting.price ?? undefined,
+    currency: posting.currency || undefined,
+    location: posting.location || undefined,
+    sourceId: posting.external_listing_id || undefined,
+    sourceUrl: posting.detail_url || undefined,
+    photoUrl: photoUrl || undefined,
+  };
+}
+
+export function formatMatchPresentation(matchId: number, roleLabel: string, match: MatchPresentation, heading = "Match"): string {
+  const lines = [`${heading} ${matchId}`];
+  if (match.sourceId) lines.push(`Candidate ID: ${match.sourceId}`);
+  if (match.identity) lines.push(`${roleLabel}: ${match.identity}`);
+  const watch = [match.brand, match.model, match.reference].filter(Boolean).join(" ");
+  if (watch) lines.push(watch);
+  if (match.dial) lines.push(`Dial/Color: ${match.dial}`);
+  const details = [match.year, match.boxPapers, match.condition].filter(Boolean);
+  if (details.length) lines.push(details.join(" • "));
+  if (match.price) {
+    const numeric = Number(match.price);
+    const amount = Number.isFinite(numeric) ? numeric.toLocaleString("en-US", { maximumFractionDigits: 2 }) : match.price;
+    lines.push((match.currency || "USD").toUpperCase() === "USD" ? `$${amount}` : `${match.currency} ${amount}`);
+  }
+  if (match.location) lines.push(match.location);
+  if (match.sourceUrl) lines.push(`Source: ${match.sourceUrl}`);
+  if (match.photoUrl) lines.push(`Photo: ${match.photoUrl}`);
+  return lines.join("\n");
 }
 
 /**
@@ -63,16 +123,12 @@ function formatMatchMessage(
   imageUrl: string | null
 ): string {
   const roleLabel = self.type === "FS" ? "Buyer" : "Seller";
-  const priceLabel = counterpart.price !== null ? `$${counterpart.price}` : "price on ask";
   return (
-    `Potential Match\n` +
-    `${roleLabel}: ${counterpart.contact_name || "Unnamed"}\n` +
-    `Type: ${counterpart.type}\n` +
-    `Watch: ${watchLabel(counterpart)}\n` +
-    `Asking/Bid: ${priceLabel}\n` +
-    `Location: ${counterpart.location || "Not specified"}\n\n` +
-    reasons.map((r) => `- ${r}`).join("\n") +
-    (imageUrl ? `\n\nPhoto: ${imageUrl}` : "") +
+    // Keep the established notification discriminator as well as the numeric ID. Besides being
+    // useful to people scanning a chat, downstream channel consumers and the PR #20 regression
+    // suite intentionally recognize automatic notifications by the "Potential Match" heading.
+    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl), "Potential Match") +
+    (reasons.length ? `\n\nWhy it matched:\n${reasons.map((r) => `- ${r}`).join("\n")}` : "") +
     `\n\nReply "approve ${matchId}" to connect, or "pass ${matchId}" to skip.`
   );
 }
@@ -189,6 +245,7 @@ export async function passMatch(matchId: number, phone: string): Promise<"passed
 export interface ApprovalOutcome {
   status: "approved" | "pending_confirmation" | "locked" | "invalid" | "posting_closed";
   counterpart?: { name: string; phone: string };
+  match?: MatchPresentation;
   /** Only set when status is "locked" — which of the two lock reasons this is, so the caller
    *  can show the right message (see server.ts's formatApprovalOutcome). */
   lockReason?: "no_plan" | "weekly_cap";
@@ -346,12 +403,14 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
     }
 
     const counterpart = await getCounterpartContact(client, matchId, canonicalUserId);
+    const counterpartPhoto = await client.query(`SELECT source_url FROM posting_images WHERE posting_id=$1 ORDER BY is_primary DESC, display_order ASC LIMIT 1`, [counterpart.posting.id]);
+    const presentation = presentationFor(counterpart.posting, counterpartPhoto.rows[0]?.source_url);
     const counterpartRecipient =
       counterpart.canonicalUserId !== null ? await getRecipientRow(client, matchId, counterpart.canonicalUserId, false) : null;
     const counterpartReady = counterpart.canonicalUserId === null || counterpartRecipient?.decision === "approved";
 
     if (!counterpartReady) {
-      return { outcome: { status: "pending_confirmation" as const }, notify: null };
+      return { outcome: { status: "pending_confirmation" as const, match: presentation }, notify: null };
     }
 
     // Mutual condition met (or no counterpart confirmation was ever needed) — reveal to me
@@ -389,7 +448,7 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
     }
 
     return {
-      outcome: { status: "approved" as const, counterpart: { name: counterpart.name, phone: counterpart.phone } },
+      outcome: { status: "approved" as const, counterpart: { name: counterpart.name, phone: counterpart.phone }, match: presentation },
       notify,
     };
   });
@@ -431,18 +490,18 @@ async function getCounterpartContact(
     query: (
       sql: string,
       params: unknown[]
-    ) => Promise<{ rows: { id: number; canonical_user_id: number | null; contact_name: string; contact_phone: string }[] }>;
+    ) => Promise<{ rows: PostingRow[] }>;
   },
   matchId: number,
   approvingCanonicalUserId: number
-): Promise<{ name: string; phone: string; canonicalUserId: number | null }> {
+): Promise<{ name: string; phone: string; canonicalUserId: number | null; posting: PostingRow }> {
   const matchResult = await client.query(`SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id=$1`, [matchId]);
   const { fs_posting_id, wtb_posting_id } = matchResult.rows[0] as unknown as { fs_posting_id: number; wtb_posting_id: number };
   const postings = await client.query(
-    `SELECT id, canonical_user_id, contact_name, contact_phone FROM postings WHERE id = ANY($1::int[])`,
+    `SELECT * FROM postings WHERE id = ANY($1::int[])`,
     [[fs_posting_id, wtb_posting_id]]
   );
   const mine = postings.rows.find((r) => r.canonical_user_id === approvingCanonicalUserId);
   const other = postings.rows.find((r) => r.id !== mine?.id) ?? postings.rows[0];
-  return { name: other.contact_name, phone: other.contact_phone, canonicalUserId: other.canonical_user_id };
+  return { name: other.contact_name, phone: other.contact_phone, canonicalUserId: other.canonical_user_id, posting: other };
 }

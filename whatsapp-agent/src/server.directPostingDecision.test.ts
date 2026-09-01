@@ -86,6 +86,10 @@ test("required: the seller can approve a direct-posting match via tryHandleDirec
   const sellerPhone = "19990000003";
   const { matchId } = await seedMatch(t, sellerPhone);
 
+  // Ordinary conversation is allowed between presentation and decision. It must not clear the
+  // durable match_recipient row or make the exact ID Fi just displayed unactionable.
+  await server.processIncomingMessages([{ id: "intervening-chat", phone: sellerPhone, text: "thanks", isGroup: false }]);
+
   const reply = await tryHandleDirectPostingDecision(sellerPhone, `approve ${matchId}`);
   assert.ok(reply, "must produce a reply for the seller's own direct-posting match");
   assert.match(reply!, /connected|as soon as the other side confirms/i);
@@ -124,6 +128,19 @@ test("required: formatApprovalOutcome suggests escrow/inspection partners on a r
   assert.doesNotMatch(formatApprovalOutcome({ status: "posting_closed" }, 1), suggestion);
   assert.doesNotMatch(formatApprovalOutcome({ status: "invalid" }, 1), suggestion);
   assert.doesNotMatch(formatApprovalOutcome({ status: "locked", lockReason: "no_plan" }, 1), suggestion);
+});
+
+test("approval replies identify the exact presented match and its available details", () => {
+  const reply = formatApprovalOutcome({
+    status: "pending_confirmation",
+    match: { identity: "ABC Watches", brand: "Rolex", model: "Daytona", reference: "116500LN", dial: "Black", price: "28500", currency: "USD", location: "Miami, USA" },
+  }, 413);
+  assert.match(reply, /Approved Match 413/);
+  assert.match(reply, /ABC Watches/);
+  assert.match(reply, /Rolex Daytona 116500LN/);
+  assert.match(reply, /Dial\/Color: Black/);
+  assert.match(reply, /\$28,500/);
+  assert.match(reply, /Miami, USA/);
 });
 
 test("tryHandleDirectPostingDecision falls through (returns null) for a phone with no direct-sourced posting on the match", async (t) => {

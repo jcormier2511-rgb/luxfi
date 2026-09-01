@@ -256,10 +256,15 @@ export interface ApiFsListing {
   item: string;
   brand: string;
   ref: string;
+  model?: string;
+  dial?: string;
+  year?: string;
+  boxPapers?: string;
   condition: string;
   price: string;
   contactName: string;
   contactPhone: string;
+  location?: string;
   detailUrl?: string;
   description: string;
   // WatchFacts' own listing detail image (RawListingDetail.frontImage) — a confirmed, real
@@ -296,11 +301,11 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
     if (existing.rows.length === 0) {
       const insert = await pool.query<PostingRow>(
         `INSERT INTO postings
-           (source_platform, source_type, external_listing_id, type, original_text, brand, reference, condition,
-            price, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
-         VALUES ('watchfacts_api','api',$1,'FS',$2,$3,$4,$5,$6,$7,$8,$9,'active',$10, now())
+           (source_platform, source_type, external_listing_id, type, original_text, brand, model, reference, dial, year, box_papers, condition,
+            price, location, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
+         VALUES ('watchfacts_api','api',$1,'FS',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',$15, now())
          RETURNING *`,
-        [listing.id, originalText, listing.brand, listing.ref, listing.condition, price, listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt]
+        [listing.id, originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt]
       );
       return { posting: insert.rows[0], created: true, materialChange: true };
     }
@@ -309,14 +314,19 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
     const materialChange =
       !valuesEqual(old.reference, listing.ref) ||
       !valuesEqual(old.brand, listing.brand) ||
+      !valuesEqual(old.model, listing.model) ||
+      !valuesEqual(old.dial, listing.dial) ||
+      !valuesEqual(old.year, listing.year) ||
+      !valuesEqual(old.box_papers, listing.boxPapers) ||
       !valuesEqual(old.price, price) ||
+      !valuesEqual(old.location, listing.location) ||
       !valuesEqual(old.condition, listing.condition);
 
     const update = await pool.query<PostingRow>(
-      `UPDATE postings SET original_text=$1, brand=$2, reference=$3, condition=$4, price=$5,
-         contact_name=$6, contact_phone=$7, detail_url=$8, updated_at=now(), last_seen_at=now()
-       WHERE id=$9 RETURNING *`,
-      [originalText, listing.brand, listing.ref, listing.condition, price, listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
+      `UPDATE postings SET original_text=$1, brand=$2, model=$3, reference=$4, dial=$5, year=$6, box_papers=$7,
+         condition=$8, price=$9, location=$10, contact_name=$11, contact_phone=$12, detail_url=$13, updated_at=now(), last_seen_at=now()
+       WHERE id=$14 RETURNING *`,
+      [originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
     );
     return { posting: update.rows[0], created: false, materialChange };
   });
