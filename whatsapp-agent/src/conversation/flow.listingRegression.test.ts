@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "fs"; import os from "os"; import path from "path";
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),"luxfi-slots-")); process.env.PERSIST_DIR=dir; process.env.NODE_ENV="test"; process.env.WEBHOOK_TOKEN="test";
 const {handleIncomingMessage}=require("./flow") as typeof import("./flow"); const {resetState}=require("./stateStore") as typeof import("./stateStore");
-after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+after(async()=>{ await (require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb"))._closePoolForTests(); fs.rmSync(dir,{recursive:true,force:true}); });
 const persistedRow = (input: import("../postings/postingsStore").DirectSellPostingInput, type: "FS" | "WTB") => ({
   type, brand: input.brand ?? "", model: input.model ?? "", reference: input.reference ?? "", dial: input.dialColor ?? "",
   condition: input.condition ?? "", price: input.price === null ? null : String(input.price), currency: input.currency ?? "USD", location: input.location ?? "",
@@ -40,6 +40,14 @@ test("FS preserves parsed price/reference and never asks buyer price-range langu
  const p="15550002004"; resetState(p); const r=await handleIncomingMessage(p,"FS Rolex 116500LN 28500");
  assert.equal(r.state.pendingSellIntake?.price,28500); assert.equal(r.state.pendingSellIntake?.reference,"116500LN");
  assert.doesNotMatch(r.messages.join("\n"),/price range|searching now|external .*disabled/i);
+});
+
+test('FS/WTS enters seller intake, and brand-only WTB never stores "only" as a model',async()=>{
+ const fs="15550002040"; resetState(fs); const seller=await handleIncomingMessage(fs,"WTS Rolex Daytona 126500LN for 30000");
+ assert.ok(seller.state.pendingSellIntake); assert.equal(seller.state.pendingBuyIntake,undefined);
+ const buyer="15550002041"; resetState(buyer); const wanted=await handleIncomingMessage(buyer,"WTB Rolex only");
+ assert.equal(wanted.state.pendingBuyIntake?.brand,"rolex"); assert.equal(wanted.state.pendingBuyIntake?.model,undefined);
+ assert.doesNotMatch(wanted.messages.join("\n"),/Model:\s*only/i);
 });
 
 test("WTB confirmation boundary saves the corrected draft exactly once", async (t) => {

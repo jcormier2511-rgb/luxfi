@@ -107,6 +107,33 @@ export async function getPrimaryImageUrl(postingId: number): Promise<string | nu
   });
 }
 
+/** Update one active task owned by the caller. Ownership is enforced in SQL, and the narrow
+ * field allowlist prevents a price edit from ever rewriting identity fields such as reference. */
+export async function updateActivePostingForUser(
+  canonicalUserId: number,
+  postingId: number,
+  field: "price" | "reference",
+  value: string | number,
+  currency?: string
+): Promise<PostingRow | null> {
+  return withSchema(async (pool) => {
+    const result = field === "price"
+      ? await pool.query<PostingRow>(
+          `UPDATE postings SET price=$1, currency=COALESCE($2,currency), updated_at=now()
+           WHERE id=$3 AND canonical_user_id=$4 AND status='active' AND expires_at>now()
+           RETURNING *`,
+          [value, currency ?? null, postingId, canonicalUserId]
+        )
+      : await pool.query<PostingRow>(
+          `UPDATE postings SET reference=$1, updated_at=now()
+           WHERE id=$2 AND canonical_user_id=$3 AND status='active' AND expires_at>now()
+           RETURNING *`,
+          [value, postingId, canonicalUserId]
+        );
+    return result.rows[0] ?? null;
+  });
+}
+
 export interface IngestResult {
   posting: PostingRow | null; // null when the text doesn't classify as FS/WTB at all
   created: boolean;

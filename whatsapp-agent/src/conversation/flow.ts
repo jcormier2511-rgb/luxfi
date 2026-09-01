@@ -12,7 +12,7 @@ import { isAuthorizeNetConfigured } from "../billing/authorizeNet";
 import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, getApprovedMatchesSummary } from "../postings/approvalUsage";
 import { getOrCreateCanonicalUser } from "../postings/identity";
 import { platformForIdentity } from "../channels/identity";
-import { getActivePostingsForUser } from "../postings/postingsStore";
+import { getActivePostingsForUser, updateActivePostingForUser } from "../postings/postingsStore";
 import { logSearchRequest } from "../postings/analytics";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
@@ -25,7 +25,7 @@ import { extractReference, containsKnownBrand, normalizePriceShorthand, normaliz
 import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
-import { formatMarketPulse, getMarketPulse } from "../postings/marketPulse";
+import { formatMarketBriefing, formatMarketPulse, getMarketBriefing, getMarketPulse } from "../postings/marketPulse";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -263,7 +263,29 @@ async function formatMyListingsSummary(phone: string): Promise<string> {
   const postings = await getActivePostingsForUser(canonicalUserId);
   if (postings.length === 0) return "You don’t have any active buy or sell tasks right now.\nTell me what you want to buy or sell and I’ll start working on it.";
   const lines = postings.map((p, i) => `${i + 1}. ${formatStructuredPosting(p)}`);
-  return `You currently have ${postings.length} active task${postings.length === 1 ? "" : "s"}:\n\n${lines.join("\n\n")}`;
+  return `You currently have ${postings.length} active task${postings.length === 1 ? "" : "s"}:\n\n${lines.join("\n\n")}\n\nTo make a change, reply “edit listing <number> price <amount>” or “edit listing <number> reference <ref>”.`;
+}
+
+async function handleListingEditCommand(state: ConversationState, text: string): Promise<string | null> {
+  const match=/^edit\s+listing\s+#?(\d+)\s+(price|asking|budget|reference|ref)\s+(?:to\s+)?(.+?)\s*[.!]?$/i.exec(text.trim());
+  if(!match)return null;
+  const userId=await getOrCreateCanonicalUser(platformForIdentity(state.phone),state.phone);
+  const postings=await getActivePostingsForUser(userId);
+  const posting=postings[Number(match[1])-1];
+  if(!posting)return `I can’t find active listing ${match[1]}. Send “my listings” to see the current numbers.`;
+  const field=/^(?:price|asking|budget)$/i.test(match[2])?"price":"reference";
+  let value:string|number=match[3].trim(); let currency:string|undefined;
+  if(field==="price"){
+    const amount=extractListingAmount(value,posting.reference);
+    if(amount===undefined)return "Please include a valid price, for example: edit listing 1 price 28500.";
+    value=amount; currency=detectCurrency(match[3])??posting.currency;
+  } else {
+    const reference=extractReference(value);
+    if(!reference||looksLikePriceAnswer(reference))return "Please include a valid reference number.";
+    value=reference;
+  }
+  const updated=await updateActivePostingForUser(userId,posting.id,field,value,currency);
+  return updated?`Updated listing ${match[1]}.\n\n${formatStructuredPosting(updated)}`:`Listing ${match[1]} is no longer active.`;
 }
 
 function formatAmount(value: string, currency: string): string {
@@ -753,7 +775,7 @@ function intakeSlots(text: string, reference: string | null) {
     .replace(/(?:under|max(?:imum)?|budget|asking|price|for)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
     .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
-  const model=brand&&itemPhrase ? itemPhrase : undefined;
+  const model=brand&&itemPhrase && !/^only$/i.test(itemPhrase) ? itemPhrase.replace(/\s+only$/i,"").trim()||undefined : undefined;
   const boxPapers=/\b(full set|box(?: and | & |\/)?papers?|papers)\b/i.exec(text)?.[1]; const year=/\b(19\d{2}|20\d{2})\b/.exec(text)?.[1];
   return { reference: extractReference(text), price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial,brand,model,boxPapers,year };
 }
@@ -983,7 +1005,14 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
 
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingBuyIntake!;
-  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingBuyIntake=undefined; return; }
+  if(p.step==="confirm" && confirmed(text)){
+    const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location});
+    messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
+    // Confirmation is the activation boundary, so search WatchFacts' current normalized FS
+    // inventory immediately rather than making the buyer issue a second command.
+    messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
+    state.pendingBuyIntake=undefined; return;
+  }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&Boolean(text.trim()); if(freeLocation)p.location=text.trim();
@@ -1055,6 +1084,9 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     const reference = extractReference(text);
     if (!reference) return { state, messages: [...messages, "Please include an exact watch reference, for example: Market Pulse 126500LN."] };
     return { state, messages: [...messages, formatMarketPulse(await getMarketPulse(reference))] };
+  }
+  if (/^(?:market\s+briefing|market\s+update|morning\s+market\s+update|afternoon\s+market\s+update)\s*[?.!]*$/i.test(commandText)) {
+    return {state,messages:[...messages,formatMarketBriefing(await getMarketBriefing())]};
   }
 
   // START is a universal conversational reset, not only an opt-out recovery command. A user
@@ -1169,6 +1201,8 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     saveState(state);
     return { state, messages };
   }
+  const listingEdit=await handleListingEditCommand(state,text);
+  if(listingEdit){messages.push(listingEdit);saveState(state);return {state,messages};}
   if (CURRENT_INVENTORY_COMMAND.test(text.trim())) {
     messages.push(await handleCurrentInventoryCommand(state, text));
     saveState(state);
@@ -1267,7 +1301,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     return { state, messages };
   }
 
-  if ((state.pendingSellIntake || state.pendingBuyIntake) && /^\s*(?:FS|WTB|for sale|sell|buy|want to buy)\b/i.test(text)) {
+  if ((state.pendingSellIntake || state.pendingBuyIntake) && /^\s*(?:FS|WTS|WTB|for sale|sell|buy|want to buy)\b/i.test(text)) {
     state.pendingReplacementRequest = text;
     messages.push("You already have an incomplete request. Should I replace it or add another?");
     saveState(state);

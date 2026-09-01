@@ -268,3 +268,20 @@ test("natural listing-management query returns the exact empty state", async () 
   const result = await handleIncomingMessage(phone, "my active tasks");
   assert.equal(result.messages.join("\n"), "You don’t have any active buy or sell tasks right now.\nTell me what you want to buy or sell and I’ll start working on it.");
 });
+
+test("listing price edits are actionable and never alter the reference",async()=>{
+ const phone="19992230014"; resetState(phone); await postingsDb._resetDbForTests();
+ await createDirectPosting({phone,type:"FS",description:"Rolex Daytona",brand:"Rolex",model:"Daytona",reference:"126500LN",price:38000});
+ const edited=await handleIncomingMessage(phone,"edit listing 1 price $39,500");
+ assert.match(edited.messages.join("\n"),/Updated listing 1[\s\S]*126500LN[\s\S]*Asking: \$39,500/);
+ const rows=await postingsDb.withSchema((pool)=>pool.query(`SELECT price,reference FROM postings WHERE canonical_user_id IS NOT NULL`));
+ assert.deepEqual(rows.rows[0],{price:"39500",reference:"126500LN"});
+ assert.doesNotMatch(edited.messages.join("\n"),/Try "buy:/);
+});
+
+test("market briefing is a deterministic command instead of generic fallback",async()=>{
+ await postingsDb._resetDbForTests(); await inventoryDb._resetDbForTests();
+ const result=await handleIncomingMessage("telegram:9230015","afternoon market update");
+ assert.match(result.messages.join("\n"),/^Market Briefing[\s\S]*FS: 0 active listings[\s\S]*WTB: 0 active requests[\s\S]*Average FS ask: Unavailable/);
+ assert.doesNotMatch(result.messages.join("\n"),/Try "buy:/);
+});

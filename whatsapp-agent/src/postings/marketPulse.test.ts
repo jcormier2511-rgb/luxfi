@@ -6,7 +6,7 @@ process.env.WEBHOOK_TOKEN = "test";
 
 const db = require("./db") as typeof import("./db");
 const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
-const { getMarketPulse, formatMarketPulse } = require("./marketPulse") as typeof import("./marketPulse");
+const { getMarketBriefing, getMarketPulse, formatMarketBriefing, formatMarketPulse } = require("./marketPulse") as typeof import("./marketPulse");
 
 after(async () => { await db._closePoolForTests(); await inventory._closePoolForTests(); });
 beforeEach(async () => { await db._resetDbForTests(); await inventory._resetDbForTests(); });
@@ -22,7 +22,8 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
 
   await db.withSchema((pool) => pool.query(`
     UPDATE inventory_listings SET is_active=false WHERE external_id='inactive';
-    CREATE TABLE raw_dealer_blast (id text, reference text, type text);
+    CREATE TABLE IF NOT EXISTS raw_dealer_blast (id text, reference text, type text);
+    TRUNCATE raw_dealer_blast;
     INSERT INTO raw_dealer_blast VALUES ('raw-only','126500LN','FS');
     INSERT INTO postings
       (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,status,expires_at)
@@ -44,4 +45,12 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
 
 test("pulse rejects a missing exact reference", async () => {
   await assert.rejects(getMarketPulse("   "), /exact watch reference/i);
+});
+
+test("market briefing reports current totals and a valid average FS ask",async()=>{
+ await inventory.upsertListings([{id:"brief-fs",type:"FS",category:"watches",item:"Rolex",brand:"Rolex",ref:"BRIEF",condition:"",price:"20000",location:"",contactName:"A",contactPhone:"1",rating:"",description:""}],new Date().toISOString());
+ await db.withSchema((pool)=>pool.query(`INSERT INTO postings (source_platform,source_type,type,original_text,reference,price,currency,status,expires_at) VALUES ('whatsapp','direct','WTB','brief','BRIEF',NULL,'USD','active',now()+interval '1 day')`));
+ const briefing=await getMarketBriefing();
+ assert.deepEqual(briefing,{fsCount:1,wtbCount:1,averageFsAsk:20000});
+ assert.match(formatMarketBriefing(briefing),/FS: 1 active listings[\s\S]*WTB: 1 active requests[\s\S]*Average FS ask: \$20,000/);
 });
