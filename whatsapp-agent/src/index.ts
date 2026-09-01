@@ -6,6 +6,7 @@ import { sendExpirationReminders } from "./postings/reminders";
 import { runReconciliation } from "./postings/matching";
 import { initConciergeSchema } from "./concierge/db";
 import { runMarketUpdateScheduler } from "./marketUpdates";
+import { runLifecycleScheduler } from "./lifecycle";
 
 const app = createServer();
 
@@ -23,6 +24,9 @@ initSchema()
     console.log(`[postings] v4 schema ready${config.postingsV4.enabled ? "" : " (v4 disabled)"}`);
     if (config.marketUpdates.enabled) runMarketUpdateScheduler();
     else console.log("[market-updates] disabled");
+    const lifecycleTick=()=>runLifecycleScheduler().then(r=>{if(r.morning.sent||r.dormant.sent)console.log(`[lifecycle] sent ${r.morning.sent} briefing(s), ${r.dormant.sent} re-engagement(s)`)}).catch(err=>console.error("[lifecycle] run failed:",err.message));
+    lifecycleTick();
+    setInterval(lifecycleTick,Number(process.env.LIFECYCLE_INTERVAL_MINUTES??30)*60_000);
   })
   .catch((err) => console.error("[postings] v4 schema initialization failed:", err.message));
 
