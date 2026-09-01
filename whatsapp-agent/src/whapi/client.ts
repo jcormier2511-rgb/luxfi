@@ -79,6 +79,11 @@ export async function sendText(phone: string, message: string): Promise<void> {
   });
 }
 
+/** Business-initiated WhatsApp delivery must use an approved template outside the 24-hour service window. */
+export async function sendTemplate(phone:string,name:string,language:string,parameters:string[],fallbackBody?:string):Promise<void>{
+  await post("/messages/template",{to:digitsOnly(phone),template:{name,language:{code:language},components:[{type:"body",parameters:parameters.map(text=>({type:"text",text}))}]},body:fallbackBody});
+}
+
 export async function sendBannerImage(phone: string, imageUrl: string, caption?: string): Promise<void> {
   if (!imageUrl) return;
   await post("/messages/image", {

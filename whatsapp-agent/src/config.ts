@@ -124,6 +124,12 @@ export const config = {
     maxApprovedMatches: Number(process.env.TRIAL_MAX_APPROVED_MATCHES ?? process.env.TRIAL_MAX_ITEMS ?? 3),
     maxOptionsPerItem: Number(process.env.TRIAL_MAX_OPTIONS_PER_ITEM ?? 5),
   },
+  fiReturningCampaign: {
+    publicPhoneNumber: process.env.FI_PUBLIC_PHONE_NUMBER ?? "",
+    templateName: process.env.FI_RETURNING_TEMPLATE_NAME ?? "fi_is_back",
+    templateLanguage: process.env.FI_RETURNING_TEMPLATE_LANGUAGE ?? "en_US",
+    ratePerHour: Number(process.env.FI_RETURNING_RATE_PER_HOUR ?? 30),
+  },
   // Fi Conversation Flow Spec (v3) copy. Billing is tracked in Postgres only (canonical_users.
   // total_approved_count / account_entitlements — see postings/approvalUsage.ts and
   // billing/entitlementStore.ts) — no payment processor is wired in, so "join" records intent

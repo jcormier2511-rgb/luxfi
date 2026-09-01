@@ -35,6 +35,7 @@ import { initSchema } from "./postings/db";
 import { planOutreachBatch, executeOutreachBatch } from "./outreach/blast";
 import { readBlastStatus } from "./outreach/status";
 import { runInventorySync } from "./watchfacts/syncInventory";
+import { previewFiReturningCampaign, runFiReturningCampaign } from "./campaigns/fiReturning";
 import { runOpenAiDiagnosticCall } from "./ai/providers/openai";
 import { listDesignatedGroups, enableGroup, disableGroup, setReferenceRequestsEnabled } from "./concierge/groupRegistry";
 import {
@@ -168,7 +169,7 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
 
   for (const message of filtered) {
     try {
-      await recordInboundActivity(message.phone, message.senderName);
+      await recordInboundActivity(message.phone, message.senderName, new Date(), !message.isGroup);
       if (message.isGroup) {
         await handleGroupMessage(message.id, message.groupId!, message.phone, message.senderName, message.text, message.imageUrl);
         continue;
@@ -340,6 +341,13 @@ export function createServer() {
   app.delete("/admin/api/groups/:id",api(async(req,res,ctx)=>{await deleteGroup(ctx.admin,Number(req.params.id));res.json({ok:true})},true));
   app.get("/admin/api/listing-settings",api(async(_req,res)=>res.json({limits:await getListingLimits(),pushGroups:await listPushGroups()})));
   app.put("/admin/api/listing-settings/limits",api(async(req,res)=>res.json(await setListingLimits(req.body)),true));
+  app.get("/admin/api/campaigns/fi-returning",api(async(_req,res)=>res.json(await previewFiReturningCampaign())));
+  app.post("/admin/api/campaigns/fi-returning",api(async(req,res,ctx)=>{
+    if(ctx.admin.role==='read_only'||ctx.admin.role==='support')return res.status(403).json({error:'administrator role required'});
+    const dryRun=req.body?.dryRun===true;const testRecipient=typeof req.body?.testRecipient==='string'?req.body.testRecipient:undefined;
+    if(!dryRun&&req.body?.confirm!==true)return res.status(400).json({error:'confirm=true is required to send'});
+    res.json(await runFiReturningCampaign({dryRun,testRecipient}));
+  },true));
   app.put("/admin/api/listing-settings/push-groups/:groupId",api(async(req,res)=>res.json(await savePushGroup({...req.body,group_id:req.params.groupId})),true));
 
   app.get("/admin/logout", (req, res) => {

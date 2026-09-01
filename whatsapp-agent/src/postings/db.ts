@@ -322,6 +322,18 @@ async function ensureSchema(): Promise<void> {
           last_dormant_message_at TIMESTAMPTZ,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        ALTER TABLE user_lifecycle ADD COLUMN IF NOT EXISTS last_direct_inbound_at TIMESTAMPTZ;
+        CREATE TABLE IF NOT EXISTS fi_returning_promotions (
+          canonical_user_id INTEGER PRIMARY KEY REFERENCES canonical_users(id) ON DELETE CASCADE,
+          tasks_granted INTEGER NOT NULL DEFAULT 3 CHECK(tasks_granted=3),
+          tasks_used INTEGER NOT NULL DEFAULT 0 CHECK(tasks_used BETWEEN 0 AND tasks_granted),
+          granted_at TIMESTAMPTZ NOT NULL DEFAULT now(), campaign_sent_at TIMESTAMPTZ
+        );
+        CREATE TABLE IF NOT EXISTS fi_returning_campaign_deliveries (
+          canonical_user_id INTEGER PRIMARY KEY REFERENCES canonical_users(id) ON DELETE CASCADE,
+          recipient_identity TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('attempted','sent','failed','skipped')),
+          reason TEXT, attempted_at TIMESTAMPTZ NOT NULL DEFAULT now(), sent_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
         CREATE TABLE IF NOT EXISTS lifecycle_deliveries (
           id BIGSERIAL PRIMARY KEY,
           canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id) ON DELETE CASCADE,
@@ -391,7 +403,8 @@ export async function _resetDbForTests(): Promise<void> {
     DROP TABLE IF EXISTS
       reconciliation_runs, postings_meta, billing_ledger, approvals, match_recipients, matches,
       market_update_deliveries, posting_images, postings, search_requests, linked_identities,
-      briefing_posting_state, lifecycle_deliveries, user_lifecycle, lifecycle_settings, canonical_users
+      briefing_posting_state, lifecycle_deliveries, fi_returning_campaign_deliveries,
+      fi_returning_promotions, user_lifecycle, lifecycle_settings, canonical_users
     CASCADE
   `);
   schemaReady = null;
