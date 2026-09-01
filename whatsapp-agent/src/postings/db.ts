@@ -120,6 +120,9 @@ async function ensureSchema(): Promise<void> {
           WHERE source_type = 'api';
         CREATE INDEX IF NOT EXISTS postings_active_by_type
           ON postings (type, status, expires_at);
+        CREATE INDEX IF NOT EXISTS postings_market_pulse
+          ON postings (upper(reference), type, status, expires_at)
+          INCLUDE (price, currency, source_type, source_platform, external_listing_id);
 
         -- Current scope (deliberately minimal): capture an already-accessible image URL
         -- (WatchFacts' own frontImage field, or a WhatsApp image message's media link) as

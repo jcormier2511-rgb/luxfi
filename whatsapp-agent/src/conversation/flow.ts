@@ -25,6 +25,7 @@ import { extractReference, containsKnownBrand, normalizePriceShorthand, normaliz
 import { upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
+import { formatMarketPulse, getMarketPulse } from "../postings/marketPulse";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -881,6 +882,14 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   const state = getState(phone);
   const messages: string[] = [];
   const firstName = contact?.name?.trim().split(/\s+/)[0] || "there";
+
+  // Deterministic, database-only command. It intentionally runs before AI routing and never
+  // invokes a Telegram/WhatsApp history API; the inbound webhook is merely the delivery path.
+  if (/\bmarket\s+pulse\b/i.test(text)) {
+    const reference = extractReference(text);
+    if (!reference) return { state, messages: ["Please include an exact watch reference, for example: Market Pulse 126500LN."] };
+    return { state, messages: [formatMarketPulse(await getMarketPulse(reference))] };
+  }
 
   // START is a universal conversational reset, not only an opt-out recovery command. A user
   // with old pending matches must be able to begin again instead of being trapped behind the

@@ -113,11 +113,22 @@ async function ensureSchema(): Promise<void> {
         ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS native_price_amount DOUBLE PRECISION;
         ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS native_currency TEXT;
         ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS original_price_text TEXT;
+        -- Exact-reference Market Pulse reads only normalized, currently-active inventory.
+        -- Keep that read indexed; price/last_seen_at are included so Postgres can satisfy
+        -- the aggregation from the index on installations that support index-only scans.
+        CREATE INDEX IF NOT EXISTS inventory_listings_market_pulse
+          ON inventory_listings (upper(ref), type, is_active, last_seen_at)
+          INCLUDE (price, native_price_amount, native_currency);
         `
       )
       .then(() => undefined);
   }
   await schemaReady;
+}
+
+/** Ensure the existing inventory schema is available to other read-only database features. */
+export async function initInventorySchema(): Promise<void> {
+  await ensureSchema();
 }
 
 /**
