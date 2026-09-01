@@ -89,6 +89,48 @@ test("approveMatch on an unknown match id is invalid", async () => {
   assert.equal(outcome.status, "invalid");
 });
 
+test("presented match preserves every available decision field and remains approvable", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+
+  await mirrorApiFsPosting({
+    id: "dealer-listing-413",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    model: "Daytona",
+    ref: "116500LN",
+    dial: "Black",
+    year: "2023",
+    boxPapers: "Full set",
+    condition: "New",
+    price: "$28,500",
+    location: "Miami, USA",
+    contactName: "ABC Watches",
+    contactPhone: "dealer-413",
+    detailUrl: "https://example.com/listings/413",
+    imageUrl: "https://example.com/photos/413.jpg",
+    description: "Rolex Daytona 116500LN black dial, 2023 full set",
+  });
+  const wtb = await ingestChatPosting({
+    platform: "whatsapp", chatId: "g1", messageId: "rich-card-wtb", senderIdentity: "buyer-rich-card",
+    text: "WTB Rolex Daytona 116500LN black dial budget $30,000",
+  });
+  await runImmediateMatch(wtb.posting!);
+
+  const card = sent.find((message) => message.phone === "buyer-rich-card")?.message;
+  assert.ok(card);
+  for (const expected of ["ABC Watches", "Rolex Daytona 116500LN", "Dial/Color: Black", "2023 • Full set • New", "$28,500", "Miami, USA", "Candidate ID: dealer-listing-413", "Source: https://example.com/listings/413", "Photo: https://example.com/photos/413.jpg"]) {
+    assert.match(card!, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `card should include ${expected}`);
+  }
+  const matchId = Number(card!.match(/approve (\d+)/)?.[1]);
+  assert.ok(Number.isInteger(matchId));
+  const outcome = await approveMatch(matchId, "buyer-rich-card");
+  assert.equal(outcome.status, "approved", "the exact delivered match remains actionable");
+  assert.equal(outcome.match?.identity, "ABC Watches");
+  assert.equal((await approveMatch(987654321, "buyer-rich-card")).status, "invalid", "unknown/expired IDs fail safely");
+});
+
 test("approveMatch succeeds and returns the counterpart's contact info", async () => {
   await resetAll();
   const { matchId, sellerPhone } = await createMatch("buyer-1");

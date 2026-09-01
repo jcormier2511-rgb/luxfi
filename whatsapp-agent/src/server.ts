@@ -16,7 +16,7 @@ import { getActiveListings, getSyncStatus, searchListingsForDiagnostics } from "
 import { getEntitlement, setManualOverride, setPlan } from "./billing/entitlementStore";
 import { isPlanKey } from "./billing/plans";
 import { handleIncomingSellerPhoto } from "./matching/photoRequests";
-import { approveMatch, passMatch, ApprovalOutcome } from "./postings/notify";
+import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation } from "./postings/notify";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
 import { getPosting, extendPosting, getOwnPostingForMatch } from "./postings/postingsStore";
@@ -53,13 +53,14 @@ import { getListingLimits, listPushGroups, savePushGroup, setListingLimits } fro
 const V4_DECISION_PATTERN = /^(approve|pass)\s+(\d+)\b/i;
 
 export function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number): string {
+  const approved = outcome.match ? formatMatchPresentation(matchId, "Seller/Buyer", outcome.match, "Approved Match") : `Approved Match ${matchId}`;
   switch (outcome.status) {
     case "approved":
       return outcome.counterpart
-        ? `You're connected! ${outcome.counterpart.name}: ${outcome.counterpart.phone}\n\n${config.fiFlow.escrowSuggestion}`
-        : `Match ${matchId} approved.`;
+        ? `${approved}\n\nYou're connected! ${outcome.counterpart.name}: ${outcome.counterpart.phone}\n\n${config.fiFlow.escrowSuggestion}`
+        : `${approved}.`;
     case "pending_confirmation":
-      return `Got it — I'll let you know as soon as the other side confirms too.`;
+      return `${approved}\n\nI'll let you know as soon as the other side confirms too.`;
     case "posting_closed":
       return `That listing has already reached its match limit, so this one can't be approved.`;
     case "locked":
@@ -161,6 +162,12 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
         continue;
       }
       if (message.imageUrl && await handleIncomingSellerPhoto(message.phone, message.imageUrl)) continue;
+
+      const directReply = await tryHandleDirectPostingDecision(message.phone, message.text);
+      if (directReply !== null) {
+        await sendText(message.phone, directReply);
+        continue;
+      }
 
       const v4Reply = await tryHandleV4Decision(message.phone, message.text);
       if (v4Reply !== null) {
