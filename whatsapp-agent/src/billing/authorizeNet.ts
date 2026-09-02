@@ -76,15 +76,17 @@ async function callAuthorizeNetApi<T>(requestName: string, body: Record<string, 
   return responseBody;
 }
 
-interface UserField {
-  name: string;
-  value: string;
-}
-
 /**
- * checkoutSessionId round-trips through Authorize.net as a userField (not the invoiceNumber,
- * which is length-limited well below a UUID) so the webhook handler can map a completed
- * transaction back to the phone/plan it was for without any other correlation state.
+ * checkoutSessionId round-trips through Authorize.net as order.invoiceNumber -- NOT as a
+ * custom userField. Confirmed live: a real sandbox transaction came back from
+ * getTransactionDetailsRequest with every userFields entry AND profile.createProfile both
+ * silently empty, matching Authorize.net's own documented limitation that custom userFields
+ * "simply disappear into the ether" for this flow. order.invoiceNumber is a core, long-
+ * supported field (visibly echoed on the hosted page's own receipt) and reliable instead;
+ * phone/plan are looked up from OUR OWN checkout_sessions row once checkoutSessionId resolves,
+ * rather than trusted to round-trip through Authorize.net at all. See entitlementStore.ts's
+ * createCheckoutSession -- its id is generated short enough (<=20 chars) to survive
+ * invoiceNumber's length limit with no truncation/collision risk.
  */
 export async function createHostedPaymentPageToken(params: { checkoutSessionId: string; phone: string; plan: PlanKey }): Promise<string> {
   const planDef = MEMBERSHIP_PLANS[params.plan];
@@ -93,29 +95,17 @@ export async function createHostedPaymentPageToken(params: { checkoutSessionId: 
     transactionRequest: {
       transactionType: "authCaptureTransaction",
       amount: (planDef.priceCents / 100).toFixed(2),
-      // Auto-creates a CIM customer + payment profile from this first charge, so ARB can bill
-      // month 2 onward against customerProfileId/customerPaymentProfileId without Fi ever
-      // seeing or storing the card itself. Authorize.net's JSON API is XML underneath, so
-      // transactionRequest's fields must appear in the AnetApiSchema.xsd sequence order --
-      // profile comes before order (confirmed against a live E00003 error: putting order first
-      // gets rejected as an "invalid child element 'profile'" once order has been parsed).
-      profile: { createProfile: true },
-      order: { invoiceNumber: params.checkoutSessionId.slice(0, 20), description: `Fi ${planDef.label} membership` },
-      // userFields is itself a wrapper element around repeated userField entries (same shape
-      // getTransactionDetails already parses on the read side below) -- a bare array here is
-      // rejected the same way order-before-profile was (E00003, "invalid child element 'name'").
-      userFields: {
-        userField: [
-          { name: "checkoutSessionId", value: params.checkoutSessionId } satisfies UserField,
-          { name: "phone", value: params.phone } satisfies UserField,
-          { name: "plan", value: params.plan } satisfies UserField,
-        ],
-      },
+      order: { invoiceNumber: params.checkoutSessionId, description: `Fi ${planDef.label} membership` },
     },
     hostedPaymentSettings: {
       setting: [
         { settingName: "hostedPaymentButtonOptions", settingValue: JSON.stringify({ text: "Pay" }) },
         { settingName: "hostedPaymentOrderOptions", settingValue: JSON.stringify({ show: true, merchantName: "LuxFi" }) },
+        // Accept Hosted only creates a CIM customer + payment profile (needed for ARB to bill
+        // month 2 onward) when this setting explicitly turns it on -- transactionRequest.profile.
+        // createProfile (the createTransactionRequest-only mechanism) has no effect here, which
+        // is the other half of why a live test came back with no profile at all.
+        { settingName: "hostedPaymentCustomerOptions", settingValue: JSON.stringify({ showEmail: false, requiredEmail: false, addPaymentProfile: true }) },
         {
           settingName: "hostedPaymentReturnOptions",
           settingValue: JSON.stringify({
@@ -141,12 +131,6 @@ export interface AuthorizeNetTransactionDetails {
   customerProfileId: string | null;
   customerPaymentProfileId: string | null;
   checkoutSessionId: string | null;
-  phone: string | null;
-  plan: PlanKey | null;
-}
-
-function readUserField(userFields: UserField[] | undefined, name: string): string | null {
-  return userFields?.find((f) => f.name === name)?.value ?? null;
 }
 
 export async function getTransactionDetails(transId: string): Promise<AuthorizeNetTransactionDetails> {
@@ -158,11 +142,9 @@ export async function getTransactionDetails(transId: string): Promise<AuthorizeN
       authAmount?: string;
       profile?: { customerProfileId?: string; customerPaymentProfileId?: string };
       order?: { invoiceNumber?: string };
-      userFields?: { userField: UserField[] };
     };
   }>("getTransactionDetailsRequest", { transId });
   const tx = response.transaction;
-  const userFields = tx.userFields?.userField;
   const amount = Number(tx.settleAmount ?? tx.authAmount ?? "0");
   return {
     transId: tx.transId,
@@ -170,9 +152,7 @@ export async function getTransactionDetails(transId: string): Promise<AuthorizeN
     settleAmountCents: Math.round(amount * 100),
     customerProfileId: tx.profile?.customerProfileId ?? null,
     customerPaymentProfileId: tx.profile?.customerPaymentProfileId ?? null,
-    checkoutSessionId: readUserField(userFields, "checkoutSessionId"),
-    phone: readUserField(userFields, "phone"),
-    plan: readUserField(userFields, "plan") as PlanKey | null,
+    checkoutSessionId: tx.order?.invoiceNumber ?? null,
   };
 }
 

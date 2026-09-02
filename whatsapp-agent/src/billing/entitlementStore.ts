@@ -262,12 +262,15 @@ function rowToCheckoutSession(row: { id: string; phone: string; plan: PlanKey; s
 /**
  * Created when a user replies "join"/"upgrade" (see conversation/flow.ts) and Authorize.net is
  * configured — the id is what GET /pay/:id and the eventual webhook correlate back to a
- * phone+plan, so it's opaque and unguessable (crypto.randomUUID) rather than a short/sequential
- * value someone could enumerate to trigger another phone's checkout page.
+ * phone+plan, so it's opaque and unguessable (20 random hex chars, 80 bits of entropy) rather
+ * than a short/sequential value someone could enumerate to trigger another phone's checkout
+ * page. Exactly 20 chars, not a full 36-char UUID, because Authorize.net's order.invoiceNumber
+ * -- the field this id round-trips through (see billing/authorizeNet.ts) -- has a hard 20-
+ * character limit; a longer id would need lossy truncation with a (tiny but real) collision risk.
  */
 export async function createCheckoutSession(phone: string, plan: PlanKey): Promise<CheckoutSession> {
   await ensureSchema();
-  const id = crypto.randomUUID();
+  const id = crypto.randomBytes(10).toString("hex");
   const result = await getPool().query(`INSERT INTO checkout_sessions (id, phone, plan) VALUES ($1, $2, $3) RETURNING *`, [id, phone, plan]);
   return rowToCheckoutSession(result.rows[0]);
 }

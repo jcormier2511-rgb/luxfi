@@ -244,12 +244,15 @@ export async function handleAuthorizeNetWebhookEvent(event: AuthorizeNetWebhookE
     }
     const details = await getTransactionDetails(transId);
     console.log(
-      `[webhook/authorizenet] transaction ${transId}: responseCode=${details.responseCode} checkoutSessionId=${details.checkoutSessionId} phone=${details.phone} plan=${details.plan} customerProfileId=${details.customerProfileId} customerPaymentProfileId=${details.customerPaymentProfileId}`
+      `[webhook/authorizenet] transaction ${transId}: responseCode=${details.responseCode} checkoutSessionId=${details.checkoutSessionId} customerProfileId=${details.customerProfileId} customerPaymentProfileId=${details.customerPaymentProfileId}`
     );
-    if (details.responseCode !== "1" || !details.checkoutSessionId || !details.phone || !details.plan) {
+    if (details.responseCode !== "1" || !details.checkoutSessionId) {
       console.warn(`[webhook/authorizenet] transaction ${transId} missing required fields -- not activating anything`);
       return;
     }
+    // phone/plan come from OUR OWN checkout_sessions row, not from Authorize.net -- see
+    // authorizeNet.ts's createHostedPaymentPageToken comment on why custom data round-tripped
+    // through Authorize.net (userFields) can't be trusted for this.
     const session = await getCheckoutSession(details.checkoutSessionId);
     if (!session || session.status !== "pending") {
       console.warn(
@@ -263,18 +266,18 @@ export async function handleAuthorizeNetWebhookEvent(event: AuthorizeNetWebhookE
       return;
     }
     const subscriptionId = await createArbSubscription({
-      plan: details.plan,
+      plan: session.plan,
       customerProfileId: details.customerProfileId,
       customerPaymentProfileId: details.customerPaymentProfileId,
     });
-    await activateMembership(details.phone, details.plan, {
+    await activateMembership(session.phone, session.plan, {
       customerProfileId: details.customerProfileId,
       paymentProfileId: details.customerPaymentProfileId,
       subscriptionId,
     });
-    await recordMembershipPayment(details.phone, details.settleAmountCents, "membership_payment");
+    await recordMembershipPayment(session.phone, details.settleAmountCents, "membership_payment");
     await markCheckoutSessionStatus(session.id, "completed", transId);
-    console.log(`[webhook/authorizenet] activated ${details.plan} for phone=${details.phone} (subscriptionId=${subscriptionId})`);
+    console.log(`[webhook/authorizenet] activated ${session.plan} for phone=${session.phone} (subscriptionId=${subscriptionId})`);
     return;
   }
 
@@ -413,7 +416,7 @@ export function createServer() {
   // Whapi.Cloud webhook receiver. Configure this URL as the channel's webhook (Settings →
   // Webhooks) with the "messages" event enabled.
   app.post("/webhook", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     // Ack immediately — Whapi retries on slow/failed responses.
@@ -558,7 +561,7 @@ export function createServer() {
   // background and progress is polled via GET /outreach/status.
   // Protect this behind the same webhook token since it sends real messages.
   app.post("/outreach/start", (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     if (readBlastStatus().state === "running") {
@@ -578,7 +581,7 @@ export function createServer() {
   });
 
   app.get("/outreach/status", (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(readBlastStatus());
@@ -592,7 +595,7 @@ export function createServer() {
   const csvUpload = express.text({ type: "*/*", limit: "20mb" });
 
   app.post("/admin/upload/contacts", csvUpload, (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     const contacts = saveContactsCsv(req.body);
@@ -603,7 +606,7 @@ export function createServer() {
   // silently (no reply into the group), this is the only way to confirm it's working
   // without SSH/shell access to the container.
   app.get("/admin/group-listings", (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     if (!fs.existsSync(config.data.groupListingsCsv)) {
@@ -620,7 +623,7 @@ export function createServer() {
   // endpoint fetches media from a URL server-side, so this host must be public — that's why
   // PUBLIC_BASE_URL has to be set for the response's suggested `url` field to be usable.
   app.post("/admin/upload/banner", express.raw({ type: "*/*", limit: "15mb" }), (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     const ext = typeof req.query.ext === "string" ? req.query.ext.replace(/[^a-z0-9]/gi, "") || "jpg" : "jpg";
@@ -642,7 +645,7 @@ export function createServer() {
   // number that already passed "new" won't see the intro/trial-start behavior again
   // without this. `phone` is digits-only, no leading +, matching webhook payloads.
   app.get("/admin/conversation-state", (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -651,7 +654,7 @@ export function createServer() {
   });
 
   app.post("/admin/reset-state", (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -665,7 +668,7 @@ export function createServer() {
   // the ONLY way to unlock further approvals for an account — never self-service, never a
   // live charge. See src/billing/entitlementStore.ts.
   app.get("/admin/entitlement", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -674,7 +677,7 @@ export function createServer() {
   });
 
   app.post("/admin/entitlement/override", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -688,7 +691,7 @@ export function createServer() {
   // one is this admin action; no payment processor exists, so this is never self-service and
   // never a live charge. ?plan=none clears an assigned plan back to locked.
   app.post("/admin/entitlement/plan", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     const phone = String(req.query.phone ?? "");
@@ -709,7 +712,7 @@ export function createServer() {
   // shows the actual resolved paths, what's on disk at each, and a peek at loaded inventory
   // so we can tell real WatchFacts data from the bundled sample from the response alone.
   app.get("/admin/debug-info", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     const describe = (p: string) => {
@@ -743,7 +746,7 @@ export function createServer() {
   // runInventorySync/syncOneSide. A failure on one side never clears or masks the other's
   // last success, and existing rows for a failed side are never touched.
   app.get("/admin/inventory-status", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(await getSyncStatus(config.watchfacts.enableWtbSync));
@@ -754,7 +757,7 @@ export function createServer() {
   // credentials or shell access. Used to confirm what's actually stored for a given reference
   // when a live search unexpectedly returns nothing.
   app.get("/admin/inventory-search", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -770,18 +773,18 @@ export function createServer() {
   // Currently OpenAI-specific since that's the provider being debugged; the response is already
   // safe to return as-is (no key, no full customer data — see runOpenAiDiagnosticCall).
   app.get("/admin/ai-diagnostic", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(await runOpenAiDiagnosticCall());
   });
 
   app.get("/admin/lifecycle-settings", async (req,res)=>{
-    if(req.query.token!==config.server.webhookToken)return res.status(401).json({error:"invalid token"});
+    if(isValidAdminToken(String(req.query.token??""))===false)return res.status(401).json({error:"invalid token"});
     res.json(await getLifecycleSettings());
   });
   app.post("/admin/lifecycle-settings", express.json(), async (req,res)=>{
-    if(req.query.token!==config.server.webhookToken)return res.status(401).json({error:"invalid token"});
+    if(isValidAdminToken(String(req.query.token??""))===false)return res.status(401).json({error:"invalid token"});
     try{await setLifecycleSettings(req.body??{});res.json({ok:true,settings:await getLifecycleSettings()});}catch(e){res.status(400).json({error:(e as Error).message});}
   });
 
@@ -792,14 +795,14 @@ export function createServer() {
   // WATCHFACTS_ADMIN_PHONES — the token alone (which anyone with server-admin access holds) is
   // not sufficient to change what a real WhatsApp group can do.
   app.get("/admin/concierge/groups", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json({ ok: true, groups: await listDesignatedGroups() });
   });
 
   function requireConciergeAdmin(req: express.Request, res: express.Response): boolean {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       res.status(401).json({ error: "invalid token" });
       return false;
     }
@@ -845,7 +848,7 @@ export function createServer() {
   // backgrounding it like /outreach/start. The scheduler in index.ts calls this on its own
   // interval; this endpoint is for a manual/on-demand re-sync.
   app.post("/admin/sync-inventory", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     if (!config.watchfacts.email || !config.watchfacts.password) {
@@ -865,7 +868,7 @@ export function createServer() {
   // The scheduler in index.ts calls this on its own interval; this endpoint is for a manual/
   // on-demand run. Already-known, unchanged matches are a no-op — see runReconciliation.
   app.post("/admin/reconciliation", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     const result = await runReconciliation();
@@ -877,7 +880,7 @@ export function createServer() {
   // already initializes it unconditionally at startup, this should always report ready, but a
   // failing call here (rather than a silent false) is itself the signal something's wrong.
   app.get("/admin/v4-status", async (req, res) => {
-    if (req.query.token !== config.server.webhookToken) {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
       return res.status(401).json({ error: "invalid token" });
     }
     let schemaReady = true;

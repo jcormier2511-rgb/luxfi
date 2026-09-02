@@ -123,13 +123,7 @@ test("a successful authcapture webhook activates the membership, sets up ARB, an
             responseCode: "1",
             settleAmount: "50.00",
             profile: { customerProfileId: "cp-1", customerPaymentProfileId: "pp-1" },
-            userFields: {
-              userField: [
-                { name: "checkoutSessionId", value: session.id },
-                { name: "phone", value: "15559990001" },
-                { name: "plan", value: "tier1" },
-              ],
-            },
+            order: { invoiceNumber: session.id },
           },
         },
       };

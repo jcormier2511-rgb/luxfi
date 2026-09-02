@@ -195,6 +195,40 @@ test("the first three approvals for an account are complimentary; the fourth is 
   assert.equal(approvals.rows.length, 3, "a locked attempt must never insert an approval row");
 });
 
+test("a returning-user Fi campaign bonus (fi_returning_promotions) unlocks a complimentary approval past the third, same as v3's evaluateApprovalGate", async () => {
+  await resetAll();
+  const buyer = "buyer-promo-bonus";
+
+  let canonicalUserId!: number;
+  for (let i = 0; i < 3; i++) {
+    const { matchId } = await createMatch(buyer);
+    const outcome = await approveMatch(matchId, buyer);
+    assert.equal(outcome.status, "approved", `approval #${i + 1} should succeed`);
+    if (i === 0) {
+      canonicalUserId = (
+        await db.withSchema((pool) => pool.query(`SELECT approving_canonical_user_id FROM approvals WHERE match_id=$1`, [matchId]))
+      ).rows[0].approving_canonical_user_id;
+    }
+  }
+
+  // Without a promo grant, the 4th is locked (already covered above) -- confirm that's still
+  // true right up to the moment the grant exists, then grant it.
+  const { matchId: fourthMatchId } = await createMatch(buyer);
+  assert.equal((await approveMatch(fourthMatchId, buyer)).status, "locked");
+  await db.withSchema((pool) =>
+    pool.query(`INSERT INTO fi_returning_promotions (canonical_user_id, tasks_granted, tasks_used) VALUES ($1, 3, 0)`, [canonicalUserId])
+  );
+
+  const fourth = await approveMatch(fourthMatchId, buyer);
+  assert.equal(fourth.status, "approved", "the promo grant must unlock this approval even past the 3-approval trial");
+
+  const ledger = await db.withSchema((pool) => pool.query(`SELECT billing_status FROM billing_ledger ORDER BY id`));
+  assert.equal(ledger.rows[3].billing_status, "complimentary", "a promo-granted approval must be billed the same as a trial one, never plan_included");
+
+  const promo = await db.withSchema((pool) => pool.query(`SELECT tasks_used FROM fi_returning_promotions WHERE canonical_user_id=$1`, [canonicalUserId]));
+  assert.equal(promo.rows[0].tasks_used, 1, "the grant is consumed by the approval it unlocked");
+});
+
 test("an admin manual override unlocks approvals past the third — and every ledger row stays $0, never a real charge", async () => {
   await resetAll();
   const buyer = "buyer-override";

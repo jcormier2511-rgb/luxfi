@@ -32,7 +32,7 @@ test("hostedPaymentFormActionUrl defaults to the sandbox host (AUTHORIZENET_ENVI
   assert.equal(hostedPaymentFormActionUrl(), "https://test.authorize.net/payment/payment");
 });
 
-test("createHostedPaymentPageToken sends merchantAuthentication, the plan's dollar amount, profile.createProfile, and correlation userFields", async (t) => {
+test("createHostedPaymentPageToken sends merchantAuthentication, the plan's dollar amount, the correlation invoiceNumber, and enables Accept Hosted's own profile-creation setting", async (t) => {
   let sentBody: any;
   t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
     sentBody = JSON.parse(init.body as string);
@@ -48,11 +48,10 @@ test("createHostedPaymentPageToken sends merchantAuthentication, the plan's doll
   assert.equal(req.merchantAuthentication.name, "test-login-id");
   assert.equal(req.merchantAuthentication.transactionKey, "test-transaction-key");
   assert.equal(req.transactionRequest.amount, "150.00", "tier2 is $150/month");
-  assert.equal(req.transactionRequest.profile.createProfile, true);
-  const fields: { name: string; value: string }[] = req.transactionRequest.userFields.userField;
-  assert.equal(fields.find((f) => f.name === "checkoutSessionId")?.value, "sess-1");
-  assert.equal(fields.find((f) => f.name === "phone")?.value, "15551234567");
-  assert.equal(fields.find((f) => f.name === "plan")?.value, "tier2");
+  assert.equal(req.transactionRequest.order.invoiceNumber, "sess-1", "checkoutSessionId round-trips as order.invoiceNumber, not a userField");
+  const settings: { settingName: string; settingValue: string }[] = req.hostedPaymentSettings.setting;
+  const customerOptions = JSON.parse(settings.find((s) => s.settingName === "hostedPaymentCustomerOptions")!.settingValue);
+  assert.equal(customerOptions.addPaymentProfile, true, "must explicitly ask Accept Hosted to create a CIM profile");
 });
 
 test("callAuthorizeNetApi throws with the API's own error detail when resultCode is Error", async (t) => {
@@ -86,7 +85,7 @@ test("callAuthorizeNetApi strips a leading BOM before parsing JSON", async (t) =
   assert.equal(token, "bom-ok");
 });
 
-test("getTransactionDetails parses the approved response into settleAmountCents and the correlation userFields", async (t) => {
+test("getTransactionDetails parses the approved response into settleAmountCents and the correlation invoiceNumber", async (t) => {
   t.mock.method(
     globalThis,
     "fetch",
@@ -100,7 +99,7 @@ test("getTransactionDetails parses the approved response into settleAmountCents 
               responseCode: "1",
               settleAmount: "50.00",
               profile: { customerProfileId: "cp-1", customerPaymentProfileId: "pp-1" },
-              userFields: { userField: [{ name: "checkoutSessionId", value: "sess-4" }, { name: "phone", value: "15551234567" }, { name: "plan", value: "tier1" }] },
+              order: { invoiceNumber: "sess-4" },
             },
           },
         }),
@@ -114,8 +113,6 @@ test("getTransactionDetails parses the approved response into settleAmountCents 
   assert.equal(details.customerProfileId, "cp-1");
   assert.equal(details.customerPaymentProfileId, "pp-1");
   assert.equal(details.checkoutSessionId, "sess-4");
-  assert.equal(details.phone, "15551234567");
-  assert.equal(details.plan, "tier1");
 });
 
 test("createArbSubscription requests month-2-onward billing against the given payment profile and returns the subscriptionId", async (t) => {

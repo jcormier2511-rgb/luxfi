@@ -370,7 +370,13 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
         }
       }
 
-      const isComplimentary = user.total_approved_count < config.trial.maxApprovedMatches;
+      // Must match approvalUsage.ts's getApprovalUsage formula exactly -- a returning user
+      // granted bonus tasks via the Fi-returning campaign (fi_returning_promotions) but already
+      // past their 3 lifetime approvals still gets a complimentary approval here too, the same
+      // as the v3 on-demand flow already grants via evaluateApprovalGate.
+      const promo = await client.query(`SELECT tasks_granted, tasks_used FROM fi_returning_promotions WHERE canonical_user_id=$1`, [canonicalUserId]);
+      const promotionalTasksRemaining = promo.rows[0] ? promo.rows[0].tasks_granted - promo.rows[0].tasks_used : 0;
+      const isComplimentary = user.total_approved_count < config.trial.maxApprovedMatches || promotionalTasksRemaining > 0;
       if (!isComplimentary) {
         const weeklyLimit = weeklyLimitFor(entitlement);
         if (weeklyLimit === 0) {

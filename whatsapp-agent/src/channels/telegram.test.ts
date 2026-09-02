@@ -65,11 +65,20 @@ function privateMessage(overrides: Partial<{ text: string; caption: string; phot
 test("extractIncomingMessages normalizes a private text message into telegram: identity form", async () => {
   const [msg] = await telegram.extractIncomingMessages(privateMessage({ text: "FS Rolex Daytona 116500LN $18500" }));
   assert.ok(msg);
-  assert.equal(msg.id, "42");
+  assert.equal(msg.id, "telegram:778899:42", "namespaced by chat id so two different chats' message_id 42 never collide");
   assert.equal(msg.phone, "telegram:778899");
   assert.equal(msg.text, "FS Rolex Daytona 116500LN $18500");
   assert.equal(msg.isGroup, false);
   assert.equal(msg.senderName, "Ada");
+});
+
+test("two different chats' first messages (both message_id 1) get distinct normalized ids, not a collision", async () => {
+  const firstChatMessage = { update_id: 10, message: { message_id: 1, from: { id: 111 }, chat: { id: 111, type: "private" }, text: "hi" } };
+  const secondChatMessage = { update_id: 11, message: { message_id: 1, from: { id: 222 }, chat: { id: 222, type: "private" }, text: "hi" } };
+
+  const [msgA] = await telegram.extractIncomingMessages(firstChatMessage);
+  const [msgB] = await telegram.extractIncomingMessages(secondChatMessage);
+  assert.notEqual(msgA.id, msgB.id, "the shared alreadyProcessed dedup store must never see these two as the same message");
 });
 
 test("extractIncomingMessages drops group/channel chats entirely — group monitoring stays WhatsApp-only", async () => {

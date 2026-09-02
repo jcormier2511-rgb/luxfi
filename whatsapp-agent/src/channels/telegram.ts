@@ -89,7 +89,10 @@ export async function extractIncomingMessages(update: TelegramUpdate): Promise<N
 
   return [
     {
-      id: String(message.message_id),
+      // Telegram's message_id is only unique per chat (each chat's own counter starts near 1),
+      // not globally -- the shared alreadyProcessed dedup store needs a namespaced id or two
+      // different users' first messages (both id "1") collide, silently dropping the second.
+      id: `telegram:${message.chat.id}:${message.message_id}`,
       phone: telegramIdentity(String(message.chat.id)),
       text,
       isGroup: false,
