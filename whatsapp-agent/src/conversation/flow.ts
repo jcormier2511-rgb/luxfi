@@ -22,7 +22,7 @@ import { detectCurrency } from "../matching/currency";
 
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
-import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch, canonicalizeReference, normalizeReference, splitLeadingBrand, INTENT_TOKENS, isOnlyIntentLanguage } from "../postings/normalize";
+import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch, canonicalizeReference, normalizeReference, splitLeadingBrand, INTENT_TOKENS, isOnlyNonModelLanguage } from "../postings/normalize";
 import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
@@ -972,20 +972,22 @@ function intakeSlots(text: string, reference: string | null) {
     .replace(/^(?:it(?:'s| is)|this is)\s+(?:a\s+)?/i, "")
     .replace(new RegExp(`\\b${(brand??"").replace(/\s+/g,"\\s+")}\\b`,"i"), "")
     .replace(extractReference(text)??"","")
-    .replace(/\bonly\b/gi, "")
-    .replace(/(?:under|max(?:imum)?|budget|asking|price|for)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
     // A dial-color word ("black dial") describes the dial, not the watch's model, but the
     // trailing cutoff below only ever removed "dial"/"color" itself, leaving the color word
     // sitting right in front of it — the live bug this fixes stored "black" as the model for
     // "wtb a rolex 116500 black dial" (displayed as "Model: black") even though the dial field
-    // was already being parsed correctly from the same message. Must run before that cutoff so
-    // the color word is gone by the time "dial"/"color" would otherwise start truncating there.
-    .replace(/\b(?:black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)\b/gi, "")
+    // was already being parsed correctly from the same message. Removing the whole phrase here,
+    // before that cutoff runs, also stops the cutoff from eating a model that FOLLOWS one:
+    // "black dial daytona" keeps daytona instead of collapsing to the color.
+    .replace(/\b(?:black|white|blue|green|silver|champagne|grey|gray|salmon|panda|either|any)\s*(?:dials?|colou?rs?)\b/gi, " ")
+    .replace(/\bonly\b/gi, "")
+    .replace(/(?:under|max(?:imum)?|budget|asking|price|for)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
     .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
-  // Belt and braces: whatever survives the scrubbing above is still rejected outright if it is
-  // nothing but intent language, so no phrasing can round-trip a lead-in into the model slot.
-  const model=brand&&itemPhrase&&!isOnlyIntentLanguage(itemPhrase) ? itemPhrase : undefined;
+  // Belt and braces: whatever survives the scrubbing above is still rejected outright if it
+  // identifies nothing — lead-in language, or a descriptor like a dial color that already has
+  // its own slot. No phrasing can round-trip either into the model.
+  const model=brand&&itemPhrase&&!isOnlyNonModelLanguage(itemPhrase) ? itemPhrase : undefined;
   const boxPapers=/\b(full set|box(?: and | & |\/)?papers?|papers)\b/i.exec(text)?.[1]; const year=/\b(19\d{2}|20\d{2})\b/.exec(text)?.[1];
   return { reference: extractReference(text), price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial,brand,model,boxPapers,year };
 }

@@ -106,6 +106,9 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
     senderName: undefined,
     description: "Rolex 116500LN white dial pre-owned in the US for $28,000",
     brand: "rolex",
+    // A dial color is not a model. It has its own slot (dialColor, below) and storing it here
+    // too both duplicated it and invented an identity — this assertion previously locked in the
+    // live "Model: black" defect.
     model: undefined,
     reference: "116500LN",
     price: 30000,

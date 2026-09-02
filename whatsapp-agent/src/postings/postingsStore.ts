@@ -1,7 +1,7 @@
 import { withSchema } from "./db";
 import { getOrCreateCanonicalUser } from "./identity";
 import { platformForIdentity } from "../channels/identity";
-import { classifyText, normalizeText, isOnlyIntentLanguage, PostingType } from "./normalize";
+import { classifyText, normalizeText, isOnlyNonModelLanguage, PostingType } from "./normalize";
 
 export interface PostingRow {
   id: number;
@@ -57,7 +57,7 @@ function inferDirectModel(description:string,brand:string,reference:string|null)
     .split(",")[0]
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g,"")
     .trim();
-  return isOnlyIntentLanguage(model)?"":model;
+  return isOnlyNonModelLanguage(model)?"":model;
 }
 
 function valuesEqual(a: unknown, b: unknown): boolean {

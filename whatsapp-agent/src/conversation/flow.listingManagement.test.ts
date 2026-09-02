@@ -215,6 +215,58 @@ test("the cleaned draft persists clean fields to the posting row", async () => {
   assert.doesNotMatch(text, /ot buy/i);
 });
 
+/**
+ * Second live session, same failure family: "WTB rolex 116500 black dial, ..." reported
+ *   Brand: Rolex / Model: black / Reference: 116500 / Dial: black
+ * The dial color already has its own slot, so putting it in the model duplicated it and invented
+ * an identity the user never gave. Individual descriptor words are never deleted, though — a
+ * model genuinely built from them has to survive.
+ */
+test("a dial color is never stored as the model", async () => {
+  const phone = freshPhone();
+  const reply = await handleIncomingMessage(phone, "WTB rolex 116500 black dial, pre-owned, usa, maximum $35,000");
+  const draft = getState(phone).pendingBuyIntake!;
+
+  assert.equal(draft.brand, "rolex");
+  assert.equal(draft.model, undefined, "the dial color must not become the model");
+  assert.equal(draft.reference, "116500");
+  assert.equal(draft.dialColor, "black", "and it must still be captured as the dial");
+  assert.match(reply.messages.join("\n"), /Model: Not provided/);
+});
+
+const MODEL_EXTRACTION_CASES: ReadonlyArray<readonly [string, string | undefined, string | undefined]> = [
+  // message                                                    model              dial
+  ["WTB rolex 116500 black dial, usa, maximum $35,000",         undefined,         "black"],
+  ["WTB rolex 116500LN white dial pre-owned in the US for $28,000", undefined,     "white"],
+  ["WTB rolex daytona white dial, usa, maximum $35,000",        "daytona",         "white"],
+  // The color leads here, so a catch-all "truncate from the word dial" would have eaten the
+  // model along with it.
+  ["WTB rolex black dial daytona, usa, maximum $35,000",        "daytona",         "black"],
+  // A real model built out of descriptor words has to survive intact.
+  ["WTB tudor black bay, usa, maximum $3,500",                  "black bay",       undefined],
+  ["WTB omega speedmaster professional, usa, maximum $6,000",   "speedmaster professional", undefined],
+];
+
+for (const [message, model, dial] of MODEL_EXTRACTION_CASES) {
+  test(`model/dial split for "${message.slice(0, 46)}…"`, async () => {
+    const phone = freshPhone();
+    await handleIncomingMessage(phone, message);
+    const draft = getState(phone).pendingBuyIntake!;
+    assert.equal(draft.model, model);
+    assert.equal(draft.dialColor, dial);
+  });
+}
+
+test("a descriptor-only model is not persisted to the posting row either", async () => {
+  const phone = freshPhone();
+  await handleIncomingMessage(phone, "WTB rolex 116500 black dial, pre-owned, usa, maximum $35,000");
+  await handleIncomingMessage(phone, "confirm");
+  const shown = await handleIncomingMessage(phone, "my listings");
+  const text = shown.messages.join("\n");
+  assert.match(text, /1\. WTB — Rolex 116500\n/, "identity is brand + reference, with no color in it");
+  assert.match(text, /black dial/, "the dial is still shown from its own field");
+});
+
 // ---------------------------------------------------------------------------------------------
 // 3. "market pulse <reference>" must route deterministically
 // ---------------------------------------------------------------------------------------------

@@ -73,6 +73,39 @@ export const INTENT_TOKENS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Words that describe a watch but never name its model: dial colors, the nouns they attach to,
+ * and condition/qualifier language. A dial color has its own slot, so letting one land in the
+ * model column both loses information and invents it — the live session showed
+ * "Model: black" for "WTB rolex 116500 black dial", and the same defect stored "white" for a
+ * white-dial request.
+ *
+ * These are only ever used to judge a WHOLE phrase (see isOnlyNonModelLanguage); individual
+ * words are never deleted from the middle of one, because real models are built from them —
+ * Tudor's Black Bay must survive intact while a bare leftover "black" must not.
+ */
+const DESCRIPTOR_TOKENS: ReadonlySet<string> = new Set([
+  "black", "white", "blue", "green", "silver", "champagne", "grey", "gray", "salmon", "panda",
+  "dial", "dials", "color", "colour", "colors", "colours",
+  "preowned", "pre", "owned", "used", "unworn", "mint", "new", "brand",
+  "any", "either", "unknown", "none",
+]);
+
+/**
+ * True when `phrase` names no model — it is empty, punctuation only, or made up entirely of
+ * intent language and descriptors. This is the guard both the intake draft and the persisted
+ * posting row use before writing a model, so neither can store a leftover that identifies
+ * nothing.
+ */
+export function isOnlyNonModelLanguage(phrase: string): boolean {
+  const tokens = phrase.toLowerCase().split(/[^a-z0-9'’]+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  return tokens.every((t) => {
+    const word = t.replace(/’/g, "'");
+    return INTENT_TOKENS.has(word) || DESCRIPTOR_TOKENS.has(word);
+  });
+}
+
+/**
  * True when `phrase` carries no identifying information at all — it is empty, punctuation only,
  * or made up of nothing but INTENT_TOKENS. Such a phrase must never be stored as a model.
  */

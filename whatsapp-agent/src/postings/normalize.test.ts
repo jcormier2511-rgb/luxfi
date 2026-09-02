@@ -11,6 +11,7 @@ import {
   canonicalizeReference,
   referenceEquivalents,
   isOnlyIntentLanguage,
+  isOnlyNonModelLanguage,
   splitLeadingBrand,
 } from "./normalize";
 
@@ -227,4 +228,16 @@ test("a leading maker name is split off a market-pulse argument", () => {
   assert.deepEqual(splitLeadingBrand("Rolex 116500LN"), { brand: "rolex", rest: "116500LN" });
   assert.deepEqual(splitLeadingBrand("patek philippe 5711/1A"), { brand: "patek philippe", rest: "5711/1A" });
   assert.deepEqual(splitLeadingBrand("116500LN"), { brand: null, rest: "116500LN" });
+});
+
+test("a phrase of pure descriptors names no model, but a model built from them survives", () => {
+  // Dial colors and condition words describe a watch; they never identify its model.
+  for (const phrase of ["black", "white dial", "pre-owned", "black dial", "any", "either", ","]) {
+    assert.equal(isOnlyNonModelLanguage(phrase), true, `"${phrase}" should name no model`);
+  }
+  // Whole-phrase judgement only — individual descriptor words are never removed, so real models
+  // built out of them are kept intact.
+  for (const phrase of ["black bay", "daytona", "speedmaster professional", "royal oak"]) {
+    assert.equal(isOnlyNonModelLanguage(phrase), false, `"${phrase}" is a real model`);
+  }
 });
