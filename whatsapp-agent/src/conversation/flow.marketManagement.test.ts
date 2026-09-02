@@ -5,7 +5,7 @@ const db=require("../postings/db") as typeof import("../postings/db");
 const inventory=require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 const store=require("../postings/postingsStore") as typeof import("../postings/postingsStore");
 const {handleIncomingMessage}=require("./flow") as typeof import("./flow");
-const {resetState}=require("./stateStore") as typeof import("./stateStore");
+const {resetState,getState}=require("./stateStore") as typeof import("./stateStore");
 after(async()=>{await db._closePoolForTests();await inventory._closePoolForTests();});
 beforeEach(async()=>{await db._resetDbForTests();await inventory._resetDbForTests();});
 async function listing(phone:string,type:"FS"|"WTB",reference:string,price:number,extra:Partial<import("../postings/postingsStore").DirectSellPostingInput>={}) {
@@ -37,4 +37,51 @@ test("brand-only pulse reports scoped counts without reference pricing",async()=
  const pulse=await handleIncomingMessage(phone,"market pulse");
  assert.match(pulse.messages.join("\n"),/Market Pulse — Rolex[\s\S]*active Rolex listings[\s\S]*average asking price unavailable/i);
  assert.doesNotMatch(pulse.messages.join("\n"),/Average FS ask: \$/);
+});
+
+/**
+ * The codex branch wired a network-wide briefing to "market briefing", colliding with the
+ * per-listing briefing of the same name. It is kept, but placed where the per-listing one has
+ * nothing to say — an account with no listings — and given its own explicit command.
+ */
+test("an account with no listings gets the network snapshot instead of a dead end",async()=>{
+ const phone="telegram:551990001";resetState(phone);
+ await store.createDirectPosting({phone:"other",type:"FS",description:"FS Rolex",brand:"Rolex",model:"Daytona",reference:"116500LN",price:30000,currency:"USD"});
+ await store.createDirectPosting({phone:"other2",type:"WTB",description:"WTB Rolex",brand:"Rolex",model:"Daytona",reference:"116500LN",price:28000,currency:"USD"});
+ const reply=await handleIncomingMessage(phone,"market briefing");
+ const text=reply.messages.join("\n");
+ assert.match(text,/don’t have any active listings to brief yet/);
+ assert.match(text,/Market Overview — everything Fi is monitoring/);
+ assert.match(text,/FS: 1 active listings/);
+ assert.match(text,/WTB: 1 active requests/);
+});
+
+test("market overview always reports the whole network, even with listings of your own",async()=>{
+ const phone="telegram:551990002";resetState(phone);
+ await store.createDirectPosting({phone,type:"FS",description:"mine",brand:"Rolex",model:"Daytona",reference:"116500LN",price:30000,currency:"USD"});
+ await store.createDirectPosting({phone:"other",type:"FS",description:"theirs",brand:"Rolex",model:"Submariner",reference:"126610LN",price:14000,currency:"USD"});
+ for(const command of ["market overview","overall market","network market","market snapshot"]){
+  const reply=await handleIncomingMessage(phone,command);
+  const text=reply.messages.join("\n");
+  assert.match(text,/Market Overview — everything Fi is monitoring/,`"${command}" was not recognized`);
+  assert.match(text,/FS: 2 active listings/,`"${command}" must count the whole network, not just this account`);
+ }
+ // The per-listing briefing is untouched and still scoped to this account's own listings.
+ const briefing=await handleIncomingMessage(phone,"market briefing");
+ assert.match(briefing.messages.join("\n"),/^Your Market Briefing/);
+});
+
+test("confirming a WTB shows what WatchFacts already has, without a second command",async()=>{
+ const phone="telegram:551990003";resetState(phone);
+ await inventory.upsertListings([
+  {id:"wf-live-1",type:"FS",category:"watches",item:"Daytona",brand:"Rolex",ref:"116500LN",condition:"pre-owned",price:"$28,000",location:"USA",contactName:"A",contactPhone:"1",rating:"",description:"Rolex Daytona 116500LN"},
+ ],new Date().toISOString());
+ await handleIncomingMessage(phone,"WTB Rolex 116500LN, black dial, pre-owned, usa, max $35,000");
+ assert.equal(getState(phone).pendingBuyIntake?.step,"confirm","precondition: the draft is ready to confirm");
+
+ const confirmed=await handleIncomingMessage(phone,"confirm");
+ const text=confirmed.messages.join("\n");
+ assert.match(text,/request is active/i,"the acknowledgment still comes first");
+ assert.match(text,/116500LN/,"and the available inventory is shown straight away");
+ assert.equal(getState(phone).pendingBuyIntake,undefined,"the draft is cleared afterwards");
 });

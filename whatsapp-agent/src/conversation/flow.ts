@@ -30,7 +30,7 @@ import { extractReference, containsKnownBrand, normalizePriceShorthand, normaliz
 import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
-import { formatMarketPulse, getScopedMarketPulse } from "../postings/marketPulse";
+import { formatMarketPulse, getScopedMarketPulse, getNetworkMarketSnapshot, formatNetworkMarketSnapshot } from "../postings/marketPulse";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -685,6 +685,8 @@ export interface FlowResult {
 
 const MARKET_COMMAND = /^(?:market pulse|market briefing|market update|market for my listing|market on my watch|price pulse|how is the market|show market data)\s*[?.!]*$/i;
 const MARKET_BRIEFING_COMMAND = /^(?:market briefing|market update)\s*[?.!]*$/i;
+/** The whole monitored network, independent of what this account happens to be listing. */
+const MARKET_OVERVIEW_COMMAND = /^(?:market overview|overall market|whole market|network market|market snapshot|how(?:'s| is) the whole market)\s*[?.!]*$/i;
 const MARKET_REFERENCE_COMMAND = /^(?:market\s+pulse|price\s+pulse|market\s+price|market\s+data|market\s+check|market|pulse)\s+(?:on\s+|for\s+)?(.+)$/i;
 
 /**
@@ -888,7 +890,11 @@ async function handleListingEdit(phone: string, command: ListingEditCommand): Pr
 
 async function formatMarketBriefing(phone: string): Promise<string> {
   const rows = (await userListings(phone)).filter((p) => p.status === "active");
-  if (!rows.length) return "You don’t have any active listings to brief yet.";
+  // With no listings of their own there is nothing to brief per-listing, and "you have none" is
+  // a dead end. The network-wide snapshot is the useful answer to the same question.
+  if (!rows.length) {
+    return `You don’t have any active listings to brief yet — here’s the market Fi is watching.\n\n${formatNetworkMarketSnapshot(await getNetworkMarketSnapshot())}`;
+  }
   const cards = await Promise.all(rows.map(async (p, i) => {
     if (!p.reference && !p.brand && !p.model) return `${i + 1}. ${formatStructuredPosting(p)}\n\nReference needed for exact pricing.`;
     const pulse = await getScopedMarketPulse({ brand: p.brand, model: p.model, reference: p.reference });
@@ -1629,7 +1635,12 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
 
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingBuyIntake!;
-  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingBuyIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
+  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
+    // Confirmation is the activation boundary: show what WatchFacts already has for this exact
+    // request rather than making the buyer ask a second time. Runs before the draft is cleared,
+    // so the search is scoped to the request they just confirmed.
+    messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
+    state.pendingBuyIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text); if(freeLocation)p.location=text.trim();
@@ -1859,6 +1870,10 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     messages.push(formatMarketPulse(await getScopedMarketPulse({ brand: displayBrand(marketReference.brand) || undefined, reference: marketReference.reference })));
     // Read-only, and deliberately not persisted: saveState round-trips through JSON, which
     // drops explicitly-undefined intake fields — a market lookup must not rewrite an open draft.
+    return { state, messages };
+  }
+  if (MARKET_OVERVIEW_COMMAND.test(commandText)) {
+    messages.push(formatNetworkMarketSnapshot(await getNetworkMarketSnapshot()));
     return { state, messages };
   }
   if (MARKET_COMMAND.test(commandText)) {

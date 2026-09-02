@@ -127,3 +127,65 @@ export function formatMarketPulse(pulse: MarketPulse): string {
     : `Average FS ask: ${average}`;
   return `Market Pulse — ${title}\n\n${counts}\n${averageLine}\n\nBased on current active WatchFacts inventory and normalized listings.`;
 }
+
+
+export interface NetworkMarketSnapshot { fsCount: number; wtbCount: number; averageFsAsk: number | null }
+
+/**
+ * The whole monitored network at once, across every reference, rather than one watch's pulse.
+ *
+ * Ported from codex/continue-stabilization-branch-tasks, where it was wired to "market briefing"
+ * and so collided with the per-listing briefing of the same name. It earns its place at the one
+ * point the per-listing briefing has nothing to say — an account with no active listings — and
+ * under its own explicit command. No reference filter applies here, so unlike getMarketPulse
+ * there is nothing to canonicalize; the WatchFacts mirror is still discounted exactly once.
+ */
+export async function getNetworkMarketSnapshot(): Promise<NetworkMarketSnapshot> {
+  await initInventorySchema();
+  return withSchema(async (pool) => {
+    const result = await pool.query(
+      `WITH current_inventory AS (
+         SELECT type,
+                CASE WHEN type='FS' AND upper(COALESCE(currency,'USD'))='USD' AND price > 0
+                     THEN price::numeric END AS fs_price
+         FROM postings WHERE status='active' AND expires_at > now()
+
+         UNION ALL
+
+         SELECT i.type,
+                CASE WHEN i.type='FS'
+                          AND upper(COALESCE(NULLIF(i.native_currency,''),'USD'))='USD'
+                          AND COALESCE(i.native_price_amount,
+                            CASE WHEN i.price ~ '^[[:space:]$]*[0-9][0-9,]*(\\.[0-9]+)?[[:space:]]*$'
+                                 THEN regexp_replace(i.price, '[^0-9.]', '', 'g')::double precision END) > 0
+                     THEN COALESCE(i.native_price_amount,
+                            regexp_replace(i.price, '[^0-9.]', '', 'g')::double precision)::numeric END
+         FROM inventory_listings i
+         WHERE i.is_active=TRUE AND i.type IN ('FS','WTB')
+           AND NOT EXISTS (
+             SELECT 1 FROM postings p
+             WHERE p.source_type='api' AND p.source_platform='watchfacts_api'
+               AND p.status='active' AND p.expires_at > now()
+               AND p.type=i.type AND p.external_listing_id=i.external_id
+           )
+       )
+       SELECT count(*) FILTER (WHERE type='FS')::int AS fs_count,
+              count(*) FILTER (WHERE type='WTB')::int AS wtb_count,
+              avg(fs_price) FILTER (WHERE type='FS') AS average_fs_ask
+       FROM current_inventory`
+    );
+    const row = result.rows[0];
+    return {
+      fsCount: Number(row.fs_count),
+      wtbCount: Number(row.wtb_count),
+      averageFsAsk: row.average_fs_ask === null ? null : Number(row.average_fs_ask),
+    };
+  });
+}
+
+export function formatNetworkMarketSnapshot(snapshot: NetworkMarketSnapshot): string {
+  const average = snapshot.averageFsAsk === null
+    ? "Unavailable"
+    : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(snapshot.averageFsAsk);
+  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\nAverage FS ask: ${average}\n\nBased on current activity across the dealer groups and WatchFacts inventory Fi monitors.`;
+}
