@@ -170,6 +170,26 @@ test("pause listing 1, 2 & 3 accepts commas and an ampersand between indices", a
   assert.equal(await statusOf(three.id), "paused");
 });
 
+test('"close 1 and 2" (no "listing" said at all) still closes both', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "FS", "116500LN", 30000);
+  const two = await makeListing(phone, "FS", "126610LN", 14000, { model: "Submariner" });
+
+  // Live-reported follow-up failure: dropping the word "listing" entirely ("close 1 and 2"
+  // instead of "close listing 1 and 2") still fell through to the open draft's answer handler.
+  const reply = await handleIncomingMessage(phone, "close 1 and 2");
+  assert.doesNotMatch(reply.messages.join("\n"), /kept your request draft open/i);
+  assert.equal(await statusOf(one.id), "stopped");
+  assert.equal(await statusOf(two.id), "stopped");
+});
+
+test('"pause 1" (no "listing" said at all) still pauses it', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "FS", "116500LN", 30000);
+  await handleIncomingMessage(phone, "pause 1");
+  assert.equal(await statusOf(one.id), "paused");
+});
+
 test("an intake answer that names no listing number still reaches the draft", async () => {
   const phone = freshPhone();
   const one = await makeListing(phone, "FS", "116500LN", 30000);

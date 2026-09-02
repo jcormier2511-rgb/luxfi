@@ -525,8 +525,11 @@ function parseListingEditCommand(text: string): ListingEditCommand | null {
   // than one bare digit — the live-reported failure was that "close listing 1 and 2" matched
   // nothing here (the old pattern required exactly one trailing number), fell through to the
   // open WTB draft's answer handler, and reported "I kept your request draft open" instead of
-  // closing anything.
-  const lifecycle = t.match(/^(?:please\s+)?(pause|pausing|hold|resume|reactivate|restart|unpause|close|closing|delete|deleting|remove|cancel|stop|end)\s+(?:my\s+)?listings?\s*#?\s*(\d+(?:\s*(?:,|&|and)\s*#?\s*\d+)*)$/i);
+  // closing anything. The word "listing(s)" itself is also optional — a follow-up live retest
+  // showed "close 1 and 2" (verb directly on the numbers, no "listing" said at all) failing the
+  // same way, and there's nothing else in this bot a bare "<lifecycle verb> <number(s)>" could
+  // mean.
+  const lifecycle = t.match(/^(?:please\s+)?(pause|pausing|hold|resume|reactivate|restart|unpause|close|closing|delete|deleting|remove|cancel|stop|end)\s+(?:my\s+)?(?:listings?\s*)?#?\s*(\d+(?:\s*(?:,|&|and)\s*#?\s*\d+)*)$/i);
   if (lifecycle) {
     const verb = lifecycle[1].toLowerCase();
     const action: ListingEditCommand["action"] = /^(pause|pausing|hold|stop)$/.test(verb) ? "pause"

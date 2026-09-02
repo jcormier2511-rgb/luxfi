@@ -21,7 +21,14 @@ export async function listCoverage(identity:string){const user=await getOrCreate
 export async function handleCoverageCommand(identity:string,text:string):Promise<string|null>{
   const t=text.trim(); let m:RegExpExecArray|null;
   if((m=/^(?:send me all|i handle all)\s+(.+?)(?:\s+(?:wtbs|inquiries))?$/i.exec(t))) {await upsertCoverage(identity,m[1]);return `Done — ACTIVE coverage for ${clean(m[1])}, model ANY, reference ANY.`;}
-  if((m=/^(pause|resume|remove)\s+(.+?)(?:\s+(?:coverage|alerts?))?$/i.exec(t))){await setCoverageStatus(identity,m[2],m[1].toLowerCase()==='pause'?'paused':m[1].toLowerCase()==='remove'?'removed':'active');return `${m[1][0].toUpperCase()+m[1].slice(1).toLowerCase()}d ${clean(m[2])} WTB coverage.`;}
+  // "pause"/"resume"/"remove" are also listing-management verbs (see conversation/flow.ts's
+  // parseListingEditCommand), and this runs BEFORE that in server.ts's routing -- a bare
+  // brand-name capture here previously swallowed "pause listing 1", "remove #1 and 2", etc.
+  // before the real listing-management handler ever saw them, silently reporting a coverage
+  // change for a "brand" like "listing 1" or "#1 and 2" that never actually matched any alert.
+  // A target that's a listing reference (digits, "#", or the word "listing") is never a brand
+  // name, so it's left for flow.ts to handle instead.
+  if((m=/^(pause|resume|remove)\s+(.+?)(?:\s+(?:coverage|alerts?))?$/i.exec(t))&&!/^#?\d|^listings?\b/i.test(m[2].trim())){await setCoverageStatus(identity,m[2],m[1].toLowerCase()==='pause'?'paused':m[1].toLowerCase()==='remove'?'removed':'active');return `${m[1][0].toUpperCase()+m[1].slice(1).toLowerCase()}d ${clean(m[2])} WTB coverage.`;}
   if(/^stop\s+.+\s+alerts?$/i.test(t)){const brand=t.replace(/^stop\s+/i,'').replace(/\s+alerts?$/i,'');await setCoverageStatus(identity,brand,'removed');return `Stopped ${brand} WTB alerts.`;}
   if(/^pause all wtb alerts$/i.test(t)){await setAllAlerts(identity,true);return 'All WTB alerts paused.';}
   if(/^resume all wtb alerts$/i.test(t)){await setAllAlerts(identity,false);return 'All WTB alerts resumed.';}
