@@ -35,9 +35,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
   .card, form.login { background: #1e2126 !important; border-color: #2c2f36 !important; }
   input, button { background: #20242b !important; color: #e6e6e6 !important; border-color: #3a3f47 !important; }
 }
-header { padding: 18px 28px; border-bottom: 1px solid #d8dade; display: flex; justify-content: space-between; align-items: center; }
+header { padding: 18px 28px; border-bottom: 1px solid #d8dade; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 header h1 { font-size: 17px; margin: 0; }
 header a { color: #4b5563; text-decoration: none; font-size: 13px; }
+header nav { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 main { max-width: 1000px; margin: 0 auto; padding: 22px 28px 50px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 .card { background: #fff; border: 1px solid #e2e4e8; border-radius: 10px; padding: 16px 18px; }
 .card h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
@@ -88,7 +89,7 @@ export function renderLoginPage(error?: string): string {
 export function renderManagementPage(kind:"users"|"groups"|"administrators"|"coverage"):string {
   const title=kind==="users"?"Approved Users":kind==="groups"?"GROUP MANAGEMENT":kind==="coverage"?"WTB Coverage / Dealer Specialists":"Administrators";
   const empty=kind==="groups"?"No approved groups yet. Add the exact WhatsApp chat ID after the number is restored; wildcards are never accepted.":`No ${title.toLowerCase()} found.`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}.toolbar{display:flex;gap:8px;margin-bottom:14px}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin">Overview</a> · <a href="/admin/users">Users</a> · <a href="/admin/groups">Groups</a> · <a href="/admin/coverage">WTB Coverage</a> · <a href="/admin/administrators">Administrators</a> · <a href="/admin/logout">Sign out</a></nav></header><main><section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to</p><h2>Push Groups</h2><p class="muted">Groups Fi may actively post into (configured independently under listing settings)</p>':''}<div class="toolbar"><input id="q" placeholder="Search"><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}.toolbar{display:flex;gap:8px;margin-bottom:14px}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/logout">Sign out</a></nav></header><main><section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to</p><h2>Push Groups</h2><p class="muted">Groups Fi may actively post into (configured independently under listing settings)</p>':''}<div class="toolbar"><input id="q" placeholder="Search"><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
   const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='';
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   async function load(){const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));table.querySelector('thead').innerHTML='<tr>'+keys.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+'</tr>').join('')}
@@ -306,13 +307,13 @@ function renderNetworkReachCard(metrics: AdminDashboardData["metrics"]): string 
     const c = r.channels[platform];
     return `<tr><td>${escapeHtml(channelLabel(platform))}</td><td>${c.groupsConnected}</td><td>${c.groupMemberships.toLocaleString()}</td><td>${c.knownUniqueUsers.toLocaleString()}</td><td>${c.activeUsers30d.toLocaleString()}</td><td>${c.groupsMissingMemberCount}</td></tr>`;
   }).join("");
-  return `<section class="card full">
-    <h2>Network Reach</h2>
+  return `<section class="card full" id="members">
+    <h2>Members / Network Reach</h2>
     <table>
       <thead><tr><th>Channel</th><th>Groups</th><th>Group memberships</th><th>Known unique users</th><th>Active users (30d)</th><th>Groups missing count</th></tr></thead>
       <tbody>${rows}<tr><th>Total</th><th>${r.total.groupsConnected}</th><th>${r.total.groupMemberships.toLocaleString()}</th><th>${r.total.knownUniqueUsers.toLocaleString()}</th><th>${r.total.activeUsers30d.toLocaleString()}</th><th>${r.total.groupsMissingMemberCount}</th></tr></tbody>
     </table>
-    <p class="muted">Group memberships are gross reach from the stored member count on each active group, so the same dealer can appear in more than one group. Known unique users are canonical Fi accounts; the Total column deduplicates people linked on multiple channels. SMS has no groups, so its group counts are always zero.</p>
+    <p class="muted">Group memberships are gross reach from the stored member count on each active group, so the same dealer can appear in more than one group. Known unique users are canonical Fi accounts; the Total row deduplicates people linked on multiple channels. SMS has no groups, so its group counts are always zero.</p>
   </section>`;
 }
 
@@ -345,7 +346,7 @@ function renderTopRequestsCard(metrics: AdminDashboardData["metrics"]): string {
 function renderActivityCard(metrics: AdminDashboardData["metrics"]): string {
   if (!metrics) return "";
   const rows = metrics.activityByUser.length
-    ? `<table><thead><tr><th>Phone</th><th>Searches</th><th>Approvals</th><th>Last active</th><th>Preferred Channel</th><th>Linked Identities</th></tr></thead><tbody>${metrics.activityByUser
+    ? `<table><thead><tr><th>Identity</th><th>Searches</th><th>Approvals</th><th>Last active</th><th>Preferred Channel</th><th>Linked Identities</th></tr></thead><tbody>${metrics.activityByUser
         .map(
           (a) =>
             `<tr><td>${escapeHtml(a.phone)}</td><td>${a.searches}</td><td>${a.approvals}</td><td>${
@@ -359,7 +360,7 @@ function renderActivityCard(metrics: AdminDashboardData["metrics"]): string {
         .join("")}</tbody></table>`
     : `<p class="muted">No user activity recorded yet.</p>`;
   return `<section class="card full">
-    <h2>Activity by user (top 20, most recent first)</h2>
+    <h2>Member activity (top 20, most recent first)</h2>
     ${rows}
   </section>`;
 }
@@ -375,8 +376,8 @@ export function renderDashboard(data: AdminDashboardData): string {
 </head>
 <body>
   <header>
-    <h1>LuxFi WhatsApp Agent — Admin</h1>
-    <a href="/admin/logout">Sign out</a>
+    <h1>LuxFi Admin</h1>
+    <nav><a href="#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/logout">Sign out</a></nav>
   </header>
   <main>
     ${renderWhapiCard(data.whapi)}
