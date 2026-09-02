@@ -474,7 +474,7 @@ function parseMarketReferenceCommand(text: string): { reference: string; brand?:
   return { reference, ...(brand ? { brand } : {}) };
 }
 
-interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB" }
+interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB"; indices?: number[] }
 
 /** "listing 1", "listing #1", "listing  2" — anywhere in the sentence, not only after the verb. */
 const LISTING_INDEX_PATTERN = /\blisting\s*#?\s*(\d+)\b/i;
@@ -521,13 +521,19 @@ function parseListingEditCommand(text: string): ListingEditCommand | null {
   const t = text.trim().replace(/\s*[?.!]+$/, "");
   if (!t) return null;
 
-  const lifecycle = t.match(/^(?:please\s+)?(pause|pausing|hold|resume|reactivate|restart|unpause|close|closing|delete|deleting|remove|cancel|stop|end)\s+(?:my\s+)?listing\s*#?\s*(\d+)$/i);
+  // A listing number may be a list ("close listing 1 and 2", "close listings 1, 2 & 3") rather
+  // than one bare digit — the live-reported failure was that "close listing 1 and 2" matched
+  // nothing here (the old pattern required exactly one trailing number), fell through to the
+  // open WTB draft's answer handler, and reported "I kept your request draft open" instead of
+  // closing anything.
+  const lifecycle = t.match(/^(?:please\s+)?(pause|pausing|hold|resume|reactivate|restart|unpause|close|closing|delete|deleting|remove|cancel|stop|end)\s+(?:my\s+)?listings?\s*#?\s*(\d+(?:\s*(?:,|&|and)\s*#?\s*\d+)*)$/i);
   if (lifecycle) {
     const verb = lifecycle[1].toLowerCase();
     const action: ListingEditCommand["action"] = /^(pause|pausing|hold|stop)$/.test(verb) ? "pause"
       : /^(resume|reactivate|restart|unpause)$/.test(verb) ? "resume"
       : "close";
-    return { action, index: Number(lifecycle[2]) };
+    const indices = lifecycle[2].split(/[^\d]+/).filter(Boolean).map(Number);
+    return indices.length > 1 ? { action, index: null, indices } : { action, index: indices[0] };
   }
 
   const indexMatch = t.match(LISTING_INDEX_PATTERN);
@@ -581,6 +587,21 @@ function chooseListingMessage(rows: PostingRow[], purpose: string): string {
 async function handleListingEdit(phone: string, command: ListingEditCommand): Promise<string> {
   let rows = await userListings(phone);
   if (command.typeHint) rows = rows.filter((p) => p.type === command.typeHint);
+  // Every index in a bulk command ("close listing 1 and 2") resolves against this ONE snapshot
+  // of rows, taken before any of them are actioned — closing #1 first would otherwise drop it
+  // out of the manageable set and shift #2 into #1's place before it's even looked up.
+  if (command.indices) {
+    const results = await Promise.all(
+      command.indices.map(async (idx) => {
+        const posting = rows[idx - 1];
+        if (!posting) return `I couldn't find listing ${idx}. Say "my listings" to see the current numbers.`;
+        const updated = await setPostingManagementStatus(posting.id, command.action as "pause" | "resume" | "close");
+        if (!updated) return `Listing ${idx} is not currently eligible to ${command.action}.`;
+        return `Listing ${idx} ${command.action === "pause" ? "paused" : command.action === "resume" ? "resumed" : "closed"}:\n\n${formatStructuredPosting(updated)}`;
+      })
+    );
+    return results.join("\n\n");
+  }
   if (command.index === null && rows.length !== 1) return chooseListingMessage(rows, "to manage");
   const posting = command.index === null ? rows[0] : rows[command.index - 1];
   if (!posting) return `I couldn't find listing ${command.index}. Say "my listings" to see the current numbers.`;

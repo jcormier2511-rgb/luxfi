@@ -142,6 +142,34 @@ test("pause/resume/close/delete each act on the numbered listing with a draft op
   assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), draftBefore);
 });
 
+test("closing multiple listings by number in one message closes each one, with a draft open", async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "FS", "116500LN", 30000);
+  const two = await makeListing(phone, "FS", "126610LN", 14000, { model: "Submariner" });
+  const draftBefore = await openBuyDraft(phone);
+
+  // Live-reported failure: this fell through to the open WTB draft's answer handler and
+  // reported "I kept your request draft open" instead of closing either listing.
+  const reply = await handleIncomingMessage(phone, "close listing 1 and 2");
+  const text = reply.messages.join("\n");
+  assert.doesNotMatch(text, /kept your request draft open/i);
+  assert.equal(await statusOf(one.id), "stopped");
+  assert.equal(await statusOf(two.id), "stopped");
+  assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), draftBefore, "the WTB draft must be untouched");
+});
+
+test("pause listing 1, 2 & 3 accepts commas and an ampersand between indices", async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "FS", "116500LN", 30000);
+  const two = await makeListing(phone, "FS", "126610LN", 14000, { model: "Submariner" });
+  const three = await makeListing(phone, "WTB", "116500", 25000);
+
+  await handleIncomingMessage(phone, "pause listing 1, 2 & 3");
+  assert.equal(await statusOf(one.id), "paused");
+  assert.equal(await statusOf(two.id), "paused");
+  assert.equal(await statusOf(three.id), "paused");
+});
+
 test("an intake answer that names no listing number still reaches the draft", async () => {
   const phone = freshPhone();
   const one = await makeListing(phone, "FS", "116500LN", 30000);
