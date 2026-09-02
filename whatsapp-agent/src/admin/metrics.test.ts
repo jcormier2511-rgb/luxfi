@@ -14,6 +14,8 @@ const postingsDb = require("../postings/db") as typeof import("../postings/db");
 const entitlements = require("../billing/entitlementStore") as typeof import("../billing/entitlementStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { logSearchRequest } = require("../postings/analytics") as typeof import("../postings/analytics");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const notificationPreferences = require("../postings/notificationPreferences") as typeof import("../postings/notificationPreferences");
 
 after(async () => {
   await postingsDb._closePoolForTests();
@@ -92,6 +94,31 @@ test("getAdminMetrics surfaces top requests and per-user activity", async () => 
   assert.equal(metrics.activityByUser[0].phone, "15551110000");
   assert.equal(metrics.activityByUser[0].searches, 2);
   assert.equal(metrics.activityByUser[0].approvals, 0);
+  assert.equal(metrics.activityByUser[0].preferredChannel, null, "no preference stated yet");
+  assert.deepEqual(metrics.activityByUser[0].linkedIdentities, [{ platform: "whatsapp", identity: "15551110000" }]);
+});
+
+test("a canonical user with a second linked identity is counted once, not twice, and both identities are surfaced", async () => {
+  await postingsDb._resetDbForTests();
+  await entitlements._resetDbForTests();
+  const userId = await getOrCreateCanonicalUser("whatsapp", "15551110000");
+  await notificationPreferences.linkIdentity(userId, "telegram", "telegram:9001");
+  await notificationPreferences.setPreferredChannel(userId, "telegram");
+  await logSearchRequest("15551110000", "buy", "Rolex Daytona");
+
+  const metrics = await getAdminMetrics();
+  assert.equal(metrics.membership.totalUsers, 1, "one canonical user with two linked identities is still one user");
+
+  assert.equal(metrics.activityByUser.length, 1, "the search only attaches to the identity that made it, not a duplicate row per linked identity");
+  const row = metrics.activityByUser[0];
+  assert.equal(row.preferredChannel, "telegram");
+  assert.deepEqual(
+    row.linkedIdentities.slice().sort((a, b) => a.platform.localeCompare(b.platform)),
+    [
+      { platform: "telegram", identity: "telegram:9001" },
+      { platform: "whatsapp", identity: "15551110000" },
+    ]
+  );
 });
 
 test("payments summary is always $0 -- no live payment processor exists yet", async () => {

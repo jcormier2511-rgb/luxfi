@@ -31,6 +31,12 @@ const matching = require("./matching") as typeof import("./matching");
 const notify = require("./notify") as typeof import("./notify");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const whapiClient = require("../whapi/client") as typeof import("../whapi/client");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const telegramClient = require("../channels/telegram") as typeof import("../channels/telegram");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const identity = require("./identity") as typeof import("./identity");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const notificationPreferences = require("./notificationPreferences") as typeof import("./notificationPreferences");
 
 const { ingestChatPosting, mirrorApiFsPosting } = store;
 const { runImmediateMatch } = matching;
@@ -421,4 +427,50 @@ test("a locked (trial-exhausted) approval attempt never reveals or pushes anythi
   assert.equal(outcome.status, "locked");
   assert.equal(outcome.counterpart, undefined);
   assert.equal(sent.length, 0, "a locked attempt must never reveal or push anything");
+});
+
+test("a delivery failure falls back to another linked channel ONLY when the recipient opted into fallback delivery", async (t) => {
+  await resetAll();
+  const buyerPhone = "buyer-fallback-1";
+  const canonicalUserId = await identity.getOrCreateCanonicalUser("whatsapp", buyerPhone);
+  await notificationPreferences.linkIdentity(canonicalUserId, "telegram", "telegram:fallback-1");
+  await notificationPreferences.setPreferredChannel(canonicalUserId, "whatsapp");
+  await notificationPreferences.setFallbackEnabled(canonicalUserId, true);
+
+  t.mock.method(whapiClient, "sendText", async () => {
+    throw new Error("simulated WhatsApp send failure");
+  });
+  const telegramSent: { identity: string; message: string }[] = [];
+  t.mock.method(telegramClient, "sendText", async (recipient: string, message: string) => {
+    telegramSent.push({ identity: recipient, message });
+  });
+
+  const { matchId } = await createMatch(buyerPhone);
+  assert.equal(telegramSent.length, 1, "fell back to the Telegram identity after the WhatsApp send failed");
+  assert.equal(telegramSent[0].identity, "telegram:fallback-1");
+
+  const delivered = await db.withSchema((pool) => pool.query(`SELECT delivered_at FROM match_recipients WHERE match_id=$1`, [matchId]));
+  assert.ok(delivered.rows[0].delivered_at, "recorded as delivered once the fallback actually succeeded");
+});
+
+test("a delivery failure is never retried on another channel when fallback delivery is off (the default)", async (t) => {
+  await resetAll();
+  const buyerPhone = "buyer-fallback-2";
+  const canonicalUserId = await identity.getOrCreateCanonicalUser("whatsapp", buyerPhone);
+  await notificationPreferences.linkIdentity(canonicalUserId, "telegram", "telegram:fallback-2");
+  // fallback_enabled defaults to false -- deliberately not set here.
+
+  t.mock.method(whapiClient, "sendText", async () => {
+    throw new Error("simulated WhatsApp send failure");
+  });
+  const telegramSent: unknown[] = [];
+  t.mock.method(telegramClient, "sendText", async () => {
+    telegramSent.push(true);
+  });
+
+  const { matchId } = await createMatch(buyerPhone);
+  assert.equal(telegramSent.length, 0, "never silently switches channels for a routine notification without the recipient's opt-in");
+
+  const delivered = await db.withSchema((pool) => pool.query(`SELECT delivered_at FROM match_recipients WHERE match_id=$1`, [matchId]));
+  assert.equal(delivered.rows.length, 0, "the claim is deleted (retryable) after a failed delivery, same as the pre-existing failure path");
 });

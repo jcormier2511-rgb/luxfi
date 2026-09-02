@@ -258,6 +258,20 @@ async function ensureSchema(): Promise<void> {
           preferred_identity_id INTEGER REFERENCES linked_identities(id), wtb_alerts_paused BOOLEAN NOT NULL DEFAULT false
         );
 
+        -- A short-lived, single-use code that lets an EXISTING canonical user link a brand-new
+        -- identity on a chat-id-based platform (Telegram) to their own account, without ever
+        -- routing that identity through getOrCreateCanonicalUser (which would otherwise mint it
+        -- a fresh, unrelated canonical user the moment it messages Fi for the first time). Not
+        -- needed for phone-based platforms (SMS/WhatsApp), which link directly by phone number
+        -- instead -- see postings/notificationPreferences.ts's linkIdentity.
+        CREATE TABLE IF NOT EXISTS pending_identity_links (
+          code TEXT PRIMARY KEY,
+          canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id) ON DELETE CASCADE,
+          platform TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          expires_at TIMESTAMPTZ NOT NULL
+        );
+
         -- Additive migrations for columns introduced after their table's original
         -- CREATE TABLE — CREATE TABLE IF NOT EXISTS silently skips a table that already
         -- exists, so a column added later needs its own idempotent ADD COLUMN IF NOT EXISTS
@@ -267,6 +281,16 @@ async function ensureSchema(): Promise<void> {
         ${CAP_ACTIVE_POSTING_EXPIRATIONS_SQL}
         ALTER TABLE matches ADD COLUMN IF NOT EXISTS connected_at TIMESTAMPTZ;
         ALTER TABLE match_recipients ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+
+        -- The user's stated notification-channel preference (see postings/notificationPreferences.ts).
+        -- Deliberately independent of whether a linked identity on that platform exists yet --
+        -- stating a preference and having somewhere to deliver it are two different things, and
+        -- the resolver falls back to whatever IS linked rather than dropping notifications when
+        -- they haven't lined up yet. fallback_enabled is the explicit opt-in the user must give
+        -- before a delivery FAILURE (not merely an unlinked preference) is allowed to retry on a
+        -- different linked channel -- never silently switched for a routine notification otherwise.
+        ALTER TABLE canonical_notification_preferences ADD COLUMN IF NOT EXISTS preferred_channel TEXT CHECK (preferred_channel IN ('whatsapp','telegram','sms'));
+        ALTER TABLE canonical_notification_preferences ADD COLUMN IF NOT EXISTS fallback_enabled BOOLEAN NOT NULL DEFAULT false;
 
         -- Lets the v3 on-demand flow's own approvals share this table (see the CREATE TABLE
         -- approvals comment above) — an existing deployed database still has the original
@@ -431,6 +455,7 @@ export async function _resetDbForTests(): Promise<void> {
   await getPool().query(`
     DROP TABLE IF EXISTS
       wtb_fulfillment_opportunities, wtb_coverage, canonical_notification_preferences,
+      pending_identity_links,
       reconciliation_runs, postings_meta, billing_ledger, approvals, match_recipients, matches,
       market_update_deliveries, posting_images, postings, search_requests, linked_identities,
       briefing_posting_state, lifecycle_deliveries, fi_returning_campaign_deliveries,

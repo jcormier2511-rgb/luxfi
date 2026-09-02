@@ -11,7 +11,11 @@ import { MEMBERSHIP_PLANS, PlanKey } from "../billing/plans";
 import { isAuthorizeNetConfigured } from "../billing/authorizeNet";
 import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, getApprovedMatchesSummary } from "../postings/approvalUsage";
 import { getOrCreateCanonicalUser } from "../postings/identity";
-import { platformForIdentity } from "../channels/identity";
+import { platformForIdentity, smsIdentity, ChannelPlatform } from "../channels/identity";
+import {
+  getNotificationPreference, setPreferredChannel, getLinkedIdentities, linkIdentity,
+  createPendingIdentityLink, consumePendingIdentityLink, channelLabel,
+} from "../postings/notificationPreferences";
 import { getActivePostingsForUser, getManageablePostingsForUser, setPostingManagementStatus, updatePostingField, PostingRow } from "../postings/postingsStore";
 import { runImmediateMatch } from "../postings/matching";
 import { logSearchRequest } from "../postings/analytics";
@@ -254,6 +258,124 @@ function handleCurrencyPreferenceCommand(state: ConversationState, code: string,
   state.preferredDisplayCurrency = code;
   messages.push(`Got it — I'll show prices in ${code} from now on.`);
 }
+
+type NotificationChannelIntent = { kind: "set"; channel: ChannelPlatform } | { kind: "status" };
+
+/**
+ * "Send my matches by SMS." / "Notify me on Telegram." / "Use WhatsApp for alerts." / "Where
+ * are you sending my notifications?" — where Fi ALERTS a contact is a preference on the
+ * canonical account (see postings/notificationPreferences.ts), deliberately independent of
+ * whichever channel they happen to be chatting on right now: a dealer might manage listings on
+ * Telegram but want matches pushed by SMS.
+ */
+function parseNotificationChannelCommand(text: string): NotificationChannelIntent | null {
+  const t = text.trim().replace(/[?.!]+$/, "");
+  if (!t) return null;
+
+  if (
+    /^where\s+(?:are\s+you|do\s+you)\s+send(?:ing)?\s+my\s+(?:notifications?|alerts?|matches?)$/i.test(t) ||
+    /^what(?:'s|\s+is)\s+my\s+(?:preferred\s+)?(?:notification|alert)\s+channel$/i.test(t)
+  ) {
+    return { kind: "status" };
+  }
+
+  const channelWord = "(whatsapp|telegram|sms|text\\s*message|text)";
+  const patterns = [
+    new RegExp(`^send\\s+my\\s+(?:matches|notifications|alerts)\\s+(?:by|on|via|through)\\s+${channelWord}$`, "i"),
+    new RegExp(`^notify\\s+me\\s+(?:by|on|via|through)\\s+${channelWord}$`, "i"),
+    new RegExp(`^use\\s+${channelWord}\\s+for\\s+(?:my\\s+)?(?:matches|notifications|alerts)$`, "i"),
+    new RegExp(`^(?:set\\s+)?(?:my\\s+)?(?:notification|alert)\\s+channel\\s+(?:to|=)\\s+${channelWord}$`, "i"),
+  ];
+  for (const re of patterns) {
+    const m = t.match(re);
+    if (!m) continue;
+    const word = m[1].toLowerCase().replace(/\s+/g, " ");
+    const channel: ChannelPlatform = word === "whatsapp" || word === "telegram" ? word : "sms";
+    return { kind: "set", channel };
+  }
+  return null;
+}
+
+/** "link A1B2C3D4" — completes a Telegram identity link started by handleNotificationChannelCommand
+ *  below. Checked as one of the very FIRST things in handleIncomingMessage, before anything that
+ *  might call getOrCreateCanonicalUser for the identity sending it — linking must attach that
+ *  identity to the EXISTING canonical user the code names, never create it a fresh one first. */
+const LINK_CODE_COMMAND = /^link\s+([0-9a-f]{8})$/i;
+
+async function handleLinkCodeCommand(phone: string, code: string, messages: string[]): Promise<void> {
+  const platform = platformForIdentity(phone);
+  const consumed = await consumePendingIdentityLink(code, platform);
+  if (!consumed.ok) {
+    messages.push(
+      consumed.reason === "expired"
+        ? 'That code has expired — say something like "notify me on Telegram" again to get a new one.'
+        : consumed.reason === "wrong_platform"
+        ? "That code isn't for this channel."
+        : "I don't recognize that code — it may already have been used."
+    );
+    return;
+  }
+  const linked = await linkIdentity(consumed.canonicalUserId, platform, phone);
+  if (!linked.ok) {
+    messages.push(
+      linked.reason === "already_linked_here"
+        ? "This account is already linked."
+        : "This account is already linked to a different Fi account, so I can't connect it here."
+    );
+    return;
+  }
+  await setPreferredChannel(consumed.canonicalUserId, platform);
+  messages.push(`Linked! I'll send your matches and alerts on ${channelLabel(platform)} from now on.`);
+}
+
+/** Phone-based channels (SMS, WhatsApp) link directly by number; Telegram needs the code flow
+ *  above instead, since there's no phone number the user can type in for a chat id. */
+function phoneIdentityForChannel(channel: "whatsapp" | "sms", digits: string): string {
+  return channel === "sms" ? smsIdentity(`+${digits}`) : digits;
+}
+
+async function handleNotificationChannelCommand(state: ConversationState, intent: NotificationChannelIntent, messages: string[]): Promise<void> {
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(state.phone), state.phone);
+
+  if (intent.kind === "status") {
+    const pref = await getNotificationPreference(canonicalUserId);
+    const linked = await getLinkedIdentities(canonicalUserId);
+    if (!pref.preferredChannel) {
+      messages.push(
+        linked.length > 0
+          ? `You haven't set a preferred notification channel — right now I'd send your matches and alerts by ${channelLabel(linked[0].platform)}. Say "notify me on WhatsApp/Telegram/SMS" to set one.`
+          : 'No channel linked yet. Say "notify me on WhatsApp/Telegram/SMS" to set one up.'
+      );
+      return;
+    }
+    const isLinked = linked.some((l) => l.platform === pref.preferredChannel);
+    messages.push(
+      [
+        `Preferred notification channel: ${channelLabel(pref.preferredChannel)}${isLinked ? "" : " (not linked yet)"}`,
+        `Fallback delivery: ${pref.fallbackEnabled ? "on — I'll try another linked channel if this one fails" : "off"}`,
+        linked.length > 0 ? `Linked: ${linked.map((l) => channelLabel(l.platform)).join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+    return;
+  }
+
+  const linked = await getLinkedIdentities(canonicalUserId);
+  await setPreferredChannel(canonicalUserId, intent.channel);
+  if (linked.some((l) => l.platform === intent.channel)) {
+    messages.push(`Got it — I'll send your matches and alerts on ${channelLabel(intent.channel)} from now on.`);
+    return;
+  }
+
+  if (intent.channel === "telegram") {
+    const code = await createPendingIdentityLink(canonicalUserId, "telegram");
+    messages.push(`Got it — I'll use Telegram once it's linked. Message me "link ${code}" from Telegram to connect it (this code expires in 15 minutes).`);
+    return;
+  }
+  state.pendingChannelLink = intent.channel;
+  messages.push(`Got it — I'll use ${channelLabel(intent.channel)} once it's linked. What's the best phone number to reach you at on ${channelLabel(intent.channel)}?`);
+}
 // A bare greeting (spec: "'hi' should return the Fi menu, not force approve/pass") is NOT its
 // own deterministic command here — a brand-new contact's first "hi" must still get the normal
 // intro message (see state.stage === "new" below), and an existing contact's "hi" with matches
@@ -430,6 +552,22 @@ function formatActiveAcknowledgment(p: import("../postings/postingsStore").Posti
   return `${heading}\n\n${details}\n\n${outcome}`;
 }
 
+/** A one-time nudge right after the contact's first successful listing — the moment they've
+ *  just seen Fi actually work is also the moment "where should I alert you" is most concretely
+ *  useful, rather than a cold-onboarding question with nothing yet to attach it to. Silently
+ *  skipped once a preference already exists (set via handleNotificationChannelCommand, or a
+ *  future one), and never repeated regardless of that outcome. */
+async function maybeNudgeChannelPreference(state: ConversationState, messages: string[]): Promise<void> {
+  if (state.channelPreferenceNudgeShown) return;
+  state.channelPreferenceNudgeShown = true;
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(state.phone), state.phone);
+  const pref = await getNotificationPreference(canonicalUserId);
+  if (pref.preferredChannel) return;
+  messages.push(
+    'One-time question: how would you like me to notify you when I find a buyer, seller, or market opportunity? Reply "notify me on WhatsApp", "Telegram", or "SMS" — or ignore this and I\'ll keep using wherever you\'re chatting with me now.'
+  );
+}
+
 /** "status" — a quick, honest snapshot of trial/plan usage and anything still awaiting a
  *  decision. Reads live from the same canonical Postgres counter both the on-demand (v3) and
  *  automatic-matching (v4) approve paths share (see postings/approvalUsage.ts) — never a
@@ -489,7 +627,7 @@ async function handleMembershipCommand(state: ConversationState, messages: strin
 
 function handleCancelCommand(state: ConversationState, messages: string[]): void {
   const hadSomethingToCancel = Boolean(
-    state.pendingMatches || state.pendingPreferenceCollection || state.pendingNaturalFollowUp || state.pendingSellIntake || state.pendingBuyIntake
+    state.pendingMatches || state.pendingPreferenceCollection || state.pendingNaturalFollowUp || state.pendingSellIntake || state.pendingBuyIntake || state.pendingChannelLink
   );
   state.pendingMatches = undefined;
   state.pendingPreferenceCollection = undefined;
@@ -499,6 +637,7 @@ function handleCancelCommand(state: ConversationState, messages: string[]): void
   state.pendingReplacementRequest = undefined;
   state.pendingEscrowOffer = false;
   state.pendingListingsMenu = false;
+  state.pendingChannelLink = undefined;
   messages.push(
     hadSomethingToCancel
       ? "Okay, I've cleared your current matches. Send a new buy/sell request anytime."
@@ -1367,7 +1506,7 @@ async function persistSellIntake(state: ConversationState, pending: PendingSellI
  *  found a live buyer, rather than a blanket "not wired up yet" caveat. */
 async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingSellIntake!; const suppliedPhoto = Boolean(imageUrl); if(imageUrl)p.imageUrl=imageUrl;
-  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingSellIntake=undefined; return; }
+  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingSellIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
@@ -1382,7 +1521,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
 
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingBuyIntake!;
-  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingBuyIntake=undefined; return; }
+  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingBuyIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text); if(freeLocation)p.location=text.trim();
@@ -1447,6 +1586,16 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   // Telegram commonly prefixes bot commands with "/" (and may append "@botname"). Keep one
   // normalized deterministic-command surface across Telegram, WhatsApp, and SMS.
   const commandText = text.trim().replace(/^\/([a-z]+)(?:@[a-z0-9_]+)?\b/i, "$1");
+
+  // Checked before absolutely anything else that might touch this identity's canonical user
+  // (getState above is the file-based conversation store, not that — it's safe). Linking must
+  // attach the identity SENDING this message to the EXISTING canonical user the code names,
+  // never let some other command create it a fresh, unrelated one first.
+  const linkCode = commandText.trim().match(LINK_CODE_COMMAND);
+  if (linkCode) {
+    await handleLinkCodeCommand(phone, linkCode[1], messages);
+    return { state, messages };
+  }
 
   // START is a universal conversational reset, not only an opt-out recovery command. A user
   // with old pending matches must be able to begin again instead of being trapped behind the
@@ -1634,6 +1783,12 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     saveState(state);
     return { state, messages };
   }
+  const notificationChannelIntent = parseNotificationChannelCommand(text);
+  if (notificationChannelIntent) {
+    await handleNotificationChannelCommand(state, notificationChannelIntent, messages);
+    saveState(state);
+    return { state, messages };
+  }
   const decision = parseDecisionCommand(text);
   if (decision && state.pendingMatches) {
     await handleDecision(state, decision, messages, firstName);
@@ -1685,6 +1840,34 @@ export async function handleIncomingMessage(phone: string, text: string, contact
       return { state, messages };
     }
     // Not 1/2/3 — fall through so this message is still handled normally.
+  }
+
+  // Fi asked a direct question ("what's the best number to reach you at on SMS?") and this
+  // reply is answering exactly that — unlike the other one-shot pending checks above, an
+  // unrecognized reply keeps waiting rather than falling through, since there's no sensible
+  // "normal handling" for a bare phone number otherwise.
+  if (state.pendingChannelLink) {
+    const channel = state.pendingChannelLink;
+    const digits = text.replace(/[^\d+]/g, "").replace(/^\+/, "");
+    if (digits.length >= 7 && digits.length <= 15) {
+      state.pendingChannelLink = undefined;
+      const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(state.phone), state.phone);
+      const linked = await linkIdentity(canonicalUserId, channel, phoneIdentityForChannel(channel, digits));
+      messages.push(
+        linked.ok
+          ? `Linked! I'll send your matches and alerts on ${channelLabel(channel)} from now on.`
+          : linked.reason === "already_linked_here"
+          ? "That number is already linked to your account."
+          : "That number is already linked to a different Fi account, so I can't connect it here."
+      );
+      saveState(state);
+      return { state, messages };
+    }
+    // Not a phone number — "cancel" is already handled above (before this block is ever
+    // reached) and clears pendingChannelLink there, so it never falls through to here.
+    messages.push(`That doesn't look like a phone number. What's the best number to reach you at on ${channelLabel(channel)}? Or say "cancel" to stop.`);
+    saveState(state);
+    return { state, messages };
   }
 
   if (state.pendingReplacementRequest) {

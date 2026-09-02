@@ -1,4 +1,5 @@
 import { AdminDashboardData } from "./dashboard";
+import { channelLabel } from "../postings/notificationPreferences";
 
 /** Every dynamic value below is run through this before landing in HTML — status strings can
  *  carry error text from external systems (Whapi, WatchFacts, Postgres), which must never be
@@ -327,11 +328,15 @@ function renderTopRequestsCard(metrics: AdminDashboardData["metrics"]): string {
 function renderActivityCard(metrics: AdminDashboardData["metrics"]): string {
   if (!metrics) return "";
   const rows = metrics.activityByUser.length
-    ? `<table><thead><tr><th>Phone</th><th>Searches</th><th>Approvals</th><th>Last active</th></tr></thead><tbody>${metrics.activityByUser
+    ? `<table><thead><tr><th>Phone</th><th>Searches</th><th>Approvals</th><th>Last active</th><th>Preferred Channel</th><th>Linked Identities</th></tr></thead><tbody>${metrics.activityByUser
         .map(
           (a) =>
             `<tr><td>${escapeHtml(a.phone)}</td><td>${a.searches}</td><td>${a.approvals}</td><td>${
               a.lastActiveAt ? escapeHtml(a.lastActiveAt) : "—"
+            }</td><td>${a.preferredChannel ? escapeHtml(channelLabel(a.preferredChannel)) : "—"}</td><td>${
+              a.linkedIdentities.length
+                ? escapeHtml(a.linkedIdentities.map((li) => `${channelLabel(li.platform)}: ${li.identity}`).join(", "))
+                : "—"
             }</td></tr>`
         )
         .join("")}</tbody></table>`

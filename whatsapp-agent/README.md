@@ -371,6 +371,28 @@ curl -X POST "https://<your-railway-domain>/admin/reset-state?phone=<digits-only
 (phone is digits only, no leading `+`, e.g. `15551234567`). Check current state anytime with
 `GET /admin/conversation-state?phone=<digits-only>&token=<WEBHOOK_TOKEN>`.
 
+## Notification channel preference
+
+Where a contact **talks** to Fi and where Fi **alerts** them don't have to be the same channel —
+a dealer might manage listings on Telegram but want matches pushed by SMS. The preference lives
+on the canonical account (`canonical_notification_preferences.preferred_channel`), not on any one
+phone/chat identity, so it follows the contact across every channel they've linked.
+
+- **Setting it**: "Send my matches by SMS", "Notify me on Telegram", "Use WhatsApp for alerts",
+  or ask "Where are you sending my notifications?" to check the current setting. Fi also nudges
+  once, right after a contact's first successful listing, if no preference is set yet.
+- **Linking a channel that isn't connected yet**: SMS/WhatsApp link directly by phone number (Fi
+  asks for one); Telegram links via a one-time code (`link A1B2C3D4`, sent from the Telegram
+  account itself) since there's no phone number for a chat id. A code expires after 15 minutes
+  and can never attach to an identity that's already its own separate Fi account — merging two
+  existing accounts isn't supported.
+- **Fallback delivery is opt-in only**: if the preferred channel isn't linked yet, Fi still
+  delivers to whatever *is* linked rather than dropping the notification — that's not a silent
+  channel switch, since there was nothing to honor the preference with yet. A genuine delivery
+  *failure* on an already-linked preferred channel only retries another linked channel when the
+  contact has explicitly turned fallback on (not yet exposed as its own command — set via
+  `postings/notificationPreferences.ts`'s `setFallbackEnabled`).
+
 ## Admin panel
 
 `GET /admin` is a visual, read-only status dashboard — Whapi connectivity, PostgreSQL/schema
@@ -405,7 +427,8 @@ The dashboard also includes:
   (`search_requests`, populated from `conversation/flow.ts`'s `startSearch`) started when this
   feature shipped; there is no historical backfill.
 - **Activity by user** — the 20 most recently active users, with their search and approval
-  counts.
+  counts, plus preferred notification channel and every identity linked to that account (see
+  "Notification channel preference" above).
 
 ## One-time old-Fi returning-user campaign
 

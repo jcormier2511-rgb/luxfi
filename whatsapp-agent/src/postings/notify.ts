@@ -12,18 +12,29 @@ import { isPostingMonitoringEnabled } from "../admin/store";
 import { markPendingEscrowOffer } from "../conversation/stateStore";
 import { getListingLimits } from "./listingConfig";
 import { saveMoreContext } from "./moreContext";
+import { getNotificationPreference, resolveNotifyIdentity, resolveFallbackIdentity } from "./notificationPreferences";
 
 /**
- * Not filtered by platform: a canonical user has exactly one linked identity in this MVP
- * (see postings/identity.ts — no cross-platform merge UI yet), and that identity's own prefix
- * (see channels/identity.ts) is what tells sendText (channels/index.ts) which channel to use —
- * this lookup just needs to find it, whichever channel it's actually on.
+ * Sends `message` to a canonical user's preferred channel (see notificationPreferences.ts),
+ * returning the identity it actually reached so the caller can record/act on the real delivery
+ * channel rather than the one it merely intended. Falls back to another linked identity ONLY on
+ * a genuine send failure, and ONLY when the recipient has explicitly opted into fallback
+ * delivery — a preferred channel that simply isn't linked yet is resolved (not "fallen back to")
+ * by resolveNotifyIdentity itself, before this function is ever called; this is strictly about
+ * what happens when an actual delivery attempt throws.
  */
-async function getPhoneForCanonicalUser(canonicalUserId: number): Promise<string | null> {
-  return withSchema(async (pool) => {
-    const result = await pool.query(`SELECT identity FROM linked_identities WHERE canonical_user_id=$1 LIMIT 1`, [canonicalUserId]);
-    return result.rows[0]?.identity ?? null;
-  });
+async function sendToCanonicalUser(canonicalUserId: number, identity: string, message: string): Promise<string> {
+  try {
+    await sendText(identity, message);
+    return identity;
+  } catch (err) {
+    const { fallbackEnabled } = await getNotificationPreference(canonicalUserId);
+    if (!fallbackEnabled) throw err;
+    const fallback = await resolveFallbackIdentity(canonicalUserId, identity);
+    if (!fallback) throw err;
+    await sendText(fallback, message);
+    return fallback;
+  }
 }
 
 async function getMatchWithPostings(
@@ -186,8 +197,8 @@ async function notifyOneRecipient(
   );
   if (claimed.rows.length === 0) return; // already notified — dedup
 
-  const phone = await getPhoneForCanonicalUser(recipientCanonicalUserId);
-  if (!phone) return; // e.g. the API-mirrored FS side has no WhatsApp identity to notify
+  const phone = await resolveNotifyIdentity(recipientCanonicalUserId);
+  if (!phone) return; // e.g. the API-mirrored FS side has no linked identity to notify at all
 
   // Best-effort only — a listing with no captured image (most chat posts today, since
   // downloading/durable-storing WhatsApp media is still out of scope, see db.ts) just omits
@@ -206,9 +217,10 @@ async function notifyOneRecipient(
 
   try {
     const fromGroup=self.source_type==="chat"&&Boolean(self.source_chat_id);
-    await sendText(phone, fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl));
+    const message = fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl);
+    const deliveredTo = await sendToCanonicalUser(recipientCanonicalUserId, phone, message);
     await withSchema(pool=>pool.query(`UPDATE match_recipients SET delivered_at=now() WHERE match_id=$1 AND recipient_canonical_user_id=$2 AND match_revision=$3`,[matchId,recipientCanonicalUserId,revision]));
-    if(fromGroup)await saveMoreContext(recipientCanonicalUserId,platformForIdentity(phone),self,counterpart,matchId);
+    if(fromGroup)await saveMoreContext(recipientCanonicalUserId,platformForIdentity(deliveredTo),self,counterpart,matchId);
   } catch (err) {
     console.error(`[postings] failed to deliver match notification ${matchId} to ${phone}:`, err);
     await withSchema(pool=>pool.query(`DELETE FROM match_recipients WHERE match_id=$1 AND recipient_canonical_user_id=$2 AND match_revision=$3 AND decision='pending'`,[matchId,recipientCanonicalUserId,revision]));
@@ -470,14 +482,15 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
   });
 
   if (result.notify) {
-    const phone = await getPhoneForCanonicalUser(result.notify.canonicalUserId);
+    const phone = await resolveNotifyIdentity(result.notify.canonicalUserId);
     if (phone) {
       try {
-        await sendText(
+        const deliveredTo = await sendToCanonicalUser(
+          result.notify.canonicalUserId,
           phone,
           `You're connected! ${result.notify.myContact.name}: ${result.notify.myContact.phone}\n\n${config.fiFlow.escrowSuggestion}`
         );
-        markPendingEscrowOffer(phone);
+        markPendingEscrowOffer(deliveredTo);
       } catch (err) {
         console.error(`[postings] failed to deliver connection introduction for match ${matchId} to ${phone}:`, err);
         await recordNotificationFailure((err as Error).message);

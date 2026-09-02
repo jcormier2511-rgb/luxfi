@@ -175,5 +175,16 @@ export interface ConversationState {
   // preferred currency" (see conversation/flow.ts). ISO 4217 code. Undefined means the
   // config-wide DEFAULT_DISPLAY_CURRENCY is used instead.
   preferredDisplayCurrency?: string;
+  // Set while Fi is waiting on a phone number to link a phone-based channel (SMS or WhatsApp)
+  // as the contact's preferred notification channel (see conversation/flow.ts's
+  // handleNotificationChannelCommand) — the identity currently chatting may be on a different
+  // channel entirely (that's the whole point: where you talk to Fi and where Fi alerts you
+  // don't have to be the same). Telegram links via a one-time code instead, since a chat id
+  // can't be typed in by the user — see postings/notificationPreferences.ts.
+  pendingChannelLink?: "whatsapp" | "sms";
+  // Set the first time Fi nudges the contact to pick a notification channel (right after their
+  // first successful listing — see conversation/flow.ts's maybeNudgeChannelPreference). Never
+  // repeated after that, regardless of whether they actually set one.
+  channelPreferenceNudgeShown?: boolean;
   updatedAt: string;
 }

@@ -2,6 +2,7 @@ import { withSchema } from "../postings/db";
 import { listAllEntitlements } from "../billing/entitlementStore";
 import { getTopRequests, TopRequest } from "../postings/analytics";
 import { config } from "../config";
+import { ChannelPlatform } from "../channels/identity";
 
 export interface MembershipCounts {
   totalUsers: number;
@@ -26,6 +27,12 @@ export interface UserActivity {
   searches: number;
   approvals: number;
   lastActiveAt: string | null;
+  /** Null means no preference stated yet -- see postings/notificationPreferences.ts. */
+  preferredChannel: ChannelPlatform | null;
+  /** Every identity linked to this row's canonical user, phone included (see
+   *  postings/notificationPreferences.ts's linkIdentity) -- today almost always just the one
+   *  row's own phone, until an account actually links a second channel. */
+  linkedIdentities: { platform: ChannelPlatform; identity: string }[];
 }
 
 export interface PaymentsSummary {
@@ -50,10 +57,16 @@ interface UserRow {
 async function getMembershipCounts(): Promise<MembershipCounts> {
   const [userRows, entitlements] = await Promise.all([
     withSchema((pool) =>
+      // DISTINCT ON (cu.id), not a plain JOIN: a canonical user can now have more than one
+      // linked identity (see postings/notificationPreferences.ts's linkIdentity) -- a plain
+      // JOIN would return one row per identity and double-count that user here. Picks the
+      // oldest linked identity as the representative phone, same ordering entitlements were
+      // always looked up by before multi-identity linking existed.
       pool.query<UserRow>(
-        `SELECT cu.id, cu.total_approved_count, li.identity AS phone
+        `SELECT DISTINCT ON (cu.id) cu.id, cu.total_approved_count, li.identity AS phone
          FROM canonical_users cu
-         JOIN linked_identities li ON li.canonical_user_id = cu.id`
+         JOIN linked_identities li ON li.canonical_user_id = cu.id
+         ORDER BY cu.id, li.id`
       )
     ),
     listAllEntitlements(),
@@ -83,12 +96,18 @@ async function getMembershipCounts(): Promise<MembershipCounts> {
 
 async function getActivityByUser(limit: number): Promise<UserActivity[]> {
   return withSchema(async (pool) => {
-    const result = await pool.query<{ phone: string; searches: string; approvals: string; last_active_at: string | null }>(
+    const result = await pool.query<{
+      phone: string; searches: string; approvals: string; last_active_at: string | null;
+      preferred_channel: ChannelPlatform | null; linked_identities: { platform: ChannelPlatform; identity: string }[] | null;
+    }>(
       `SELECT
          li.identity AS phone,
          COALESCE(sr.searches, 0) AS searches,
          COALESCE(ap.approvals, 0) AS approvals,
-         GREATEST(sr.last_search_at, ap.last_approval_at) AS last_active_at
+         GREATEST(sr.last_search_at, ap.last_approval_at) AS last_active_at,
+         p.preferred_channel,
+         (SELECT jsonb_agg(jsonb_build_object('platform', li2.platform, 'identity', li2.identity) ORDER BY li2.id)
+          FROM linked_identities li2 WHERE li2.canonical_user_id = li.canonical_user_id) AS linked_identities
        FROM linked_identities li
        LEFT JOIN (
          SELECT phone, count(*) AS searches, max(created_at) AS last_search_at
@@ -98,6 +117,7 @@ async function getActivityByUser(limit: number): Promise<UserActivity[]> {
          SELECT approving_canonical_user_id, count(*) AS approvals, max(created_at) AS last_approval_at
          FROM approvals GROUP BY approving_canonical_user_id
        ) ap ON ap.approving_canonical_user_id = li.canonical_user_id
+       LEFT JOIN canonical_notification_preferences p ON p.canonical_user_id = li.canonical_user_id
        WHERE COALESCE(sr.searches, 0) > 0 OR COALESCE(ap.approvals, 0) > 0
        ORDER BY last_active_at DESC NULLS LAST
        LIMIT $1`,
@@ -108,6 +128,8 @@ async function getActivityByUser(limit: number): Promise<UserActivity[]> {
       searches: Number(r.searches),
       approvals: Number(r.approvals),
       lastActiveAt: r.last_active_at,
+      preferredChannel: r.preferred_channel,
+      linkedIdentities: r.linked_identities ?? [],
     }));
   });
 }
