@@ -170,3 +170,66 @@ test("a brand-new contact's first greeting still gets onboarding, not the short 
   assert.doesNotMatch(second.messages[0], /personal luxury concierge/i);
   assert.match(second.messages[0], /how can I help you today/i);
 });
+
+/**
+ * Live session: answering "any" to "What condition do you prefer?" got the SAME question back,
+ * every time. A bare "any" also satisfies the dial-color pattern, so it set the dial, counted as
+ * a change, and the only code that could set condition from it never ran. The interview could
+ * not be completed by answering it as asked — the reported session escaped by typing "preowned".
+ */
+test("the reported interview completes with 'any' answered to every question", async () => {
+  const phone = freshPhone();
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "i want to buy a rolex");
+  await handleIncomingMessage(phone, "35000");
+
+  const seen: string[] = [];
+  for (let turn = 0; turn < 6; turn += 1) {
+    const draft = getState(phone).pendingBuyIntake;
+    if (!draft || draft.step === "confirm") break;
+    const reply = await handleIncomingMessage(phone, "any");
+    const asked = reply.messages.join("\n");
+    assert.ok(!seen.includes(asked), `Fi repeated a question it had already asked: ${asked.slice(0, 60)}`);
+    seen.push(asked);
+  }
+
+  const draft = getState(phone).pendingBuyIntake!;
+  assert.equal(draft.step, "confirm", "answering every question must finish the interview");
+  assert.equal(draft.condition, "any");
+  assert.equal(draft.location, "any");
+});
+
+const BARE_QUALIFIERS = ["any", "either", "no preference", "doesn't matter", "whatever"];
+for (const qualifier of BARE_QUALIFIERS) {
+  test(`"${qualifier}" answers the question actually being asked`, async () => {
+    const phone = freshPhone();
+    await handleIncomingMessage(phone, "i want to buy a rolex");
+    await handleIncomingMessage(phone, "35000");
+    await handleIncomingMessage(phone, "any"); // the model question
+    assert.equal(getState(phone).pendingBuyIntake?.step, "condition");
+
+    await handleIncomingMessage(phone, qualifier);
+    const draft = getState(phone).pendingBuyIntake!;
+    assert.equal(draft.condition, "any", `"${qualifier}" must answer condition`);
+    assert.notEqual(draft.step, "condition", "and must not re-ask it");
+  });
+}
+
+/** Answers people actually type. None may leave the interview asking the same thing again, and
+ *  none may be re-read as item identity — "NY 10001" carries a reference-shaped token, which
+ *  used to overwrite the draft's description and reference with the customer's own postcode. */
+const LOCATION_ANSWERS = ["usa", "USA!", "Miami, FL", "NY 10001", "UK/EU", "Hong Kong", "Los Angeles, CA 90001", "worldwide"];
+for (const answer of LOCATION_ANSWERS) {
+  test(`"${answer}" is accepted as a location, and only as a location`, async () => {
+    const phone = freshPhone();
+    await handleIncomingMessage(phone, "WTB Rolex 116500LN, black dial, pre-owned, max $35,000");
+    assert.equal(getState(phone).pendingBuyIntake?.step, "location", "precondition: waiting on a location");
+
+    const reply = await handleIncomingMessage(phone, answer);
+    const draft = getState(phone).pendingBuyIntake!;
+    assert.notEqual(draft.step, "location", `"${answer}" left the interview stuck re-asking`);
+    assert.ok(draft.location, "the answer must be stored");
+    assert.equal(draft.reference, "116500LN", "identity must survive a location answer");
+    assert.match(reply.messages.join("\n"), /116500LN/, "the summary must still describe the watch");
+  });
+}

@@ -1287,12 +1287,16 @@ function intakeSlots(text: string, reference: string | null) {
  */
 function looksLikePlace(text: string): boolean {
   const t = text.trim();
-  if (!t || t.length > 40) return false;
-  if (/[\d$€£]/.test(t)) return false;
+  if (!t || t.length > 60) return false;
+  // Reject on specific signals only. An earlier version whitelisted letters-and-spaces instead,
+  // which rejected real answers people actually send — "USA!", "NY 10001", "UK/EU" — and since
+  // nothing else claims the location step, Fi re-asked the same question forever. Whatever the
+  // customer sends IS their answer unless it is recognizably something else.
   if (BARE_GREETING.test(t)) return false;
   if (parseAccountIntent(t)) return false;
-  if (!/^[\p{L}][\p{L}\s.,'’-]*$/u.test(t)) return false;
-  return t.split(/\s+/).length <= 5;
+  // A bare amount answers a different question (a mistyped budget), never a place.
+  if (/^[$€£]?\s*[\d,.]+\s*[km]?$/i.test(t)) return false;
+  return true;
 }
 
 function dialRelevant(reference: string | null): boolean { return /^(116500LN|126500LN)$/i.test(reference ?? ""); }
@@ -1367,9 +1371,35 @@ function applyNamedIdentityCorrections(p: PendingSellIntake | PendingBuyIntake, 
   return changed;
 }
 
+/**
+ * "any" / "either" / "no preference" and friends: a bare qualifier names no field of its own,
+ * so the only thing it can mean is "any <the thing Fi just asked about>". Routed by the step
+ * being answered rather than pattern-matched into whichever field happens to accept the word.
+ *
+ * The live bug this fixes made the condition question unanswerable. Several fields accept the
+ * same word — a bare "any" also satisfies the dial-color pattern — so answering "any" to
+ * "What condition do you prefer?" silently set the DIAL instead, counted as a change, and the
+ * only code that could set condition from it (a "nothing else matched" fallback) therefore
+ * never ran. Fi asked the same question again, and would have done so forever; the reported
+ * session escaped only by typing "preowned".
+ *
+ * The model step is deliberately not handled here — it has its own broader vocabulary
+ * (NO_MODEL_PREFERENCE, which also accepts skip/none/unsure) and its own modelSkipped flag.
+ */
+const BARE_QUALIFIER = /^(?:any|anything|either|whatever|no\s+pref(?:erence)?|don'?t\s+care|doesn'?t\s+matter|not\s+fussed)\s*[.!]*$/i;
+
+function applyBareQualifier(p: PendingSellIntake | PendingBuyIntake, text: string): boolean {
+  if (!BARE_QUALIFIER.test(text.trim())) return false;
+  if (p.step === "dial") { p.dialColor = "either"; return true; }
+  if (p.step === "condition") { p.condition = "any"; return true; }
+  if (p.step === "location") { p.location = "any"; return true; }
+  return false;
+}
+
 /** Applies a reply only to the slot Fi asked for. Confirmation-time corrections are accepted
  * only when the field is named, preventing a price-only edit from ever touching identity. */
 function applyScopedSellAnswer(p: PendingSellIntake, text: string): boolean {
+  if (applyBareQualifier(p, text)) return true;
   if (/\b(?:change|update|make|set)\b[\s\S]*\b(?:price|asking)\b|\b(?:price|asking)\b[\s\S]*\b(?:to|is)\b/i.test(text)) {
     const price = extractListingAmount(text, p.reference);
     if (price === undefined) return false;
@@ -1401,11 +1431,21 @@ function applyScopedSellAnswer(p: PendingSellIntake, text: string): boolean {
     if (slots.location) { p.location = slots.location; changed = true; }
     return changed;
   }
+  // A location answer is a location and nothing else. Falling through to the full slot parser
+  // re-read the reply as item identity: "NY 10001" has a reference-shaped token in it, so the
+  // draft's description and reference were both overwritten with the customer's own postcode.
+  // Returning false here leaves the plain free-text place to the caller's freeLocation path.
+  if (p.step === "location") {
+    const slots = intakeSlots(text, p.reference);
+    if (slots.location) { p.location = slots.location; return true; }
+    return false;
+  }
   if (p.step === "details" && looksLikePriceAnswer(text)) return false;
   return applySellSlots(p, text);
 }
 
 function applyScopedBuyAnswer(p: PendingBuyIntake, text: string): boolean {
+  if (applyBareQualifier(p, text)) return true;
   if (/\b(?:change|update|make|set)\b[\s\S]*\b(?:price|budget|maximum|max)\b|\b(?:price|budget|maximum|max)\b[\s\S]*\b(?:to|is)\b/i.test(text)) {
     const budget = extractListingAmount(text, p.reference);
     if (budget === undefined) return false;
@@ -1447,6 +1487,15 @@ function applyScopedBuyAnswer(p: PendingBuyIntake, text: string): boolean {
     if (slots.dial) { p.dialColor = slots.dial; changed = true; }
     if (slots.location) { p.location = slots.location; changed = true; }
     return changed;
+  }
+  // A location answer is a location and nothing else. Falling through to the full slot parser
+  // re-read the reply as item identity: "NY 10001" has a reference-shaped token in it, so the
+  // draft's description and reference were both overwritten with the customer's own postcode.
+  // Returning false here leaves the plain free-text place to the caller's freeLocation path.
+  if (p.step === "location") {
+    const slots = intakeSlots(text, p.reference);
+    if (slots.location) { p.location = slots.location; return true; }
+    return false;
   }
   if (p.step === "details" && looksLikePriceAnswer(text)) return false;
   return applyBuySlots(p, text);
@@ -1565,8 +1614,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text); if(freeLocation)p.location=text.trim();
   const changed=applyScopedSellAnswer(p,text) || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
-  if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
-  else if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open."); }
+  if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open."); }
   messages.push(nextSell(p)??sellSummary(p));
 }
 
@@ -1578,8 +1626,7 @@ async function handleBuyIntakeAnswer(state: ConversationState, text: string, mes
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text); if(freeLocation)p.location=text.trim();
   const changed=applyScopedBuyAnswer(p,text)||skippedReference||freeLocation;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
-  if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
-  else if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your request draft open."); }
+  if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your request draft open."); }
   messages.push(nextBuy(p)??buySummary(p));
 }
 
