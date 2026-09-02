@@ -47,6 +47,21 @@ function isOptOut(text: string): boolean {
 const BUY_KEYWORDS = /\b(buy|buying|wtb|looking for|want|need|iso|find me|in search of)\b/i;
 const SELL_KEYWORDS = /\b(sell|selling|fs|for sale|i have|wts)\b/i;
 
+/**
+ * A message whose OPENING clause is unambiguously a fresh WTB request — including the natural
+ * "I want to buy X" phrasing, not just a bare "WTB"/"buy" prefix. Live-reported: with a WTB
+ * draft already open, "i want to buy a rolex daytona" matched neither this nor any field
+ * correction, and got swallowed by the draft's answer handler ("I kept your request draft
+ * open.") instead of restating it, because the old check anchored on "WTB|buy|want to buy"
+ * directly — the leading "i " defeated it.
+ *
+ * Deliberately narrower than BUY_KEYWORDS (which matches a bare "want"/"need" ANYWHERE in the
+ * text): a bare "want"/"need" not immediately followed by "to buy"/"to" is also how a real
+ * mid-interview ANSWER reads ("I want the black dial", "I need it in the US"), and must never
+ * reset the very draft it's answering.
+ */
+const FRESH_BUY_LEAD_IN = /^\s*(?:i\s+(?:am\s+|'m\s+)?)?(?:would\s+like\s+to\s+|want(?:ing)?\s+to\s+|need\s+to\s+)?(?:wtb|buy(?:ing)?|looking\s+for|in\s+search\s+of|iso|find\s+me)\b/i;
+
 // Tried longest/most-specific first, in a loop, so a compound lead-in ("I want to buy a...")
 // gets fully consumed rather than just its first word — the real reported bug this fixes: the
 // old single-pass regex only ever stripped ONE leading keyword, so "want to buy a patek 5712G"
@@ -1663,13 +1678,13 @@ export async function handleIncomingMessage(phone: string, text: string, contact
 
   // A fresh WTB can restate and complete an existing WTB draft in one message. Cross-type
   // requests still use the explicit replace/add safeguard below.
-  if (state.pendingBuyIntake && /^\s*(?:WTB|buy|want to buy)\b/i.test(text)) {
+  if (state.pendingBuyIntake && FRESH_BUY_LEAD_IN.test(text)) {
     state.pendingBuyIntake = undefined;
     saveState(state);
     return handleIncomingMessage(phone, text, contact, imageUrl);
   }
 
-  if ((state.pendingSellIntake || state.pendingBuyIntake) && /^\s*(?:FS|WTB|for sale|sell|buy|want to buy)\b/i.test(text)) {
+  if ((state.pendingSellIntake || state.pendingBuyIntake) && (/^\s*(?:FS|for sale|sell(?:ing)?)\b/i.test(text) || FRESH_BUY_LEAD_IN.test(text))) {
     state.pendingReplacementRequest = text;
     messages.push("You already have an incomplete request. Should I replace it or add another?");
     saveState(state);

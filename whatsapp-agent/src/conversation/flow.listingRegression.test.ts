@@ -21,6 +21,29 @@ test("WTB fills fields in any order, accepts multiple slots and corrections, the
  assert.equal(corrected.state.pendingBuyIntake?.reference,"116500LN");
 });
 
+test('a natural "I want to buy X" restates an open WTB draft, not just a bare "WTB"/"buy" prefix', async () => {
+  const p = "15550002001b";
+  resetState(p);
+  await handleIncomingMessage(p, "WTB Rolex 116500LN in the US for 28000");
+
+  // Live-reported failure: the reset check required the message to literally START with
+  // "WTB"/"buy"/"want to buy" -- a leading "i " defeated it, so this fell into the draft's
+  // answer handler and just re-showed the OLD Daytona-less draft instead of restating it.
+  const restated = await handleIncomingMessage(p, "i want to buy a rolex daytona");
+  assert.doesNotMatch(restated.messages.join("\n"), /kept your request draft open/i);
+  assert.equal(restated.state.pendingBuyIntake?.model, "daytona");
+  assert.equal(restated.state.pendingBuyIntake?.budget, undefined, "the old draft's budget must not survive into the new one");
+
+  // A genuine correction naming "want"/"need" mid-sentence (not as a leading "buy" phrase)
+  // must still reach the draft as an answer, never reset it.
+  const p2 = "15550002001c";
+  resetState(p2);
+  await handleIncomingMessage(p2, "WTB Rolex 116500LN in the US for 28000");
+  const answer = await handleIncomingMessage(p2, "I want the black dial");
+  assert.equal(answer.state.pendingBuyIntake?.reference, "116500LN", "the original draft must survive an in-interview answer");
+  assert.equal(answer.state.pendingBuyIntake?.dialColor, "black");
+});
+
 test("WTB conversational lead-ins and trailing only never become models", async () => {
   const cases = [
     ["I want to buy a Rolex", undefined, null],
