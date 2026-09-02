@@ -40,6 +40,7 @@ function normalize(text: string): string {
 
 function isOptOut(text: string): boolean {
   const n = normalize(text);
+  if (/^stop\s+listing\s+\d+\s*[?.!]*$/i.test(text.trim())) return false;
   return OPT_OUT_WORDS.some((w) => n === w || n.startsWith(`${w} `));
 }
 
@@ -60,10 +61,12 @@ const LEADING_PHRASES = [
   "in search of",
   "looking for",
   "i want to",
+  "i want",
   "want to",
   "i need to",
   "need to",
   "i need",
+  "need a",
   "find me",
   "i have",
   "iso",
@@ -275,8 +278,21 @@ function formatAmount(value: string, currency: string): string {
 }
 
 /** Uses only persisted structured columns; the original message is deliberately not re-parsed. */
+function displayBrand(value?: string | null): string {
+  const brandNames: Record<string, string> = {
+    rolex: "Rolex", omega: "Omega", cartier: "Cartier", tudor: "Tudor", panerai: "Panerai", iwc: "IWC",
+    patek: "Patek", "patek philippe": "Patek Philippe", "audemars piguet": "Audemars Piguet",
+    "richard mille": "Richard Mille", "vacheron constantin": "Vacheron Constantin", hermes: "Hermes", "hermès": "Hermès",
+  };
+  return value ? (brandNames[value.trim().toLowerCase()] ?? value.trim()) : "";
+}
+
 function formatStructuredPosting(p: import("../postings/postingsStore").PostingRow): string {
-  const identity = [p.brand, p.model, p.reference].filter(Boolean).join(" ") || "Legacy listing — identity incomplete";
+  const brand = displayBrand(p.brand);
+  const rawModel = p.model?.trim() ?? "";
+  const cleanedModel = stripLeadingIntent(rawModel).replace(/\bonly\b\s*$/i, "").trim();
+  const model = cleanedModel && !/^(?:only|a|an|the|i want(?: to buy)?(?: a)?|(?:i(?:'m| am) )?looking for(?: a)?|i need(?: a)?|need a|want a|buy a|wtb(?: a)?)$/i.test(rawModel) ? cleanedModel : "";
+  const identity = [brand, model, p.reference].filter(Boolean).join(" ") || "Legacy listing — identity incomplete";
   return [
     `${p.type} —${identity ? ` ${identity}` : ""}`,
     p.dial ? `${p.dial} dial` : "",
@@ -418,8 +434,12 @@ const MARKET_BRIEFING_COMMAND = /^(?:market briefing|market update)\s*[?.!]*$/i;
 interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB" }
 function parseListingEditCommand(text: string): ListingEditCommand | null {
   const t = text.trim();
-  let m = t.match(/^(pause|resume|close)\s+listing\s+(\d+)\s*[?.!]*$/i);
-  if (m) return { action: m[1].toLowerCase() as ListingEditCommand["action"], index: Number(m[2]) };
+  let m = t.match(/^(pause|pausing|resume|reactivate|close|closing|delete|remove|cancel|stop)\s+listing\s+(\d+)\s*[?.!]*$/i);
+  if (m) {
+    const verb = m[1].toLowerCase();
+    const action: ListingEditCommand["action"] = /^(pause|pausing|stop)$/.test(verb) ? "pause" : /^(resume|reactivate)$/.test(verb) ? "resume" : "close";
+    return { action, index: Number(m[2]) };
+  }
   m = t.match(/^edit\s+listing\s+(\d+)\s*[?.!]*$/i);
   if (m) return { action: "edit", index: Number(m[1]) };
   m = t.match(/^(?:change|lower)\s+listing\s+(\d+)\s+(?:asking\s+)?(?:price|budget)\s+to\s+\$?([\d,]+)\s*[?.!]*$/i);
@@ -455,7 +475,7 @@ async function handleListingEdit(phone: string, command: ListingEditCommand): Pr
   if (["pause","resume","close"].includes(command.action)) {
     updated = await setPostingManagementStatus(posting.id, command.action as "pause" | "resume" | "close");
     if (!updated) return `Listing ${command.index ?? 1} is not currently eligible to ${command.action}.`;
-    return `${command.action === "pause" ? "Paused" : command.action === "resume" ? "Resumed" : "Closed"}:\n\n${formatStructuredPosting(updated)}`;
+    return `Listing ${command.index ?? 1} ${command.action === "pause" ? "paused" : command.action === "resume" ? "resumed" : "closed"}:\n\n${formatStructuredPosting(updated)}`;
   }
   updated = await updatePostingField(posting.id, command.action as "price" | "location" | "dial", command.value!);
   if (!updated) return "That listing is no longer active.";
@@ -811,17 +831,21 @@ function extractListingAmount(text: string, reference: string | null): number | 
 
 function intakeSlots(text: string, reference: string | null) {
   const price = extractListingAmount(text, reference);
-  const location =
+  const locationRaw =
     text.match(/\b(?:in|from|located in|based in)\s+(?:the\s+)?(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\b/i)?.[1] ??
-    text.match(/^\s*(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\s*$/i)?.[1];
-  const condition = text.match(/\b(pre[- ]?owned|used|unworn|brand new|new|mint|any condition)\b/i)?.[1];
+    text.match(/(?:^|,)\s*(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\s*(?=,|$)/i)?.[1];
+  const location = locationRaw ? (/^united states$/i.test(locationRaw) ? "USA" : locationRaw.toUpperCase() === "USA" ? "USA" : locationRaw) : undefined;
+  const conditionRaw = text.match(/\b(pre[- ]?owned|used|unworn|brand new|new|mint|any condition)\b/i)?.[1];
+  const condition = conditionRaw && /^pre[- ]?owned$/i.test(conditionRaw) ? "pre-owned" : conditionRaw;
   const dial = text.match(/^\s*(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)?\s*$/i)?.[1] ?? text.match(/\b(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)\b/i)?.[1];
   const normalized=normalizeText(text);
   const brand=normalized.brand||undefined;
-  const itemPhrase=stripLeadingIntent(text)
+  const identityClause = stripLeadingIntent(text).split(",", 1)[0];
+  const itemPhrase=identityClause
     .replace(/^(?:it(?:'s| is)|this is)\s+(?:a\s+)?/i, "")
     .replace(new RegExp(`\\b${(brand??"").replace(/\s+/g,"\\s+")}\\b`,"i"), "")
     .replace(extractReference(text)??"","")
+    .replace(/\bonly\b/gi, "")
     .replace(/(?:under|max(?:imum)?|budget|asking|price|for)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
     .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
@@ -964,7 +988,6 @@ function nextSell(p: PendingSellIntake): string | null {
 }
 function nextBuy(p: PendingBuyIntake): string | null {
   if (!p.brand && !p.reference) { p.step="details"; return "What would you like to buy? Please include the brand and model."; }
-  if (!p.reference && !p.referenceSkipped) { p.step="details"; return "Do you have the reference number? You can reply skip if you don't know it."; }
   if (p.budget === undefined) { p.step="budget"; return BUY_BUDGET_QUESTION; }
   if (dialRelevant(p.reference) && !p.dialColor) { p.step="dial"; return DIAL_INTAKE_QUESTION; }
   if (!p.condition) { p.step="condition"; return BUY_CONDITION_QUESTION; }
@@ -973,7 +996,7 @@ function nextBuy(p: PendingBuyIntake): string | null {
 }
 const confirmed = (text: string) => /^(yes|yep|yeah|confirm|correct|sure|ok(?:ay)?|start|do it)\b/i.test(text.trim());
 const cash = (n: number, c = "USD") => `${c === "USD" ? "$" : c+" "}${n.toLocaleString("en-US")}`;
-const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{const priceLabel=type==="FS"?`asking ${cash(price,p.currency)}`:`maximum ${cash(price,p.currency)}`;return [`I have: ${type} ${p.description}${p.dialColor?`, ${p.dialColor} dial`:""}${p.condition?`, ${p.condition}`:""}${p.location?`, ${p.location}`:""}, ${priceLabel}. Should I start monitoring?`,`${type} listing review`,`Brand: ${p.brand||"Not provided"}`,`Model: ${p.model||"Not provided"}`,`Reference: ${p.reference||"Not provided"}`,p.dialColor&&`Dial: ${p.dialColor}`,p.condition&&`Condition: ${p.condition}`,`Price: ${cash(price,p.currency)}`,p.location&&`Location: ${p.location}`,p.boxPapers&&`Box/Papers: ${p.boxPapers}`,p.year&&`Year: ${p.year}`,`Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}. Should I start monitoring?`,`Reply confirm to activate, or send a correction.`].filter(Boolean).join("\n");};
+const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{const priceLabel=type==="FS"?`asking ${cash(price,p.currency)}`:`maximum ${cash(price,p.currency)}`;return [`I have: ${type} ${p.description}${p.dialColor?`, ${p.dialColor} dial`:""}${p.condition?`, ${p.condition}`:""}${p.location?`, ${p.location}`:""}, ${priceLabel}. Should I start monitoring?`,`${type} listing review`,`Brand: ${displayBrand(p.brand)||"Not provided"}`,`Model: ${p.model||"Not provided"}`,`Reference: ${p.reference||"Not provided"}`,p.dialColor&&`Dial: ${p.dialColor}`,p.condition&&`Condition: ${p.condition}`,`${type==="FS"?"Price":"Budget"}: ${cash(price,p.currency)}`,p.location&&`Location: ${p.location}`,p.boxPapers&&`Box/Papers: ${p.boxPapers}`,p.year&&`Year: ${p.year}`,`Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}. Should I start monitoring?`,`Reply confirm to activate, or send a correction.`].filter(Boolean).join("\n");};
 const sellSummary = (p: PendingSellIntake) => review("FS",p,p.price!);
 const buySummary = (p: PendingBuyIntake) => review("WTB",p,p.budget!);
 
@@ -1218,6 +1241,12 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     saveState(state);
     return { state, messages };
   }
+  const listingEdit = parseListingEditCommand(commandText);
+  if (listingEdit) {
+    messages.push(await handleListingEdit(state.phone, listingEdit));
+    saveState(state);
+    return { state, messages };
+  }
   if (CANCEL_COMMAND.test(text.trim())) {
     handleCancelCommand(state, messages);
     saveState(state);
@@ -1225,12 +1254,6 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
   if (STATUS_COMMAND.test(text.trim())) {
     await handleStatusCommand(state, messages);
-    saveState(state);
-    return { state, messages };
-  }
-  const listingEdit = parseListingEditCommand(commandText);
-  if (listingEdit) {
-    messages.push(await handleListingEdit(state.phone, listingEdit));
     saveState(state);
     return { state, messages };
   }
@@ -1340,6 +1363,14 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     state.pendingReplacementRequest = replacement;
     saveState(state);
     return { state, messages };
+  }
+
+  // A fresh WTB can restate and complete an existing WTB draft in one message. Cross-type
+  // requests still use the explicit replace/add safeguard below.
+  if (state.pendingBuyIntake && /^\s*(?:WTB|buy|want to buy)\b/i.test(text)) {
+    state.pendingBuyIntake = undefined;
+    saveState(state);
+    return handleIncomingMessage(phone, text, contact, imageUrl);
   }
 
   if ((state.pendingSellIntake || state.pendingBuyIntake) && /^\s*(?:FS|WTB|for sale|sell|buy|want to buy)\b/i.test(text)) {
