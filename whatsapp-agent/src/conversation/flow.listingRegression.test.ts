@@ -133,6 +133,7 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
     // too both duplicated it and invented an identity — this assertion previously locked in the
     // live "Model: black" defect.
     model: undefined,
+    modelSkipped: undefined,
     reference: "116500LN",
     price: 30000,
     currency: "USD",
@@ -348,4 +349,26 @@ test('"make model 116500" corrects the reference, not a free-text model — that
 
   const named = await handleIncomingMessage(phone, "model is Daytona");
   assert.equal(named.state.pendingBuyIntake?.model, "Daytona", "a genuine name (not a reference number) still sets the model");
+});
+
+test('"model any" at confirm time clears the model rather than storing the literal word "any", and it stays cleared once activated', async (t) => {
+  const phone = "15550002020"; resetState(phone);
+  const ingest = require("../postings/ingest") as typeof import("../postings/ingest");
+  const saved: import("../postings/postingsStore").DirectSellPostingInput[] = [];
+  t.mock.method(ingest, "ingestDirectBuyPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => {
+    saved.push(input);
+    return { matchesFound: 0, posting: persistedRow(input, "WTB") };
+  });
+
+  await handleIncomingMessage(phone, "wtb rolex daytona, pre-owned, usa, maximum $25,000");
+  // Live-reported: this showed "Model: any" in the confirmation summary -- the literal word,
+  // not "no preference" -- even though a fresh model-intake question treats "any" that way.
+  const corrected = await handleIncomingMessage(phone, "model any");
+  assert.match(corrected.messages.join("\n"), /Model: Any/, "labeled as no preference, not the literal word stored as a model name");
+  assert.equal(corrected.state.pendingBuyIntake?.model, undefined);
+  assert.equal(corrected.state.pendingBuyIntake?.modelSkipped, true);
+
+  await handleIncomingMessage(phone, "confirm");
+  assert.equal(saved[0].model, undefined);
+  assert.equal(saved[0].modelSkipped, true, "the intake -> ingest boundary must carry the explicit skip, not just an absent model");
 });

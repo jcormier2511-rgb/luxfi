@@ -204,6 +204,11 @@ export interface DirectSellPostingInput {
   dialColor?: string;
   brand?: string;
   model?: string;
+  // Explicitly "no specific model" (see conversation/flow.ts's NO_MODEL_PREFERENCE / a WTB's
+  // modelSkipped) -- distinct from model simply being unset, which still falls back to
+  // inferDirectModel below. Without this, clearing the model at confirm time ("model any")
+  // would silently come back anyway once activated, re-derived from the raw description text.
+  modelSkipped?: boolean;
   boxPapers?: string;
   year?: string;
   notes?: string;
@@ -241,7 +246,7 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
         input.type ?? "FS",
         input.description,
         input.brand ?? normalized.brand,
-        input.model ?? inferDirectModel(input.description,input.brand??normalized.brand,input.reference),
+        input.model ?? (input.modelSkipped ? "" : inferDirectModel(input.description,input.brand??normalized.brand,input.reference)),
         input.reference ?? "",
         input.dialColor ?? "",
         input.condition ?? "",

@@ -1181,6 +1181,11 @@ const BUY_LOCATION_QUESTION = "Any location preference? (city or country, or say
 const BUY_BUDGET_QUESTION = "What's your maximum budget?";
 const DIAL_INTAKE_QUESTION = "Do you prefer the black dial, white dial, or either?";
 const SELL_PHOTO_QUESTION = 'Would you like to attach a photo? Send it now, or reply "skip" or "no photo".';
+/** "any"/"all"/"skip"/etc name no model at all -- used both at the dedicated model-intake step
+ *  and for a "model any"/"model none" correction at confirm time, so the two paths treat the
+ *  same words the same way rather than one clearing the model and the other literally storing
+ *  the word "any" as though it were a real model name. */
+const NO_MODEL_PREFERENCE = /^(?:any|all|skip|none|no|n\/a|unsure|not\s+sure|don'?t\s+know|do\s+not\s+know)$/i;
 
 /** Private listing shorthand commonly omits a currency marker. Only accept a standalone
  * trailing amount, and never the already-identified reference, so 116500LN cannot become a
@@ -1305,9 +1310,22 @@ function applyNamedIdentityCorrections(p: PendingSellIntake | PendingBuyIntake, 
   // it's routed there instead -- "model is Daytona" still names an actual model normally.
   const model = /\bmodel\b\s*(?:to|is|[:=])?\s*([^,.;]+)/i.exec(text)?.[1]?.trim();
   if (model) {
-    const asReference = extractReference(model);
-    if (asReference && normalizeReference(asReference) === normalizeReference(model)) { p.reference = asReference; changed = true; }
-    else { p.model = model; changed = true; }
+    // "model any"/"model none" clears it rather than literally storing the word "any" as a
+    // model name -- the live-reported bug this fixes showed "Model: any" in the confirmation,
+    // the exact same word the dedicated model-intake step already treats as no preference.
+    if (NO_MODEL_PREFERENCE.test(model)) {
+      p.model = undefined;
+      // `"modelSkipped" in p` would only catch a PendingBuyIntake that ALREADY had it set (an
+      // optional field absent from the object literal isn't an own key until first assigned) --
+      // this is the one field WTB alone acts on (review()'s "Model: Any" display), so it's set
+      // unconditionally rather than trying to detect which of the two intake types `p` is.
+      (p as PendingBuyIntake).modelSkipped = true;
+      changed = true;
+    } else {
+      const asReference = extractReference(model);
+      if (asReference && normalizeReference(asReference) === normalizeReference(model)) { p.reference = asReference; changed = true; }
+      else { p.model = model; changed = true; }
+    }
   }
   if (/\b(?:reference|ref)\b/i.test(text)) {
     const reference = extractReference(text);
@@ -1376,7 +1394,7 @@ function applyScopedBuyAnswer(p: PendingBuyIntake, text: string): boolean {
   // Rolex models under that price" once the request is confirmed and monitoring starts.
   if (p.step === "model") {
     const t = text.trim();
-    if (/^(?:any|all|skip|none|no|n\/a|unsure|not\s+sure|don'?t\s+know|do\s+not\s+know)$/i.test(t)) { p.modelSkipped = true; return true; }
+    if (NO_MODEL_PREFERENCE.test(t)) { p.modelSkipped = true; return true; }
     if (!t || isOnlyNonModelLanguage(t)) return false;
     p.model = t.replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
     return true;
@@ -1521,7 +1539,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
 
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingBuyIntake!;
-  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingBuyIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
+  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingBuyIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text); if(freeLocation)p.location=text.trim();
