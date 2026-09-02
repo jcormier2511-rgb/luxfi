@@ -1010,12 +1010,21 @@ const buySummary = (p: PendingBuyIntake) => review("WTB",p,p.budget!);
  * doesn't need to be asked "tell me more" when it's already specific.
  */
 async function startSellIntake(state: ConversationState, request: ItemRequest, messages: string[], originalText = request.query, imageUrl?: string, suppliedCondition?: string, suppliedLocation?: string): Promise<void> {
-  const p: PendingSellIntake = { step:"details", description:request.query, reference:extractReference(request.query), condition:suppliedCondition, location:suppliedLocation, imageUrl };
+  const p: PendingSellIntake = {
+    step:"details", description:request.query, reference:extractReference(request.query),
+    ...(suppliedCondition !== undefined ? { condition: suppliedCondition } : {}),
+    ...(suppliedLocation !== undefined ? { location: suppliedLocation } : {}),
+    ...(imageUrl !== undefined ? { imageUrl } : {}),
+  };
   applySellSlots(p, originalText); state.pendingSellIntake=p; messages.push(nextSell(p) ?? sellSummary(p));
 }
 
 async function startBuyIntake(state: ConversationState, request: ItemRequest, messages: string[], originalText: string, suppliedCondition?: string, suppliedLocation?: string): Promise<void> {
-  const p: PendingBuyIntake = { step:"details", description:request.query, reference:extractReference(request.query), condition:suppliedCondition, location:suppliedLocation };
+  const p: PendingBuyIntake = {
+    step:"details", description:request.query, reference:extractReference(request.query),
+    ...(suppliedCondition !== undefined ? { condition: suppliedCondition } : {}),
+    ...(suppliedLocation !== undefined ? { location: suppliedLocation } : {}),
+  };
   applyBuySlots(p, originalText); state.pendingBuyIntake=p; messages.push(nextBuy(p) ?? buySummary(p));
 }
 
@@ -1244,7 +1253,9 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   const listingEdit = parseListingEditCommand(commandText);
   if (listingEdit) {
     messages.push(await handleListingEdit(state.phone, listingEdit));
-    saveState(state);
+    // Listing edits are persisted by the postings store. Do not re-save the unrelated
+    // conversation state here: JSON serialization drops explicitly-undefined intake fields,
+    // which makes a management-only command silently rewrite an in-progress draft.
     return { state, messages };
   }
   if (CANCEL_COMMAND.test(text.trim())) {
@@ -1259,7 +1270,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
   if (MY_ACTIVE_LISTINGS_COMMAND.test(text.trim())) {
     messages.push(await formatMyListingsSummary(state.phone));
-    saveState(state);
+    // This is a read-only postings view and must not normalize unrelated draft state.
     return { state, messages };
   }
   if (MARKET_COMMAND.test(commandText)) {

@@ -283,14 +283,16 @@ test("listing management overrides a pending WTB and legacy filler is hidden", a
   await createDirectPosting({ phone, type: "FS", description: "third", brand: "Cartier", model: "Santos", reference: null, price: 8000 });
 
   const draft = await handleIncomingMessage(phone, "WTB Patek");
-  const pendingBefore = { ...draft.state.pendingBuyIntake };
+  const pendingBuyBefore = structuredClone(draft.state.pendingBuyIntake);
+  const pendingSellBefore = structuredClone(draft.state.pendingSellIntake);
   const listed = await handleIncomingMessage(phone, "my listings");
   assert.match(listed.messages.join("\n"), /2\. WTB — Rolex(?:\n|$)/);
   assert.doesNotMatch(listed.messages.join("\n"), /Rolex only|Model: only/i);
 
   const closed = await handleIncomingMessage(phone, "closing listing 3");
   assert.match(closed.messages.join("\n"), /Listing 3 closed:/);
-  assert.deepEqual(closed.state.pendingBuyIntake, pendingBefore, "listing management must not consume or alter the WTB draft");
+  assert.deepEqual(closed.state.pendingBuyIntake, pendingBuyBefore, "listing management must not consume or alter the WTB draft");
+  assert.deepEqual(closed.state.pendingSellIntake, pendingSellBefore, "listing management must not alter sell intake state");
 
   const completed = await handleIncomingMessage(phone, "WTB i want to buy a rolex, preowned, usa, maximum $25,000");
   assert.equal(completed.state.pendingBuyIntake?.brand, "rolex");
@@ -300,4 +302,26 @@ test("listing management overrides a pending WTB and legacy filler is hidden", a
   assert.equal(completed.state.pendingBuyIntake?.budget, 25000);
   assert.equal(completed.state.pendingBuyIntake?.location, "USA");
   assert.doesNotMatch(completed.messages.join("\n"), /Model: (?:i want to buy a|only)/i);
+});
+
+test("pause, resume, and price changes preserve a pending WTB exactly", async () => {
+  const phone = "19992230015";
+  resetState(phone);
+  await postingsDb._resetDbForTests();
+  await createDirectPosting({ phone, type: "FS", description: "Rolex Explorer", brand: "Rolex", model: "Explorer", reference: null, price: 9000 });
+
+  const draft = await handleIncomingMessage(phone, "WTB Patek");
+  const pendingBuyBefore = structuredClone(draft.state.pendingBuyIntake);
+  const pendingSellBefore = structuredClone(draft.state.pendingSellIntake);
+
+  for (const [command, confirmation] of [
+    ["pause listing 1", /Listing 1 paused:/],
+    ["resume listing 1", /Listing 1 resumed:/],
+    ["change listing 1 price to 35000", /Updated:/],
+  ] as const) {
+    const result = await handleIncomingMessage(phone, command);
+    assert.match(result.messages.join("\n"), confirmation);
+    assert.deepEqual(result.state.pendingBuyIntake, pendingBuyBefore, `${command} must not alter the WTB draft`);
+    assert.deepEqual(result.state.pendingSellIntake, pendingSellBefore, `${command} must not alter sell intake state`);
+  }
 });
