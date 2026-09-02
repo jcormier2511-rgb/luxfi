@@ -76,9 +76,12 @@ test("GET /pay/:id returns 404 for an unknown checkout session", async () => {
 });
 
 test("GET /pay/:id fetches a fresh hosted-payment token and returns an auto-submitting form posting it to Authorize.net", async (t) => {
-  interceptAuthorizeNet(t, () => ({
-    getHostedPaymentPageResponse: { token: "hpp-token-xyz", messages: { resultCode: "Ok", message: [] } },
-  }));
+  interceptAuthorizeNet(t, (body) => {
+    if (body.createCustomerProfileRequest) {
+      return { createCustomerProfileResponse: { customerProfileId: "cp-fresh-1", messages: { resultCode: "Ok", message: [] } } };
+    }
+    return { getHostedPaymentPageResponse: { token: "hpp-token-xyz", messages: { resultCode: "Ok", message: [] } } };
+  });
   const session = await entitlements.createCheckoutSession("15551230000", "tier1");
 
   const res = await fetch(`${baseUrl}/pay/${session.id}`);

@@ -32,26 +32,31 @@ test("hostedPaymentFormActionUrl defaults to the sandbox host (AUTHORIZENET_ENVI
   assert.equal(hostedPaymentFormActionUrl(), "https://test.authorize.net/payment/payment");
 });
 
-test("createHostedPaymentPageToken sends merchantAuthentication, the plan's dollar amount, the correlation invoiceNumber, and enables Accept Hosted's own profile-creation setting", async (t) => {
-  let sentBody: any;
+test("createHostedPaymentPageToken pre-creates an empty CIM profile, references it by id, sends the correlation invoiceNumber, and enables Accept Hosted's own profile-attach setting", async (t) => {
+  const calls: any[] = [];
   t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
-    sentBody = JSON.parse(init.body as string);
-    return new Response(JSON.stringify({ getHostedPaymentPageResponse: { token: "hpp-token-abc", messages: { resultCode: "Ok", message: [] } } }), {
-      status: 200,
-    });
+    const body = JSON.parse(init.body as string);
+    calls.push(body);
+    if (body.createCustomerProfileRequest) {
+      return new Response(JSON.stringify({ createCustomerProfileResponse: { customerProfileId: "cp-new-1", messages: { resultCode: "Ok", message: [] } } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ getHostedPaymentPageResponse: { token: "hpp-token-abc", messages: { resultCode: "Ok", message: [] } } }), { status: 200 });
   });
 
   const token = await createHostedPaymentPageToken({ checkoutSessionId: "sess-1", phone: "15551234567", plan: "tier2" });
   assert.equal(token, "hpp-token-abc");
+  assert.equal(calls.length, 2, "createCustomerProfileRequest then getHostedPaymentPageRequest");
+  assert.equal(calls[0].createCustomerProfileRequest.profile.merchantCustomerId, "sess-1");
 
-  const req = sentBody.getHostedPaymentPageRequest;
+  const req = calls[1].getHostedPaymentPageRequest;
   assert.equal(req.merchantAuthentication.name, "test-login-id");
   assert.equal(req.merchantAuthentication.transactionKey, "test-transaction-key");
   assert.equal(req.transactionRequest.amount, "150.00", "tier2 is $150/month");
+  assert.equal(req.transactionRequest.profile.customerProfileId, "cp-new-1", "must reference the pre-created profile, not createProfile:true");
   assert.equal(req.transactionRequest.order.invoiceNumber, "sess-1", "checkoutSessionId round-trips as order.invoiceNumber, not a userField");
   const settings: { settingName: string; settingValue: string }[] = req.hostedPaymentSettings.setting;
   const customerOptions = JSON.parse(settings.find((s) => s.settingName === "hostedPaymentCustomerOptions")!.settingValue);
-  assert.equal(customerOptions.addPaymentProfile, true, "must explicitly ask Accept Hosted to create a CIM profile");
+  assert.equal(customerOptions.addPaymentProfile, true, "must ask Accept Hosted to attach the entered card to the pre-created profile");
 });
 
 test("callAuthorizeNetApi throws with the API's own error detail when resultCode is Error", async (t) => {

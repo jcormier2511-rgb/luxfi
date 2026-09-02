@@ -88,23 +88,40 @@ async function callAuthorizeNetApi<T>(requestName: string, body: Record<string, 
  * createCheckoutSession -- its id is generated short enough (<=20 chars) to survive
  * invoiceNumber's length limit with no truncation/collision risk.
  */
+/**
+ * Creates an empty CIM customer profile (no payment method yet) keyed by merchantCustomerId --
+ * Authorize.net's own guidance is that Accept Hosted's addPaymentProfile setting (see
+ * createHostedPaymentPageToken) is "typically used when a customer profile already exists,"
+ * which matches a live test where transactionRequest.profile.createProfile:true created
+ * nothing at all. checkoutSessionId doubles as merchantCustomerId -- already <=20 chars (the
+ * field's limit) and unique per checkout, so no separate id scheme is needed.
+ */
+async function createCustomerProfile(merchantCustomerId: string): Promise<string> {
+  const response = await callAuthorizeNetApi<{ customerProfileId: string }>("createCustomerProfileRequest", {
+    profile: { merchantCustomerId },
+  });
+  return response.customerProfileId;
+}
+
 export async function createHostedPaymentPageToken(params: { checkoutSessionId: string; phone: string; plan: PlanKey }): Promise<string> {
   const planDef = MEMBERSHIP_PLANS[params.plan];
   const returnBase = config.publicBaseUrl || "";
+  const customerProfileId = await createCustomerProfile(params.checkoutSessionId);
   const response = await callAuthorizeNetApi<{ token: string }>("getHostedPaymentPageRequest", {
     transactionRequest: {
       transactionType: "authCaptureTransaction",
       amount: (planDef.priceCents / 100).toFixed(2),
+      // Referencing an existing (empty) profile by id, not profile.createProfile:true -- see
+      // createCustomerProfile's comment above for why.
+      profile: { customerProfileId },
       order: { invoiceNumber: params.checkoutSessionId, description: `Fi ${planDef.label} membership` },
     },
     hostedPaymentSettings: {
       setting: [
         { settingName: "hostedPaymentButtonOptions", settingValue: JSON.stringify({ text: "Pay" }) },
         { settingName: "hostedPaymentOrderOptions", settingValue: JSON.stringify({ show: true, merchantName: "LuxFi" }) },
-        // Accept Hosted only creates a CIM customer + payment profile (needed for ARB to bill
-        // month 2 onward) when this setting explicitly turns it on -- transactionRequest.profile.
-        // createProfile (the createTransactionRequest-only mechanism) has no effect here, which
-        // is the other half of why a live test came back with no profile at all.
+        // Attaches the card entered on the hosted page to the profile above as a new payment
+        // profile -- needed for ARB to bill month 2 onward.
         { settingName: "hostedPaymentCustomerOptions", settingValue: JSON.stringify({ showEmail: false, requiredEmail: false, addPaymentProfile: true }) },
         {
           settingName: "hostedPaymentReturnOptions",
