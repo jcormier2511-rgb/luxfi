@@ -423,14 +423,15 @@ booleans like "configured" and non-secret operational values.
 https://<your-railway-domain>/admin
 ```
 
-`GET /admin/whapi-status?token=<WEBHOOK_TOKEN>` is the same Whapi connectivity check the
-dashboard above shows, as raw JSON for scripting/curl — `{configured, reachable, authorized,
-statusText, version, error}` from Whapi's own `GET /health` (see `whapi/client.ts`'s
-`checkWhapiHealth`). `authorized: false` / `statusText !== "AUTH"` means the WhatsApp channel
-itself needs re-authorizing in the Whapi.Cloud dashboard — a configured, reachable
-`WHAPI_TOKEN` is not the same as an authorized channel, and this is what a burst of
-`notificationsFailed` with "need channel authorization for send message" (see `/admin/v4-status`)
-is actually reporting.
+**Diagnosing "need channel authorization for send message"** (see `/admin/v4-status`'s
+`lastNotificationError`): a configured, reachable `WHAPI_TOKEN` is not the same as an
+authorized channel — that error means the specific channel the token points at isn't (or is
+no longer) connected. Whapi's documented `GET /health` (see `whapi/client.ts`'s
+`checkWhapiHealth`, used by the `/admin` dashboard above) can't be relied on to confirm this —
+confirmed live, it 404s regardless of which channel/token is actually in use. The reliable
+check is the Whapi.Cloud dashboard itself: each WhatsApp number can have more than one channel
+registered against it, only one of which may actually be `AUTHORIZED` — make sure `WHAPI_TOKEN`
+points at that one, not a `STOPPED` channel that happens to share the same phone number.
 
 ### Membership & activity metrics
 

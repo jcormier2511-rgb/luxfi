@@ -3,7 +3,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { config, isConciergeAdminPhone } from "./config";
-import { extractIncomingMessages, IncomingWebhook, checkWhapiHealth } from "./whapi/client";
+import { extractIncomingMessages, IncomingWebhook } from "./whapi/client";
 import { sendText, NormalizedIncomingMessage } from "./channels";
 import { platformForIdentity } from "./channels/identity";
 import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
@@ -751,18 +751,6 @@ export function createServer() {
       return res.status(401).json({ error: "invalid token" });
     }
     res.json(await getSyncStatus(config.watchfacts.enableWtbSync));
-  });
-
-  // Read-only diagnostic for the WhatsApp sending channel itself (as opposed to app-side
-  // config) — Whapi's own GET /health, which reports whether the channel is actually
-  // authorized (status.text === "AUTH") without sending anything. See notify.ts/notify
-  // failure logs ("need channel authorization for send message") for what this catches:
-  // a token that's configured but whose underlying WhatsApp channel isn't/no-longer connected.
-  app.get("/admin/whapi-status", async (req, res) => {
-    if (!isValidAdminToken(String(req.query.token ?? ""))) {
-      return res.status(401).json({ error: "invalid token" });
-    }
-    res.json(await checkWhapiHealth());
   });
 
   // Read-only diagnostic: `curl "https://<host>/admin/inventory-search?token=...&q=116500"` —
