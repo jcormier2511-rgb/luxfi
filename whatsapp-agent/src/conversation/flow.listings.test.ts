@@ -237,9 +237,14 @@ test('natural "what are my listings" returns numbered active FS and WTB structur
   const result = await handleIncomingMessage(phone, "what are my listings");
   const text = result.messages.join("\n");
   assert.match(text, /You currently have 2 active tasks:/);
-  assert.match(text, /1\. WTB — Rolex Daytona 116500LN[\s\S]*Black dial[\s\S]*Budget: \$28,500[\s\S]*USA/);
-  assert.match(text, /2\. FS — Rolex Daytona 126500LN[\s\S]*White dial[\s\S]*Used[\s\S]*Asking: \$38,000[\s\S]*Miami/);
+  const fsNumber = text.match(/(\d+)\. FS — Rolex Daytona 126500LN\nWhite dial\nUsed\nAsking: \$38,000\nMiami/)?.[1];
+  const wtbNumber = text.match(/(\d+)\. WTB — Rolex Daytona 116500LN\nBlack dial\nBudget: \$28,500\nUSA/)?.[1];
+  assert.ok(fsNumber, "the active FS is numbered and contains all persisted structured fields");
+  assert.ok(wtbNumber, "the active WTB is numbered and contains all persisted structured fields");
+  assert.notEqual(fsNumber, wtbNumber, "each active listing has a unique list number");
+  assert.deepEqual(new Set([fsNumber, wtbNumber]), new Set(["1", "2"]), "two active listings occupy numbers 1 and 2");
   assert.doesNotMatch(text, /5711|raw text|different raw text/);
+  assert.match(text, /You can say:[\s\S]*change listing 2 price[\s\S]*expand listing 1[\s\S]*pause listing 1[\s\S]*close listing 2/);
   assert.doesNotMatch(text, /Try "buy:/, "management queries never reach the generic fallback");
 });
 

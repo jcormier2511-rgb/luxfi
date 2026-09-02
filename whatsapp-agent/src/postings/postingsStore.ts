@@ -368,10 +368,44 @@ export async function getPosting(id: number): Promise<PostingRow | null> {
 export async function getActivePostingsForUser(canonicalUserId: number): Promise<PostingRow[]> {
   return withSchema(async (pool) => {
     const result = await pool.query<PostingRow>(
-      `SELECT * FROM postings WHERE canonical_user_id=$1 AND status='active' AND expires_at > now() ORDER BY created_at DESC`,
+      `SELECT * FROM postings WHERE canonical_user_id=$1 AND status='active' AND expires_at > now() ORDER BY created_at ASC, id ASC`,
       [canonicalUserId]
     );
     return result.rows;
+  });
+}
+
+/** Stable user-visible ordering shared by listing display and numbered management commands. */
+export async function getManageablePostingsForUser(canonicalUserId: number): Promise<PostingRow[]> {
+  return withSchema(async (pool) => {
+    const result = await pool.query<PostingRow>(
+      `SELECT * FROM postings WHERE canonical_user_id=$1 AND status IN ('active','paused')
+       AND expires_at > now() ORDER BY created_at ASC, id ASC`, [canonicalUserId]
+    );
+    return result.rows;
+  });
+}
+
+export type EditablePostingField = "price" | "location" | "dial";
+
+/** Change one structured field only. In particular, never reparse original_text. */
+export async function updatePostingField(id: number, field: EditablePostingField, value: string | number): Promise<PostingRow | null> {
+  return withSchema(async (pool) => {
+    const result = await pool.query<PostingRow>(
+      `UPDATE postings SET ${field}=$1, updated_at=now() WHERE id=$2 AND status='active' RETURNING *`, [value, id]
+    );
+    return result.rows[0] ?? null;
+  });
+}
+
+export async function setPostingManagementStatus(id: number, action: "pause" | "resume" | "close"): Promise<PostingRow | null> {
+  const from = action === "resume" ? "paused" : "active";
+  const to = action === "pause" ? "paused" : action === "resume" ? "active" : "stopped";
+  return withSchema(async (pool) => {
+    const result = await pool.query<PostingRow>(
+      `UPDATE postings SET status=$1, updated_at=now() WHERE id=$2 AND status=$3 RETURNING *`, [to, id, from]
+    );
+    return result.rows[0] ?? null;
   });
 }
 

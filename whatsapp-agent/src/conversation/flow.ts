@@ -12,7 +12,8 @@ import { isAuthorizeNetConfigured } from "../billing/authorizeNet";
 import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, getApprovedMatchesSummary } from "../postings/approvalUsage";
 import { getOrCreateCanonicalUser } from "../postings/identity";
 import { platformForIdentity } from "../channels/identity";
-import { getActivePostingsForUser } from "../postings/postingsStore";
+import { getActivePostingsForUser, getManageablePostingsForUser, setPostingManagementStatus, updatePostingField, PostingRow } from "../postings/postingsStore";
+import { runImmediateMatch } from "../postings/matching";
 import { logSearchRequest } from "../postings/analytics";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
@@ -25,7 +26,7 @@ import { extractReference, containsKnownBrand, normalizePriceShorthand, normaliz
 import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
-import { formatMarketPulse, getMarketPulse } from "../postings/marketPulse";
+import { formatMarketPulse, getScopedMarketPulse } from "../postings/marketPulse";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -263,7 +264,7 @@ async function formatMyListingsSummary(phone: string): Promise<string> {
   const postings = await getActivePostingsForUser(canonicalUserId);
   if (postings.length === 0) return "You don’t have any active buy or sell tasks right now.\nTell me what you want to buy or sell and I’ll start working on it.";
   const lines = postings.map((p, i) => `${i + 1}. ${formatStructuredPosting(p)}`);
-  return `You currently have ${postings.length} active task${postings.length === 1 ? "" : "s"}:\n\n${lines.join("\n\n")}`;
+  return `You currently have ${postings.length} active task${postings.length === 1 ? "" : "s"}:\n\n${lines.join("\n\n")}\n\nYou can say:\n"change listing 2 price to 35,000"\n"expand listing 1 to worldwide"\n"pause listing 1"\n"close listing 2"`;
 }
 
 function formatAmount(value: string, currency: string): string {
@@ -275,7 +276,7 @@ function formatAmount(value: string, currency: string): string {
 
 /** Uses only persisted structured columns; the original message is deliberately not re-parsed. */
 function formatStructuredPosting(p: import("../postings/postingsStore").PostingRow): string {
-  const identity = [p.brand, p.model, p.reference].filter(Boolean).join(" ");
+  const identity = [p.brand, p.model, p.reference].filter(Boolean).join(" ") || "Legacy listing — identity incomplete";
   return [
     `${p.type} —${identity ? ` ${identity}` : ""}`,
     p.dial ? `${p.dial} dial` : "",
@@ -409,6 +410,77 @@ function handleCancelCommand(state: ConversationState, messages: string[]): void
 export interface FlowResult {
   state: ConversationState;
   messages: string[];
+}
+
+const MARKET_COMMAND = /^(?:market pulse|market briefing|market update|market for my listing|market on my watch|price pulse|how is the market|show market data)\s*[?.!]*$/i;
+const MARKET_BRIEFING_COMMAND = /^(?:market briefing|market update)\s*[?.!]*$/i;
+
+interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB" }
+function parseListingEditCommand(text: string): ListingEditCommand | null {
+  const t = text.trim();
+  let m = t.match(/^(pause|resume|close)\s+listing\s+(\d+)\s*[?.!]*$/i);
+  if (m) return { action: m[1].toLowerCase() as ListingEditCommand["action"], index: Number(m[2]) };
+  m = t.match(/^edit\s+listing\s+(\d+)\s*[?.!]*$/i);
+  if (m) return { action: "edit", index: Number(m[1]) };
+  m = t.match(/^(?:change|lower)\s+listing\s+(\d+)\s+(?:asking\s+)?(?:price|budget)\s+to\s+\$?([\d,]+)\s*[?.!]*$/i);
+  if (m) return { action: "price", index: Number(m[1]), value: Number(m[2].replace(/,/g, "")) };
+  m = t.match(/^(?:change|lower)\s+my\s+(asking\s+)?(?:price|budget)\s+to\s+\$?([\d,]+)\s*[?.!]*$/i);
+  if (m) return { action: "price", index: null, value: Number(m[2].replace(/,/g, "")), typeHint: m[1] ? "FS" : undefined };
+  m = t.match(/^lower\s+my\s+price\s+to\s+\$?([\d,]+)\s*[?.!]*$/i);
+  if (m) return { action: "price", index: null, value: Number(m[1].replace(/,/g, "")) };
+  m = t.match(/^(?:expand|change)\s+listing\s+(\d+)\s+(?:location\s+)?to\s+(.+?)\s*[?.!]*$/i);
+  if (m) return { action: "location", index: Number(m[1]), value: m[2] };
+  m = t.match(/^change\s+(?:listing\s+(\d+)\s+)?dial\s+to\s+(.+?)\s*[?.!]*$/i);
+  if (m) return { action: "dial", index: m[1] ? Number(m[1]) : null, value: m[2] };
+  return null;
+}
+
+async function userListings(phone: string): Promise<PostingRow[]> {
+  const id = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
+  return getManageablePostingsForUser(id);
+}
+
+function chooseListingMessage(rows: PostingRow[], purpose: string): string {
+  return `Which listing would you like ${purpose} for?\n\n${rows.map((p, i) => `${i + 1}. ${p.type} — ${[p.brand,p.model,p.reference].filter(Boolean).join(" ") || "Legacy listing"}`).join("\n")}\n\nReply with the listing number.`;
+}
+
+async function handleListingEdit(phone: string, command: ListingEditCommand): Promise<string> {
+  let rows = await userListings(phone);
+  if (command.typeHint) rows = rows.filter((p) => p.type === command.typeHint);
+  if (command.index === null && rows.length !== 1) return chooseListingMessage(rows, "to manage");
+  const posting = command.index === null ? rows[0] : rows[command.index - 1];
+  if (!posting) return `I couldn't find listing ${command.index}. Say "my listings" to see the current numbers.`;
+  if (command.action === "edit") return `What would you like to change on listing ${command.index}? You can change its price/budget, location, or dial.`;
+  let updated: PostingRow | null;
+  if (["pause","resume","close"].includes(command.action)) {
+    updated = await setPostingManagementStatus(posting.id, command.action as "pause" | "resume" | "close");
+    if (!updated) return `Listing ${command.index ?? 1} is not currently eligible to ${command.action}.`;
+    return `${command.action === "pause" ? "Paused" : command.action === "resume" ? "Resumed" : "Closed"}:\n\n${formatStructuredPosting(updated)}`;
+  }
+  updated = await updatePostingField(posting.id, command.action as "price" | "location" | "dial", command.value!);
+  if (!updated) return "That listing is no longer active.";
+  await runImmediateMatch(updated);
+  return `Updated:\n\n${formatStructuredPosting(updated)}\n\nI'll use the updated terms for matching going forward.`;
+}
+
+async function formatMarketBriefing(phone: string): Promise<string> {
+  const rows = (await userListings(phone)).filter((p) => p.status === "active");
+  if (!rows.length) return "You don’t have any active listings to brief yet.";
+  const cards = await Promise.all(rows.map(async (p, i) => {
+    if (!p.reference && !p.brand && !p.model) return `${i + 1}. ${formatStructuredPosting(p)}\n\nReference needed for exact pricing.`;
+    const pulse = await getScopedMarketPulse({ brand: p.brand, model: p.model, reference: p.reference });
+    return `${i + 1}. ${p.type} — ${[p.brand,p.model,p.reference].filter(Boolean).join(" ")}\n\nCurrent FS: ${pulse.fsCount}\nCurrent WTB: ${pulse.wtbCount}\n${pulse.averageFsAsk === null ? "Reference needed for exact pricing." : `Avg FS ask: ${formatAmount(String(Math.round(pulse.averageFsAsk)), "USD")}`}`;
+  }));
+  return `Your Market Briefing\n\n${cards.join("\n\n")}`;
+}
+
+async function handleMarketCommand(phone: string, briefing: boolean): Promise<string> {
+  if (briefing) return formatMarketBriefing(phone);
+  const rows = (await userListings(phone)).filter((p) => p.status === "active");
+  if (rows.length !== 1) return chooseListingMessage(rows, "market data");
+  const p = rows[0];
+  if (!p.reference && !p.brand && !p.model) return "Reference needed for exact pricing.";
+  return formatMarketPulse(await getScopedMarketPulse({ brand: p.brand, model: p.model, reference: p.reference }));
 }
 
 /** Runs a fresh search for `request`, showing Match Cards and arming them for approve/pass. */
@@ -1049,14 +1121,6 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   // normalized deterministic-command surface across Telegram, WhatsApp, and SMS.
   const commandText = text.trim().replace(/^\/([a-z]+)(?:@[a-z0-9_]+)?\b/i, "$1");
 
-  // Deterministic, database-only command. It intentionally runs before AI routing and never
-  // invokes a Telegram/WhatsApp history API; the inbound webhook is merely the delivery path.
-  if (/\bmarket\s+pulse\b/i.test(text)) {
-    const reference = extractReference(text);
-    if (!reference) return { state, messages: [...messages, "Please include an exact watch reference, for example: Market Pulse 126500LN."] };
-    return { state, messages: [...messages, formatMarketPulse(await getMarketPulse(reference))] };
-  }
-
   // START is a universal conversational reset, not only an opt-out recovery command. A user
   // with old pending matches must be able to begin again instead of being trapped behind the
   // approve/pass reminder shown in the reported live conversation.
@@ -1164,8 +1228,19 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     saveState(state);
     return { state, messages };
   }
+  const listingEdit = parseListingEditCommand(commandText);
+  if (listingEdit) {
+    messages.push(await handleListingEdit(state.phone, listingEdit));
+    saveState(state);
+    return { state, messages };
+  }
   if (MY_ACTIVE_LISTINGS_COMMAND.test(text.trim())) {
     messages.push(await formatMyListingsSummary(state.phone));
+    saveState(state);
+    return { state, messages };
+  }
+  if (MARKET_COMMAND.test(commandText)) {
+    messages.push(await handleMarketCommand(state.phone, MARKET_BRIEFING_COMMAND.test(commandText)));
     saveState(state);
     return { state, messages };
   }
