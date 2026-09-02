@@ -21,6 +21,35 @@ test("WTB fills fields in any order, accepts multiple slots and corrections, the
  assert.equal(corrected.state.pendingBuyIntake?.reference,"116500LN");
 });
 
+test("WTB conversational lead-ins and trailing only never become models", async () => {
+  const cases = [
+    ["I want to buy a Rolex", undefined, null],
+    ["WTB Rolex", undefined, null],
+    ["WTB Rolex only", undefined, null],
+    ["I'm looking for a Rolex Daytona", "Daytona", null],
+    ["I want to buy a Rolex Daytona 126500LN", "Daytona", "126500LN"],
+  ] as const;
+  for (const [index, [message, model, reference]] of cases.entries()) {
+    const phone = `155500021${index}`;
+    resetState(phone);
+    const result = await handleIncomingMessage(phone, message);
+    assert.equal(result.state.pendingBuyIntake?.brand, "rolex");
+    assert.equal(result.state.pendingBuyIntake?.model, model);
+    assert.equal(result.state.pendingBuyIntake?.reference, reference);
+  }
+
+  const live = await handleIncomingMessage("1555000219", "WTB i want to buy a rolex, preowned, usa, maximum $25,000");
+  assert.deepEqual({
+    brand: live.state.pendingBuyIntake?.brand,
+    model: live.state.pendingBuyIntake?.model,
+    reference: live.state.pendingBuyIntake?.reference,
+    condition: live.state.pendingBuyIntake?.condition,
+    budget: live.state.pendingBuyIntake?.budget,
+    location: live.state.pendingBuyIntake?.location,
+  }, { brand: "rolex", model: undefined, reference: null, condition: "pre-owned", budget: 25000, location: "USA" });
+  assert.doesNotMatch(live.messages.join("\n"), /Model: (?:i want to buy a|only)/i);
+});
+
 test("any fills only the discussed slot and arbitrary questions do not corrupt the draft",async()=>{
  const p="15550002002"; resetState(p); await handleIncomingMessage(p,"WTB Rolex 116500LN under 25k");
  const any=await handleIncomingMessage(p,"any"); assert.match(any.messages[0],/condition/i); assert.equal(any.state.pendingBuyIntake?.dialColor,"either");
