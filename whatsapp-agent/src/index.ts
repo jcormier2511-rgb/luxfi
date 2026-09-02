@@ -1,3 +1,4 @@
+import { installProcessSafetyNets } from "./processSafety";
 import { runCheckoutReconciliation } from "./billing/checkoutReconciliation";
 import { isAuthorizeNetConfigured } from "./billing/authorizeNet";
 import { config } from "./config";
@@ -9,6 +10,11 @@ import { runReconciliation } from "./postings/matching";
 import { initConciergeSchema } from "./concierge/db";
 import { runMarketUpdateScheduler } from "./marketUpdates";
 import { runLifecycleScheduler } from "./lifecycle";
+
+
+// Registered before anything else starts: a stray rejection on any background path used to take
+// the whole bot down with no stack trace. See processSafety.ts.
+installProcessSafetyNets();
 
 const app = createServer();
 
