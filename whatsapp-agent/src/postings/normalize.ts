@@ -53,11 +53,51 @@ const BRAND_LIST = [
   "omega",
 ];
 
+/**
+ * Single words that only ever carry buy/sell intent and can never identify a watch, including
+ * the transposition typos people actually send ("ot" for "to", "fo" for "for").
+ *
+ * This is the shared vocabulary for "that phrase is intent language, not a watch". It is used
+ * by conversation intake (stripping a lead-in off a message, and refusing to read a model out
+ * of what's left) and by posting persistence (refusing to infer a model from the same leftover)
+ * so both paths agree — the live bug that motivated it stored "ot buy a" as a Rolex's model and
+ * displayed "Rolex ot buy a", and its punctuation-only leftover stored a bare ",".
+ */
+export const INTENT_TOKENS: ReadonlySet<string> = new Set([
+  "i", "im", "i'm", "id", "i'd", "we", "we're", "am", "would", "like", "please", "pls",
+  "want", "wanna", "wants", "wanting", "wanted", "need", "needs", "needed",
+  "looking", "look", "seeking", "seek", "searching", "search", "hunting", "find", "get",
+  "buy", "buys", "buying", "purchase", "sell", "sells", "selling", "have",
+  "to", "ot", "for", "fo", "a", "an", "the", "me", "my",
+  "wtb", "wts", "fs", "iso", "lf", "ntq",
+]);
+
+/**
+ * True when `phrase` carries no identifying information at all — it is empty, punctuation only,
+ * or made up of nothing but INTENT_TOKENS. Such a phrase must never be stored as a model.
+ */
+export function isOnlyIntentLanguage(phrase: string): boolean {
+  const tokens = phrase.toLowerCase().split(/[^a-z0-9'’]+/).filter(Boolean);
+  return tokens.length === 0 || tokens.every((t) => INTENT_TOKENS.has(t.replace(/’/g, "'")));
+}
+
 /** True when `text` names a known maker brand — used to decide whether a "sell" request already
  *  identifies a specific item or is too vague to search/list on ("a watch" vs "a Rolex"). */
 export function containsKnownBrand(text: string): boolean {
   const lower = text.toLowerCase();
   return BRAND_LIST.some((b) => lower.includes(b));
+}
+
+/**
+ * Splits an optional leading maker name off `text` ("Rolex 116500LN" -> brand "rolex", rest
+ * "116500LN"). Longest brand first, so "patek philippe" is never truncated to "patek".
+ */
+export function splitLeadingBrand(text: string): { brand: string | null; rest: string } {
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+  const brand = [...BRAND_LIST].sort((a, b) => b.length - a.length).find((b) => lower.startsWith(`${b} `) || lower === b);
+  if (!brand) return { brand: null, rest: trimmed };
+  return { brand, rest: trimmed.slice(brand.length).trim() };
 }
 
 export type PostingType = "FS" | "WTB";
@@ -198,6 +238,70 @@ export function extractReference(text: string): string | null {
  * can never match two references that simply share a prefix but then diverge (normalizeReference
  * on "116508" is "116508", which does not start with "116500", so the two stay distinct).
  */
+/**
+ * Explicit reference aliases — the ONLY place a stored/typed reference is allowed to be treated
+ * as a different string than it was written.
+ *
+ * Traders routinely drop a Rolex bezel/dial suffix in chat ("116500" for the ceramic Daytona),
+ * which silently split the market data into two buckets: an exact `upper(trim(reference))`
+ * aggregation counted "116500" and "116500LN" as two different watches, so Market Pulse and
+ * Market Briefing reported different FS/WTB counts and different average asks for the same
+ * model.
+ *
+ * The rule for adding an entry is deliberately narrow and must stay that way: a bare stem may
+ * alias to a suffixed canonical reference ONLY when that stem has exactly one commercially
+ * produced suffixed variant, so the shorthand cannot mean anything else. This is NOT "append LN
+ * to Rolex references":
+ *   - 116500 -> 116500LN  ✔  the ceramic Daytona only ever shipped as 116500LN (both the black
+ *                            and the white "Panda" dial share that one reference).
+ *   - 126500 -> 126500LN  ✔  its 2023 successor, likewise a single suffixed variant.
+ *   - 116610 -> (none)    ✘  ambiguous: 116610LN (black) and 116610LV (green) both exist, so a
+ *                            bare 116610 is genuinely undetermined and stays its own bucket.
+ * Anything not listed here is left exactly as written.
+ */
+const REFERENCE_ALIAS_GROUPS: ReadonlyArray<{ canonical: string; aliases: readonly string[] }> = [
+  { canonical: "116500LN", aliases: ["116500"] },
+  { canonical: "126500LN", aliases: ["126500"] },
+];
+
+/** normalized alias form -> canonical display form. */
+const ALIAS_TO_CANONICAL = new Map<string, string>(
+  REFERENCE_ALIAS_GROUPS.flatMap((group) => [
+    [normalizeReference(group.canonical), group.canonical] as const,
+    ...group.aliases.map((alias) => [normalizeReference(alias), group.canonical] as const),
+  ])
+);
+
+/** canonical display form -> every normalized form that means the same watch (canonical included). */
+const CANONICAL_TO_EQUIVALENTS = new Map<string, string[]>(
+  REFERENCE_ALIAS_GROUPS.map((group) => [
+    group.canonical,
+    [normalizeReference(group.canonical), ...group.aliases.map(normalizeReference)],
+  ])
+);
+
+/**
+ * The single display/storage form for a reference, after aliasing. Falls back to the plain
+ * uppercased input (formatting preserved) when the reference has no alias entry, so an
+ * unrecognized reference is never rewritten.
+ */
+export function canonicalizeReference(ref: string): string {
+  const trimmed = ref.trim();
+  if (!trimmed) return "";
+  return ALIAS_TO_CANONICAL.get(normalizeReference(trimmed)) ?? trimmed.toUpperCase();
+}
+
+/**
+ * Every normalized (separator-stripped, uppercased) form that refers to the same watch as
+ * `ref` — what an aggregation must match against so a bucket can't be split by which shorthand
+ * happened to be stored. Always contains at least the reference's own normalized form.
+ */
+export function referenceEquivalents(ref: string): string[] {
+  const canonical = canonicalizeReference(ref);
+  if (!canonical) return [];
+  return CANONICAL_TO_EQUIVALENTS.get(canonical) ?? [normalizeReference(canonical)];
+}
+
 export function referencesMatch(a: string, b: string): boolean {
   if (!a || !b) return false;
   const na = normalizeReference(a);

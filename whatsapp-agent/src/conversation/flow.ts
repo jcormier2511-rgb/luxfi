@@ -22,7 +22,7 @@ import { detectCurrency } from "../matching/currency";
 
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
-import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch } from "../postings/normalize";
+import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch, canonicalizeReference, normalizeReference, splitLeadingBrand, INTENT_TOKENS, isOnlyIntentLanguage } from "../postings/normalize";
 import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
@@ -82,6 +82,12 @@ const LEADING_PHRASES = [
   "need",
 ];
 
+// INTENT_TOKENS / isOnlyIntentLanguage live in postings/normalize.ts so intake and posting
+// persistence reject the same leftover lead-in language — see the note on their definition.
+// Real reported bug: "WTB i want ot buy a rolex, ..." matches no entry in LEADING_PHRASES as one
+// phrase ("i want to" doesn't cover "i want ot"), so the lead-in survived stripping and "ot buy
+// a" was stored as the watch's model.
+
 /** Strips a leading intent phrase (any combination/order of the above), then a leftover leading
  *  filler word ("to"/"a"/"an"/"the") — never touches anything after the actual item description
  *  starts. Exported for the legacy-parser regression tests. */
@@ -98,6 +104,16 @@ export function stripLeadingIntent(text: string): string {
         changed = true;
         break;
       }
+    }
+    if (changed) continue;
+    // The phrase list is exhausted but the message may still open with intent language the
+    // list can't express as a fixed phrase (a typo, or an unusual word order). Drop leading
+    // words one at a time while they're pure intent language, and stop at the first token that
+    // isn't — so nothing from the actual item description onward is ever touched.
+    const leading = s.match(/^([A-Za-z'\u2019]+)\b[\s:,-]*/);
+    if (leading && INTENT_TOKENS.has(leading[1].toLowerCase().replace(/\u2019/g, "'"))) {
+      s = s.slice(leading[0].length).trim();
+      changed = true;
     }
   }
   return s.replace(/^(a|an|the)\s+/i, "").trim();
@@ -430,28 +446,126 @@ export interface FlowResult {
 
 const MARKET_COMMAND = /^(?:market pulse|market briefing|market update|market for my listing|market on my watch|price pulse|how is the market|show market data)\s*[?.!]*$/i;
 const MARKET_BRIEFING_COMMAND = /^(?:market briefing|market update)\s*[?.!]*$/i;
+const MARKET_REFERENCE_COMMAND = /^(?:market\s+pulse|price\s+pulse|market\s+price|market\s+data|market\s+check|market|pulse)\s+(?:on\s+|for\s+)?(.+)$/i;
+
+/**
+ * "market pulse 116500LN", "market pulse Rolex 116500LN", "market 116500LN", "price pulse
+ * 116500LN" — a reference spelled out in the command is a complete, self-contained instruction.
+ *
+ * Reported live failure: MARKET_COMMAND is fully anchored and accepts no argument, so "market
+ * pulse 116500LN" matched nothing, fell through to pending-intake handling, and Fi reprinted
+ * the open WTB draft. An explicit reference must resolve deterministically against the database
+ * and must never be interpreted against whatever listing or draft happens to be open, so this
+ * is parsed before every context-dependent branch.
+ *
+ * The argument has to BE a reference and nothing else, which is what keeps the existing
+ * context-scoped phrasings ("market for my listing", "market briefing") out of this branch.
+ */
+function parseMarketReferenceCommand(text: string): { reference: string; brand?: string } | null {
+  const m = text.trim().replace(/\s*[?.!]+$/, "").match(MARKET_REFERENCE_COMMAND);
+  if (!m) return null;
+  const { brand, rest } = splitLeadingBrand(m[1]);
+  const candidate = rest.replace(/^(?:the\s+)?(?:ref(?:erence)?\.?\s*)?/i, "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9./-]*$/.test(candidate)) return null;
+  const reference = extractReference(candidate);
+  // extractReference finds a reference ANYWHERE in its input; require that it consumed the whole
+  // argument, so "market pulse daytona" isn't silently treated as a reference lookup.
+  if (!reference || normalizeReference(reference) !== normalizeReference(candidate)) return null;
+  return { reference, ...(brand ? { brand } : {}) };
+}
 
 interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB" }
+
+/** "listing 1", "listing #1", "listing  2" — anywhere in the sentence, not only after the verb. */
+const LISTING_INDEX_PATTERN = /\blisting\s*#?\s*(\d+)\b/i;
+
+/** Verbs that mean "manage a listing I already have", never "here is something new". */
+const LISTING_MANAGEMENT_VERB = /^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?(edit|change|update|set|make|lower|raise|reduce|increase|adjust|modify|revise|expand)\b\s*/i;
+
+/** The editable fields, matched at the START of what's left after the listing number and the
+ *  management verb have been removed. */
+const LISTING_EDIT_FIELDS: ReadonlyArray<{ action: "price" | "location" | "dial"; pattern: RegExp }> = [
+  { action: "price", pattern: /^(?:asking\s+)?(?:price|budget|ask|max(?:imum)?)\b/i },
+  { action: "location", pattern: /^(?:location|region|country|market|area)\b/i },
+  { action: "dial", pattern: /^dial(?:\s+colou?r)?\b/i },
+];
+
+/** Optional connector between a field and its new value — "price to 2500", "price = 2500",
+ *  "price is 2500", or nothing at all ("price 2500"). */
+const LISTING_FIELD_CONNECTOR = /^(?:to|=|:|is|as|at|of|be)\b\s*/i;
+
+/** A plain listing amount: "2500", "$2,500", "2.5k". Null when the text isn't only an amount. */
+function parseListingAmount(raw: string): number | null {
+  const m = raw.trim().match(/^\$?\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(k)?$/i);
+  if (!m) return null;
+  const value = Number(m[1].replace(/,/g, "")) * (m[2] ? 1000 : 1);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
+ * Listing-management commands, parsed by grammar rather than by a list of exact sentences.
+ *
+ * The reported live failure: with a WTB draft open, "edit listing 1 price 2500" matched none of
+ * the old hand-written sentence patterns, fell through to pending-intake handling, and changed
+ * the DRAFT'S budget instead of listing #1. The number, the verb and the field name can each
+ * appear in more than one order in real messages ("change listing 1 price to 2500" and "change
+ * price listing 1 to 2500" are the same instruction), so the listing number is located and
+ * removed FIRST and the remainder is parsed as a plain "<field> <value>" phrase — which makes
+ * every ordering, and the bare "listing 1 price 2500" form, fall out of one rule.
+ *
+ * Index-less forms stay deliberately narrow (they still require "my"): during an interview,
+ * "change the price to 2500" is an answer about the draft Fi is actively collecting, and must
+ * keep going to the intake handler rather than being captured here.
+ */
 function parseListingEditCommand(text: string): ListingEditCommand | null {
-  const t = text.trim();
-  let m = t.match(/^(pause|pausing|resume|reactivate|close|closing|delete|remove|cancel|stop)\s+listing\s+(\d+)\s*[?.!]*$/i);
-  if (m) {
-    const verb = m[1].toLowerCase();
-    const action: ListingEditCommand["action"] = /^(pause|pausing|stop)$/.test(verb) ? "pause" : /^(resume|reactivate)$/.test(verb) ? "resume" : "close";
-    return { action, index: Number(m[2]) };
+  const t = text.trim().replace(/\s*[?.!]+$/, "");
+  if (!t) return null;
+
+  const lifecycle = t.match(/^(?:please\s+)?(pause|pausing|hold|resume|reactivate|restart|unpause|close|closing|delete|deleting|remove|cancel|stop|end)\s+(?:my\s+)?listing\s*#?\s*(\d+)$/i);
+  if (lifecycle) {
+    const verb = lifecycle[1].toLowerCase();
+    const action: ListingEditCommand["action"] = /^(pause|pausing|hold|stop)$/.test(verb) ? "pause"
+      : /^(resume|reactivate|restart|unpause)$/.test(verb) ? "resume"
+      : "close";
+    return { action, index: Number(lifecycle[2]) };
   }
-  m = t.match(/^edit\s+listing\s+(\d+)\s*[?.!]*$/i);
-  if (m) return { action: "edit", index: Number(m[1]) };
-  m = t.match(/^(?:change|lower)\s+listing\s+(\d+)\s+(?:asking\s+)?(?:price|budget)\s+to\s+\$?([\d,]+)\s*[?.!]*$/i);
-  if (m) return { action: "price", index: Number(m[1]), value: Number(m[2].replace(/,/g, "")) };
-  m = t.match(/^(?:change|lower)\s+my\s+(asking\s+)?(?:price|budget)\s+to\s+\$?([\d,]+)\s*[?.!]*$/i);
-  if (m) return { action: "price", index: null, value: Number(m[2].replace(/,/g, "")), typeHint: m[1] ? "FS" : undefined };
-  m = t.match(/^lower\s+my\s+price\s+to\s+\$?([\d,]+)\s*[?.!]*$/i);
-  if (m) return { action: "price", index: null, value: Number(m[1].replace(/,/g, "")) };
-  m = t.match(/^(?:expand|change)\s+listing\s+(\d+)\s+(?:location\s+)?to\s+(.+?)\s*[?.!]*$/i);
-  if (m) return { action: "location", index: Number(m[1]), value: m[2] };
-  m = t.match(/^change\s+(?:listing\s+(\d+)\s+)?dial\s+to\s+(.+?)\s*[?.!]*$/i);
-  if (m) return { action: "dial", index: m[1] ? Number(m[1]) : null, value: m[2] };
+
+  const indexMatch = t.match(LISTING_INDEX_PATTERN);
+  if (!indexMatch) {
+    let m = t.match(/^(?:change|lower|raise|update|set)\s+my\s+(asking\s+)?(?:price|budget)\s+to\s+(\$?[\d,]+)$/i);
+    if (m) {
+      const value = parseListingAmount(m[2]);
+      if (value !== null) return { action: "price", index: null, value, typeHint: m[1] ? "FS" : undefined };
+    }
+    m = t.match(/^change\s+(?:my\s+)?dial\s+to\s+(.+)$/i);
+    if (m) return { action: "dial", index: null, value: m[1].trim() };
+    return null;
+  }
+
+  const index = Number(indexMatch[1]);
+  let body = t.replace(indexMatch[0], " ").replace(/\s+/g, " ").trim();
+  const verb = body.match(LISTING_MANAGEMENT_VERB);
+  if (verb) body = body.slice(verb[0].length).trim();
+  body = body.replace(/^(?:my|the)\s+/i, "").trim();
+
+  // "edit listing 1" on its own — a management verb with a number but no field yet.
+  if (!body) return verb ? { action: "edit", index } : null;
+
+  for (const field of LISTING_EDIT_FIELDS) {
+    const named = body.match(field.pattern);
+    if (!named) continue;
+    const value = body.slice(named[0].length).trim().replace(LISTING_FIELD_CONNECTOR, "").trim();
+    // Named the field but not the new value ("edit listing 1 price") — ask, don't guess.
+    if (!value) return { action: "edit", index };
+    if (field.action !== "price") return { action: field.action, index, value };
+    const amount = parseListingAmount(value);
+    return amount === null ? null : { action: "price", index, value: amount };
+  }
+
+  // "expand listing 1 to worldwide" — a bare "to <value>" after a management verb means the
+  // listing's location; the field name is implied by the verb.
+  const implied = verb && body.match(/^to\s+(.+)$/i);
+  if (implied) return { action: "location", index, value: implied[1].trim() };
   return null;
 }
 
@@ -470,7 +584,7 @@ async function handleListingEdit(phone: string, command: ListingEditCommand): Pr
   if (command.index === null && rows.length !== 1) return chooseListingMessage(rows, "to manage");
   const posting = command.index === null ? rows[0] : rows[command.index - 1];
   if (!posting) return `I couldn't find listing ${command.index}. Say "my listings" to see the current numbers.`;
-  if (command.action === "edit") return `What would you like to change on listing ${command.index}? You can change its price/budget, location, or dial.`;
+  if (command.action === "edit") return `What would you like to change on listing ${command.index ?? 1}? You can change its price/budget, location, or dial.`;
   let updated: PostingRow | null;
   if (["pause","resume","close"].includes(command.action)) {
     updated = await setPostingManagementStatus(posting.id, command.action as "pause" | "resume" | "close");
@@ -489,7 +603,10 @@ async function formatMarketBriefing(phone: string): Promise<string> {
   const cards = await Promise.all(rows.map(async (p, i) => {
     if (!p.reference && !p.brand && !p.model) return `${i + 1}. ${formatStructuredPosting(p)}\n\nReference needed for exact pricing.`;
     const pulse = await getScopedMarketPulse({ brand: p.brand, model: p.model, reference: p.reference });
-    return `${i + 1}. ${p.type} — ${[p.brand,p.model,p.reference].filter(Boolean).join(" ")}\n\nCurrent FS: ${pulse.fsCount}\nCurrent WTB: ${pulse.wtbCount}\n${pulse.averageFsAsk === null ? "Reference needed for exact pricing." : `Avg FS ask: ${formatAmount(String(Math.round(pulse.averageFsAsk)), "USD")}`}`;
+    // Show the same canonical reference the aggregation grouped on, so two listings that share
+    // a watch can't be displayed as two differently-named rows with identical numbers.
+    const shownReference = p.reference ? canonicalizeReference(p.reference) : null;
+    return `${i + 1}. ${p.type} — ${[p.brand,p.model,shownReference].filter(Boolean).join(" ")}\n\nCurrent FS: ${pulse.fsCount}\nCurrent WTB: ${pulse.wtbCount}\n${pulse.averageFsAsk === null ? "Reference needed for exact pricing." : `Avg FS ask: ${formatAmount(String(Math.round(pulse.averageFsAsk)), "USD")}`}`;
   }));
   return `Your Market Briefing\n\n${cards.join("\n\n")}`;
 }
@@ -840,8 +957,18 @@ function intakeSlots(text: string, reference: string | null) {
   const dial = text.match(/^\s*(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)?\s*$/i)?.[1] ?? text.match(/\b(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)\b/i)?.[1];
   const normalized=normalizeText(text);
   const brand=normalized.brand||undefined;
-  const identityClause = stripLeadingIntent(text).split(",", 1)[0];
-  const itemPhrase=identityClause
+  // Once the maker is identified, a model can only be what FOLLOWS the brand in the identity
+  // clause. Everything before it is conversational lead-in, and must never be stored as the
+  // model — the live bug this fixes persisted "ot buy a" (the tail of "i want ot buy a rolex")
+  // as the model, which then displayed as "Rolex ot buy a". When the brand is named somewhere
+  // else in the message but not in this clause, the clause is entirely lead-in and yields no
+  // model at all rather than a guess.
+  let identityClause: string | null = stripLeadingIntent(text).split(",", 1)[0];
+  if (brand) {
+    const brandAt = identityClause.toLowerCase().indexOf(brand.toLowerCase());
+    identityClause = brandAt >= 0 ? identityClause.slice(brandAt + brand.length) : null;
+  }
+  const itemPhrase=(identityClause ?? "")
     .replace(/^(?:it(?:'s| is)|this is)\s+(?:a\s+)?/i, "")
     .replace(new RegExp(`\\b${(brand??"").replace(/\s+/g,"\\s+")}\\b`,"i"), "")
     .replace(extractReference(text)??"","")
@@ -849,7 +976,9 @@ function intakeSlots(text: string, reference: string | null) {
     .replace(/(?:under|max(?:imum)?|budget|asking|price|for)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
     .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
-  const model=brand&&itemPhrase ? itemPhrase : undefined;
+  // Belt and braces: whatever survives the scrubbing above is still rejected outright if it is
+  // nothing but intent language, so no phrasing can round-trip a lead-in into the model slot.
+  const model=brand&&itemPhrase&&!isOnlyIntentLanguage(itemPhrase) ? itemPhrase : undefined;
   const boxPapers=/\b(full set|box(?: and | & |\/)?papers?|papers)\b/i.exec(text)?.[1]; const year=/\b(19\d{2}|20\d{2})\b/.exec(text)?.[1];
   return { reference: extractReference(text), price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial,brand,model,boxPapers,year };
 }
@@ -1273,9 +1402,15 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     // This is a read-only postings view and must not normalize unrelated draft state.
     return { state, messages };
   }
+  const marketReference = parseMarketReferenceCommand(commandText);
+  if (marketReference) {
+    messages.push(formatMarketPulse(await getScopedMarketPulse({ brand: displayBrand(marketReference.brand) || undefined, reference: marketReference.reference })));
+    // Read-only, and deliberately not persisted: saveState round-trips through JSON, which
+    // drops explicitly-undefined intake fields — a market lookup must not rewrite an open draft.
+    return { state, messages };
+  }
   if (MARKET_COMMAND.test(commandText)) {
     messages.push(await handleMarketCommand(state.phone, MARKET_BRIEFING_COMMAND.test(commandText)));
-    saveState(state);
     return { state, messages };
   }
   if (CURRENT_INVENTORY_COMMAND.test(text.trim())) {

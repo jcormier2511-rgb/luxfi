@@ -1,5 +1,6 @@
 import { withSchema } from "./db";
 import { initInventorySchema } from "../watchfacts/inventoryDb";
+import { canonicalizeReference, referenceEquivalents } from "./normalize";
 
 export interface MarketPulse {
   reference: string;
@@ -19,10 +20,18 @@ export interface MarketScope { brand?: string; model?: string; reference?: strin
  * existing WatchFacts inventory store. WatchFacts FS rows are also mirrored into `postings`
  * for matching, so the second branch explicitly removes those mirrored identities. No raw
  * message table, CSV fallback, or channel client participates in this database-only read.
+ *
+ * Both sides of the union are compared on the SAME canonical identity rather than on the raw
+ * stored string: each row's reference is separator-stripped and uppercased, then matched
+ * against every equivalent form of the queried reference (see postings/normalize.ts's
+ * explicit alias table). Without this, "116500" and "116500LN" aggregated as two different
+ * watches and reported different FS/WTB counts and average asks for the same model, and a
+ * stored "116508-0013" never lined up with a typed "1165080013".
  */
 export async function getMarketPulse(reference: string): Promise<MarketPulse> {
-  const normalizedReference = reference.trim().toUpperCase();
-  if (!normalizedReference) throw new Error("An exact watch reference is required");
+  const canonicalReference = canonicalizeReference(reference);
+  if (!canonicalReference) throw new Error("An exact watch reference is required");
+  const equivalents = referenceEquivalents(canonicalReference);
 
   await initInventorySchema();
   return withSchema(async (pool) => {
@@ -33,7 +42,7 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
                           AND p.price > 0 THEN p.price::numeric END AS fs_price
          FROM postings p
          WHERE p.status='active' AND p.expires_at > now()
-           AND upper(trim(p.reference))=$1
+           AND upper(regexp_replace(COALESCE(p.reference,''), '[^A-Za-z0-9]', '', 'g')) = ANY($1::text[])
 
          UNION ALL
 
@@ -46,7 +55,7 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
                      THEN COALESCE(i.native_price_amount,
                             regexp_replace(i.price, '[^0-9.]', '', 'g')::double precision)::numeric END
          FROM inventory_listings i
-         WHERE i.is_active=TRUE AND upper(trim(i.ref))=$1
+         WHERE i.is_active=TRUE AND upper(regexp_replace(COALESCE(i.ref,''), '[^A-Za-z0-9]', '', 'g')) = ANY($1::text[])
            AND i.type IN ('FS','WTB')
            AND NOT EXISTS (
              SELECT 1 FROM postings p
@@ -59,11 +68,11 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
               count(*) FILTER (WHERE type='WTB')::int AS wtb_count,
               avg(fs_price) FILTER (WHERE type='FS') AS average_fs_ask
        FROM current_inventory`,
-      [normalizedReference]
+      [equivalents]
     );
     const row = result.rows[0];
     return {
-      reference: normalizedReference,
+      reference: canonicalReference,
       fsCount: Number(row.fs_count),
       wtbCount: Number(row.wtb_count),
       averageFsAsk: row.average_fs_ask === null ? null : Number(row.average_fs_ask),

@@ -1,7 +1,7 @@
 import { withSchema } from "./db";
 import { getOrCreateCanonicalUser } from "./identity";
 import { platformForIdentity } from "../channels/identity";
-import { classifyText, normalizeText, PostingType } from "./normalize";
+import { classifyText, normalizeText, isOnlyIntentLanguage, PostingType } from "./normalize";
 
 export interface PostingRow {
   id: number;
@@ -35,15 +35,29 @@ export interface PostingRow {
 
 const REQUEST_LIFETIME_MS = 15 * 24 * 60 * 60 * 1000;
 
+/**
+ * The model named in a free-text description, or "" when it names none.
+ *
+ * A model can only be what FOLLOWS the maker's name: everything before the brand is
+ * conversational lead-in ("WTB i want ot buy a ..."), never an identity. Removing the brand
+ * in place instead — what this used to do — left the lead-in behind, so the live session
+ * persisted "ot buy a" as a Rolex's model, and once the scrubbing regexes had eaten the rest it
+ * persisted a bare ",". Whatever survives is rejected outright unless it actually says
+ * something (see isOnlyIntentLanguage), so no phrasing can round-trip filler into this column.
+ */
 function inferDirectModel(description:string,brand:string,reference:string|null):string {
   if(!brand)return "";
-  return description
-    .replace(/^(?:FS|WTB|WTS|sell(?:ing)?|buy(?:ing)?|looking for|I (?:want to|have))\b[\s:,-]*/i,"")
-    .replace(new RegExp(`\\b${brand.replace(/\s+/g,"\\s+")}\\b`,"i"),"")
+  const brandAt=description.toLowerCase().indexOf(brand.toLowerCase());
+  if(brandAt<0)return "";
+  const model=description
+    .slice(brandAt+brand.length)
     .replace(reference??"","")
     .replace(/\b(?:black|white|blue|green|silver|champagne)\s+dial\b.*$/i,"")
-    .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|for|under|budget)\b.*$/i,"")
+    .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|for|under|budget|max(?:imum)?|asking|price)\b.*$/i,"")
+    .split(",")[0]
+    .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g,"")
     .trim();
+  return isOnlyIntentLanguage(model)?"":model;
 }
 
 function valuesEqual(a: unknown, b: unknown): boolean {

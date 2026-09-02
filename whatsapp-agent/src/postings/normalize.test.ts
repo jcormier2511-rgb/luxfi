@@ -8,6 +8,10 @@ import {
   referencesMatch,
   normalizePriceShorthand,
   hasMultipleDistinctPrices,
+  canonicalizeReference,
+  referenceEquivalents,
+  isOnlyIntentLanguage,
+  splitLeadingBrand,
 } from "./normalize";
 
 test("classifyText recognizes FS keywords", () => {
@@ -186,4 +190,41 @@ test("normalizePriceShorthand handles a currency-code-prefixed amount with no $ 
   assert.equal(normalizePriceShorthand("hkd210k"), 210000);
   assert.equal(normalizePriceShorthand("HKD 233k"), 233000);
   assert.equal(normalizePriceShorthand("usd25000"), 25000);
+});
+
+test("reference canonicalization is an explicit alias table, not a suffix guess", () => {
+  // A bare stem aliases to a suffixed reference ONLY where that stem has exactly one produced
+  // variant, so the shorthand cannot mean anything else.
+  assert.equal(canonicalizeReference("116500"), "116500LN");
+  assert.equal(canonicalizeReference(" 116500ln "), "116500LN");
+  assert.equal(canonicalizeReference("116500-LN"), "116500LN");
+  assert.equal(canonicalizeReference("126500"), "126500LN");
+  // 116610 is genuinely ambiguous (116610LN black, 116610LV green) and must never be rewritten,
+  // and no unrelated reference is touched either.
+  assert.equal(canonicalizeReference("116610"), "116610");
+  assert.equal(canonicalizeReference("116610LV"), "116610LV");
+  assert.equal(canonicalizeReference("5711/1A"), "5711/1A");
+  assert.equal(canonicalizeReference("   "), "");
+});
+
+test("reference equivalents cover every stored form of the same watch", () => {
+  assert.deepEqual(referenceEquivalents("116500").sort(), ["116500", "116500LN"]);
+  assert.deepEqual(referenceEquivalents("116500LN").sort(), ["116500", "116500LN"]);
+  assert.deepEqual(referenceEquivalents("116610LV"), ["116610LV"]);
+  assert.deepEqual(referenceEquivalents("116508-0013"), ["1165080013"]);
+});
+
+test("intent language is recognized as carrying no identity", () => {
+  for (const phrase of ["", ",", "i want ot buy a", "ot buy a", "looking for", "wtb", "a", "to buy"]) {
+    assert.equal(isOnlyIntentLanguage(phrase), true, `"${phrase}" should be intent-only`);
+  }
+  for (const phrase of ["daytona", "white", "submariner date", "5711"]) {
+    assert.equal(isOnlyIntentLanguage(phrase), false, `"${phrase}" should be a real identity`);
+  }
+});
+
+test("a leading maker name is split off a market-pulse argument", () => {
+  assert.deepEqual(splitLeadingBrand("Rolex 116500LN"), { brand: "rolex", rest: "116500LN" });
+  assert.deepEqual(splitLeadingBrand("patek philippe 5711/1A"), { brand: "patek philippe", rest: "5711/1A" });
+  assert.deepEqual(splitLeadingBrand("116500LN"), { brand: null, rest: "116500LN" });
 });
