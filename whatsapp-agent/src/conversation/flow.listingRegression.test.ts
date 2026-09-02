@@ -28,6 +28,11 @@ test("WTB conversational lead-ins and trailing only never become models", async 
     ["WTB Rolex only", undefined, null],
     ["I'm looking for a Rolex Daytona", "Daytona", null],
     ["I want to buy a Rolex Daytona 126500LN", "Daytona", "126500LN"],
+    // Live-reported bug: "black" (the dial color, correctly captured separately as
+    // pendingBuyIntake.dialColor) was also leaking into the model slot because the itemPhrase
+    // scrubber only cut the text starting at the word "dial", leaving its preceding color word
+    // behind — displayed as "Model: black" instead of "Model: Not provided".
+    ["wtb a rolex 116500 black dial", undefined, "116500"],
   ] as const;
   for (const [index, [message, model, reference]] of cases.entries()) {
     const phone = `155500021${index}`;
@@ -37,6 +42,8 @@ test("WTB conversational lead-ins and trailing only never become models", async 
     assert.equal(result.state.pendingBuyIntake?.model, model);
     assert.equal(result.state.pendingBuyIntake?.reference, reference);
   }
+  const dialCase = await handleIncomingMessage("1555000216b", "wtb a rolex 116500 black dial");
+  assert.equal(dialCase.state.pendingBuyIntake?.dialColor, "black", "the dial color itself must still be captured correctly");
 
   const live = await handleIncomingMessage("1555000219", "WTB i want to buy a rolex, preowned, usa, maximum $25,000");
   assert.deepEqual({
@@ -99,7 +106,7 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
     senderName: undefined,
     description: "Rolex 116500LN white dial pre-owned in the US for $28,000",
     brand: "rolex",
-    model: "white",
+    model: undefined,
     reference: "116500LN",
     price: 30000,
     currency: "USD",
@@ -108,7 +115,7 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
     location: "US",
   });
   assert.equal(confirmed.state.pendingBuyIntake, undefined);
-  assert.match(confirmed.messages.join("\n"), /Your WTB request is active:[\s\S]*rolex white 116500LN[\s\S]*white dial[\s\S]*Budget: \$30,000[\s\S]*qualifying seller/i);
+  assert.match(confirmed.messages.join("\n"), /Your WTB request is active:[\s\S]*rolex 116500LN[\s\S]*white dial[\s\S]*Budget: \$30,000[\s\S]*qualifying seller/i);
   assert.doesNotMatch(confirmed.messages.join("\n"), /raw/i, "acknowledgment is rendered from the persisted structured fields");
   assert.match(confirmed.messages[0], /request is active/i);
 });

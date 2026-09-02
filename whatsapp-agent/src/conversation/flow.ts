@@ -974,6 +974,13 @@ function intakeSlots(text: string, reference: string | null) {
     .replace(extractReference(text)??"","")
     .replace(/\bonly\b/gi, "")
     .replace(/(?:under|max(?:imum)?|budget|asking|price|for)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
+    // A dial-color word ("black dial") describes the dial, not the watch's model, but the
+    // trailing cutoff below only ever removed "dial"/"color" itself, leaving the color word
+    // sitting right in front of it — the live bug this fixes stored "black" as the model for
+    // "wtb a rolex 116500 black dial" (displayed as "Model: black") even though the dial field
+    // was already being parsed correctly from the same message. Must run before that cutoff so
+    // the color word is gone by the time "dial"/"color" would otherwise start truncating there.
+    .replace(/\b(?:black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)\b/gi, "")
     .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
   // Belt and braces: whatever survives the scrubbing above is still rejected outright if it is
