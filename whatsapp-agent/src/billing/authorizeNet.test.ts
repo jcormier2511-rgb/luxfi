@@ -59,6 +59,31 @@ test("createHostedPaymentPageToken pre-creates an empty CIM profile, references 
   assert.equal(customerOptions.addPaymentProfile, true, "must ask Accept Hosted to attach the entered card to the pre-created profile");
 });
 
+test("createHostedPaymentPageToken recovers from E00039 (revisiting the same /pay/:id link) by reusing the already-created profile id", async (t) => {
+  let sentToken: any;
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(init.body as string);
+    if (body.createCustomerProfileRequest) {
+      return new Response(
+        JSON.stringify({
+          createCustomerProfileResponse: {
+            messages: { resultCode: "Error", message: [{ code: "E00039", text: "A duplicate record with ID 527669620 already exists." }] },
+          },
+        }),
+        { status: 200 }
+      );
+    }
+    sentToken = body.getHostedPaymentPageRequest;
+    return new Response(JSON.stringify({ getHostedPaymentPageResponse: { token: "hpp-token-reuse", messages: { resultCode: "Ok", message: [] } } }), {
+      status: 200,
+    });
+  });
+
+  const token = await createHostedPaymentPageToken({ checkoutSessionId: "sess-revisit", phone: "15551234567", plan: "tier1" });
+  assert.equal(token, "hpp-token-reuse", "a second visit to the same link must still succeed, not throw");
+  assert.equal(sentToken.transactionRequest.profile.customerProfileId, "527669620", "must reuse the id parsed out of the E00039 message");
+});
+
 test("callAuthorizeNetApi throws with the API's own error detail when resultCode is Error", async (t) => {
   t.mock.method(
     globalThis,

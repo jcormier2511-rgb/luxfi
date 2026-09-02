@@ -77,6 +77,36 @@ async function callAuthorizeNetApi<T>(requestName: string, body: Record<string, 
 }
 
 /**
+ * Creates an empty CIM customer profile (no payment method yet) keyed by merchantCustomerId --
+ * Authorize.net's own guidance is that Accept Hosted's addPaymentProfile setting (see
+ * createHostedPaymentPageToken) is "typically used when a customer profile already exists,"
+ * which matches a live test where transactionRequest.profile.createProfile:true created
+ * nothing at all. checkoutSessionId doubles as merchantCustomerId -- already <=20 chars (the
+ * field's limit) and unique per checkout, so no separate id scheme is needed.
+ *
+ * Idempotent by design, not just in practice: GET /pay/:id calls this fresh on every visit
+ * (the hosted-payment token itself must be regenerated each time -- it expires after 15
+ * minutes -- so a link sitting unread in chat for a day still works), and a second visit to
+ * the same link is an expected, normal case, not a bug. Authorize.net rejects the second
+ * createCustomerProfileRequest with E00039 ("a duplicate record with ID <id> already exists")
+ * since the same merchantCustomerId was already used -- confirmed live. The API has no
+ * structured field for the existing id on this error, only the message text, so parsing it out
+ * is Authorize.net's own documented recovery path for E00039, not a fragile workaround.
+ */
+async function createCustomerProfile(merchantCustomerId: string): Promise<string> {
+  try {
+    const response = await callAuthorizeNetApi<{ customerProfileId: string }>("createCustomerProfileRequest", {
+      profile: { merchantCustomerId },
+    });
+    return response.customerProfileId;
+  } catch (err) {
+    const duplicateId = /E00039:.*?ID\s+(\d+)/.exec((err as Error).message)?.[1];
+    if (duplicateId) return duplicateId;
+    throw err;
+  }
+}
+
+/**
  * checkoutSessionId round-trips through Authorize.net as order.invoiceNumber -- NOT as a
  * custom userField. Confirmed live: a real sandbox transaction came back from
  * getTransactionDetailsRequest with every userFields entry AND profile.createProfile both
@@ -88,21 +118,6 @@ async function callAuthorizeNetApi<T>(requestName: string, body: Record<string, 
  * createCheckoutSession -- its id is generated short enough (<=20 chars) to survive
  * invoiceNumber's length limit with no truncation/collision risk.
  */
-/**
- * Creates an empty CIM customer profile (no payment method yet) keyed by merchantCustomerId --
- * Authorize.net's own guidance is that Accept Hosted's addPaymentProfile setting (see
- * createHostedPaymentPageToken) is "typically used when a customer profile already exists,"
- * which matches a live test where transactionRequest.profile.createProfile:true created
- * nothing at all. checkoutSessionId doubles as merchantCustomerId -- already <=20 chars (the
- * field's limit) and unique per checkout, so no separate id scheme is needed.
- */
-async function createCustomerProfile(merchantCustomerId: string): Promise<string> {
-  const response = await callAuthorizeNetApi<{ customerProfileId: string }>("createCustomerProfileRequest", {
-    profile: { merchantCustomerId },
-  });
-  return response.customerProfileId;
-}
-
 export async function createHostedPaymentPageToken(params: { checkoutSessionId: string; phone: string; plan: PlanKey }): Promise<string> {
   const planDef = MEMBERSHIP_PLANS[params.plan];
   const returnBase = config.publicBaseUrl || "";
