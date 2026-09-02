@@ -16,9 +16,10 @@ process.env.PUBLIC_BASE_URL = "https://fi.example.com";
 const authorizeNet = require("./authorizeNet") as typeof import("./authorizeNet");
 const {
   isAuthorizeNetConfigured,
-  hostedPaymentFormActionUrl,
-  createHostedPaymentPageToken,
-  getTransactionDetails,
+  hostedProfilePageFormActionUrl,
+  createCustomerProfile,
+  createHostedProfilePageToken,
+  createProfileTransaction,
   createArbSubscription,
   cancelArbSubscription,
   verifyWebhookSignature,
@@ -28,60 +29,100 @@ test("isAuthorizeNetConfigured is true once an API login id and transaction key 
   assert.equal(isAuthorizeNetConfigured(), true);
 });
 
-test("hostedPaymentFormActionUrl defaults to the sandbox host (AUTHORIZENET_ENVIRONMENT unset)", () => {
-  assert.equal(hostedPaymentFormActionUrl(), "https://test.authorize.net/payment/payment");
+test("hostedProfilePageFormActionUrl defaults to the sandbox host (AUTHORIZENET_ENVIRONMENT unset)", () => {
+  assert.equal(hostedProfilePageFormActionUrl(), "https://test.authorize.net/customer/manage");
 });
 
-test("createHostedPaymentPageToken pre-creates an empty CIM profile, references it by id, sends the correlation invoiceNumber, and enables Accept Hosted's own profile-attach setting", async (t) => {
-  const calls: any[] = [];
+test("createCustomerProfile sends merchantCustomerId and returns the new customerProfileId", async (t) => {
+  let sentBody: any;
   t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
-    const body = JSON.parse(init.body as string);
-    calls.push(body);
-    if (body.createCustomerProfileRequest) {
-      return new Response(JSON.stringify({ createCustomerProfileResponse: { customerProfileId: "cp-new-1", messages: { resultCode: "Ok", message: [] } } }), { status: 200 });
-    }
-    return new Response(JSON.stringify({ getHostedPaymentPageResponse: { token: "hpp-token-abc", messages: { resultCode: "Ok", message: [] } } }), { status: 200 });
+    sentBody = JSON.parse(init.body as string);
+    return new Response(JSON.stringify({ createCustomerProfileResponse: { customerProfileId: "cp-new-1", messages: { resultCode: "Ok", message: [] } } }), {
+      status: 200,
+    });
   });
 
-  const token = await createHostedPaymentPageToken({ checkoutSessionId: "sess-1", phone: "15551234567", plan: "tier2" });
-  assert.equal(token, "hpp-token-abc");
-  assert.equal(calls.length, 2, "createCustomerProfileRequest then getHostedPaymentPageRequest");
-  assert.equal(calls[0].createCustomerProfileRequest.profile.merchantCustomerId, "sess-1");
-
-  const req = calls[1].getHostedPaymentPageRequest;
-  assert.equal(req.merchantAuthentication.name, "test-login-id");
-  assert.equal(req.merchantAuthentication.transactionKey, "test-transaction-key");
-  assert.equal(req.transactionRequest.amount, "150.00", "tier2 is $150/month");
-  assert.equal(req.transactionRequest.profile.customerProfileId, "cp-new-1", "must reference the pre-created profile, not createProfile:true");
-  assert.equal(req.transactionRequest.order.invoiceNumber, "sess-1", "checkoutSessionId round-trips as order.invoiceNumber, not a userField");
-  const settings: { settingName: string; settingValue: string }[] = req.hostedPaymentSettings.setting;
-  const customerOptions = JSON.parse(settings.find((s) => s.settingName === "hostedPaymentCustomerOptions")!.settingValue);
-  assert.equal(customerOptions.addPaymentProfile, true, "must ask Accept Hosted to attach the entered card to the pre-created profile");
+  const customerProfileId = await createCustomerProfile("sess-1");
+  assert.equal(customerProfileId, "cp-new-1");
+  assert.equal(sentBody.createCustomerProfileRequest.merchantAuthentication.name, "test-login-id");
+  assert.equal(sentBody.createCustomerProfileRequest.profile.merchantCustomerId, "sess-1");
 });
 
-test("createHostedPaymentPageToken recovers from E00039 (revisiting the same /pay/:id link) by reusing the already-created profile id", async (t) => {
-  let sentToken: any;
-  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
-    const body = JSON.parse(init.body as string);
-    if (body.createCustomerProfileRequest) {
-      return new Response(
+test("createCustomerProfile recovers from E00039 (revisiting the same /pay/:id link) by reusing the already-created profile id", async (t) => {
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () =>
+      new Response(
         JSON.stringify({
           createCustomerProfileResponse: {
             messages: { resultCode: "Error", message: [{ code: "E00039", text: "A duplicate record with ID 527669620 already exists." }] },
           },
         }),
         { status: 200 }
-      );
-    }
-    sentToken = body.getHostedPaymentPageRequest;
-    return new Response(JSON.stringify({ getHostedPaymentPageResponse: { token: "hpp-token-reuse", messages: { resultCode: "Ok", message: [] } } }), {
+      )
+  );
+  const customerProfileId = await createCustomerProfile("sess-revisit");
+  assert.equal(customerProfileId, "527669620", "must reuse the id parsed out of the E00039 message rather than throwing");
+});
+
+test("createHostedProfilePageToken sends the customerProfileId and a plain-ASCII return-url setting", async (t) => {
+  let sentBody: any;
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    sentBody = JSON.parse(init.body as string);
+    return new Response(JSON.stringify({ getHostedProfilePageResponse: { token: "hpp-token-abc", messages: { resultCode: "Ok", message: [] } } }), {
       status: 200,
     });
   });
 
-  const token = await createHostedPaymentPageToken({ checkoutSessionId: "sess-revisit", phone: "15551234567", plan: "tier1" });
-  assert.equal(token, "hpp-token-reuse", "a second visit to the same link must still succeed, not throw");
-  assert.equal(sentToken.transactionRequest.profile.customerProfileId, "527669620", "must reuse the id parsed out of the E00039 message");
+  const token = await createHostedProfilePageToken({ customerProfileId: "cp-1", checkoutSessionId: "sess-1" });
+  assert.equal(token, "hpp-token-abc");
+
+  const req = sentBody.getHostedProfilePageRequest;
+  assert.equal(req.merchantAuthentication.name, "test-login-id");
+  assert.equal(req.customerProfileId, "cp-1");
+  const settings: { settingName: string; settingValue: string }[] = req.hostedProfileSettings.setting;
+  assert.equal(settings.find((s) => s.settingName === "hostedProfileReturnUrl")?.settingValue, "https://fi.example.com/pay/complete");
+  assert.doesNotMatch(settings.find((s) => s.settingName === "hostedProfileReturnUrlText")!.settingValue, /—/, "no non-ASCII characters (E00013 was rejected live for this before)");
+});
+
+test("createProfileTransaction charges the plan's dollar amount against the given profile and reports responseCode as-is (approved or declined)", async (t) => {
+  let sentBody: any;
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    sentBody = JSON.parse(init.body as string);
+    return new Response(
+      JSON.stringify({
+        createTransactionResponse: { transactionResponse: { transId: "txn-1", responseCode: "1" }, messages: { resultCode: "Ok", message: [] } },
+      }),
+      { status: 200 }
+    );
+  });
+
+  const result = await createProfileTransaction({ plan: "tier2", customerProfileId: "cp-1", customerPaymentProfileId: "pp-1" });
+  assert.equal(result.transId, "txn-1");
+  assert.equal(result.responseCode, "1");
+  assert.equal(result.settleAmountCents, 15000, "tier2 is $150/month");
+
+  const req = sentBody.createTransactionRequest.transactionRequest;
+  assert.equal(req.amount, "150.00");
+  assert.equal(req.profile.customerProfileId, "cp-1");
+  assert.equal(req.profile.paymentProfile.paymentProfileId, "pp-1");
+});
+
+test("createProfileTransaction surfaces a declined card (responseCode 2) as a normal result, not a thrown error", async (t) => {
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () =>
+      new Response(
+        JSON.stringify({
+          createTransactionResponse: { transactionResponse: { transId: "txn-declined", responseCode: "2" }, messages: { resultCode: "Ok", message: [] } },
+        }),
+        { status: 200 }
+      )
+  );
+  const result = await createProfileTransaction({ plan: "tier1", customerProfileId: "cp-1", customerPaymentProfileId: "pp-1" });
+  assert.equal(result.responseCode, "2");
 });
 
 test("callAuthorizeNetApi throws with the API's own error detail when resultCode is Error", async (t) => {
@@ -91,13 +132,13 @@ test("callAuthorizeNetApi throws with the API's own error detail when resultCode
     async () =>
       new Response(
         JSON.stringify({
-          getHostedPaymentPageResponse: { messages: { resultCode: "Error", message: [{ code: "E00027", text: "The transaction was unsuccessful." }] } },
+          getHostedProfilePageResponse: { messages: { resultCode: "Error", message: [{ code: "E00027", text: "The transaction was unsuccessful." }] } },
         }),
         { status: 200 }
       )
   );
   await assert.rejects(
-    () => createHostedPaymentPageToken({ checkoutSessionId: "sess-2", phone: "15551234567", plan: "tier1" }),
+    () => createHostedProfilePageToken({ customerProfileId: "cp-1", checkoutSessionId: "sess-2" }),
     /E00027: The transaction was unsuccessful\./
   );
 });
@@ -107,42 +148,12 @@ test("callAuthorizeNetApi strips a leading BOM before parsing JSON", async (t) =
     globalThis,
     "fetch",
     async () =>
-      new Response("﻿" + JSON.stringify({ getHostedPaymentPageResponse: { token: "bom-ok", messages: { resultCode: "Ok", message: [] } } }), {
+      new Response("﻿" + JSON.stringify({ getHostedProfilePageResponse: { token: "bom-ok", messages: { resultCode: "Ok", message: [] } } }), {
         status: 200,
       })
   );
-  const token = await createHostedPaymentPageToken({ checkoutSessionId: "sess-3", phone: "15551234567", plan: "tier1" });
+  const token = await createHostedProfilePageToken({ customerProfileId: "cp-1", checkoutSessionId: "sess-3" });
   assert.equal(token, "bom-ok");
-});
-
-test("getTransactionDetails parses the approved response into settleAmountCents and the correlation invoiceNumber", async (t) => {
-  t.mock.method(
-    globalThis,
-    "fetch",
-    async () =>
-      new Response(
-        JSON.stringify({
-          getTransactionDetailsResponse: {
-            messages: { resultCode: "Ok", message: [] },
-            transaction: {
-              transId: "40012345",
-              responseCode: "1",
-              settleAmount: "50.00",
-              profile: { customerProfileId: "cp-1", customerPaymentProfileId: "pp-1" },
-              order: { invoiceNumber: "sess-4" },
-            },
-          },
-        }),
-        { status: 200 }
-      )
-  );
-  const details = await getTransactionDetails("40012345");
-  assert.equal(details.transId, "40012345");
-  assert.equal(details.responseCode, "1");
-  assert.equal(details.settleAmountCents, 5000);
-  assert.equal(details.customerProfileId, "cp-1");
-  assert.equal(details.customerPaymentProfileId, "pp-1");
-  assert.equal(details.checkoutSessionId, "sess-4");
 });
 
 test("createArbSubscription requests month-2-onward billing against the given payment profile and returns the subscriptionId", async (t) => {
@@ -174,7 +185,7 @@ test("cancelArbSubscription posts ARBCancelSubscriptionRequest with the given su
 });
 
 test("verifyWebhookSignature accepts a correctly-signed body and rejects a tampered one or a missing header", () => {
-  const body = Buffer.from(JSON.stringify({ eventType: "net.authorize.payment.authcapture.created" }));
+  const body = Buffer.from(JSON.stringify({ eventType: "net.authorize.customer.paymentProfile.created" }));
   const validSig = "sha512=" + crypto.createHmac("sha512", "test-signature-key").update(body).digest("hex");
 
   assert.equal(verifyWebhookSignature(body, validSig), true);

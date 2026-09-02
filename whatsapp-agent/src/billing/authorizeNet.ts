@@ -3,13 +3,20 @@ import { config } from "../config";
 import { MEMBERSHIP_PLANS, PlanKey } from "./plans";
 
 /**
- * Authorize.net integration for real Fi membership payments. Two API products, used together:
- *  - Accept Hosted (getHostedPaymentPageRequest): a hosted, Authorize.net-served payment page
- *    for the FIRST charge, so Fi (and this server) never touches card data — required since Fi
- *    is chat-only and has nowhere of its own to collect a card. See createHostedPaymentPageToken.
+ * Authorize.net integration for real Fi membership payments. Three API products, used together:
+ *  - CIM's Hosted Profile Page (getHostedProfilePageRequest): a hosted, Authorize.net-served
+ *    page whose ONLY job is securely capturing a card into a payment profile -- no charge
+ *    happens on that page at all. Required since Fi is chat-only and has nowhere of its own to
+ *    collect a card; chosen over Accept Hosted's checkout page (which combines "pay now" with
+ *    an optional "save this card" step) after live testing showed that optional step reliably
+ *    never fires, with no way from this side to force or verify it -- see
+ *    createHostedProfilePageToken.
+ *  - Once the resulting net.authorize.customer.paymentProfile.created webhook confirms a card
+ *    was actually saved, this server charges month 1 itself via createTransactionRequest
+ *    against that saved profile (createProfileTransaction) -- no hosted page involved, since
+ *    charging an already-saved profile is a plain server-to-server call.
  *  - ARB, Automated Recurring Billing (ARBCreateSubscriptionRequest): recurring charges for
- *    month 2 onward, against the payment profile Accept Hosted's first charge creates (profile.
- *    createProfile below) — so Fi never stores card data for renewals either.
+ *    month 2 onward, against the same profile.
  * Every exported call is a no-op/throw behind isAuthorizeNetConfigured() — see config.ts's
  * comment on why an unset key must never attempt a live charge.
  */
@@ -26,9 +33,9 @@ function apiEndpoint(): string {
   return isSandbox() ? "https://apitest.authorize.net/xml/v1/request.api" : "https://api.authorize.net/xml/v1/request.api";
 }
 
-/** Where the /pay/:id route's auto-submitting form posts the token from createHostedPaymentPageToken. */
-export function hostedPaymentFormActionUrl(): string {
-  return isSandbox() ? "https://test.authorize.net/payment/payment" : "https://accept.authorize.net/payment/payment";
+/** Where the /pay/:id route's auto-submitting form posts the token from createHostedProfilePageToken. */
+export function hostedProfilePageFormActionUrl(): string {
+  return isSandbox() ? "https://test.authorize.net/customer/manage" : "https://accept.authorize.net/customer/manage";
 }
 
 interface AnetMessages {
@@ -77,15 +84,12 @@ async function callAuthorizeNetApi<T>(requestName: string, body: Record<string, 
 }
 
 /**
- * Creates an empty CIM customer profile (no payment method yet) keyed by merchantCustomerId --
- * Authorize.net's own guidance is that Accept Hosted's addPaymentProfile setting (see
- * createHostedPaymentPageToken) is "typically used when a customer profile already exists,"
- * which matches a live test where transactionRequest.profile.createProfile:true created
- * nothing at all. checkoutSessionId doubles as merchantCustomerId -- already <=20 chars (the
- * field's limit) and unique per checkout, so no separate id scheme is needed.
+ * Creates an empty CIM customer profile (no payment method yet) keyed by merchantCustomerId.
+ * checkoutSessionId doubles as merchantCustomerId -- already <=20 chars (the field's limit)
+ * and unique per checkout, so no separate id scheme is needed.
  *
  * Idempotent by design, not just in practice: GET /pay/:id calls this fresh on every visit
- * (the hosted-payment token itself must be regenerated each time -- it expires after 15
+ * (the hosted-profile-page token itself must be regenerated each time -- it expires after 15
  * minutes -- so a link sitting unread in chat for a day still works), and a second visit to
  * the same link is an expected, normal case, not a bug. Authorize.net rejects the second
  * createCustomerProfileRequest with E00039 ("a duplicate record with ID <id> already exists")
@@ -93,7 +97,7 @@ async function callAuthorizeNetApi<T>(requestName: string, body: Record<string, 
  * structured field for the existing id on this error, only the message text, so parsing it out
  * is Authorize.net's own documented recovery path for E00039, not a fragile workaround.
  */
-async function createCustomerProfile(merchantCustomerId: string): Promise<string> {
+export async function createCustomerProfile(merchantCustomerId: string): Promise<string> {
   try {
     const response = await callAuthorizeNetApi<{ customerProfileId: string }>("createCustomerProfileRequest", {
       profile: { merchantCustomerId },
@@ -107,91 +111,66 @@ async function createCustomerProfile(merchantCustomerId: string): Promise<string
 }
 
 /**
- * checkoutSessionId round-trips through Authorize.net as order.invoiceNumber -- NOT as a
- * custom userField. Confirmed live: a real sandbox transaction came back from
- * getTransactionDetailsRequest with every userFields entry AND profile.createProfile both
- * silently empty, matching Authorize.net's own documented limitation that custom userFields
- * "simply disappear into the ether" for this flow. order.invoiceNumber is a core, long-
- * supported field (visibly echoed on the hosted page's own receipt) and reliable instead;
- * phone/plan are looked up from OUR OWN checkout_sessions row once checkoutSessionId resolves,
- * rather than trusted to round-trip through Authorize.net at all. See entitlementStore.ts's
- * createCheckoutSession -- its id is generated short enough (<=20 chars) to survive
- * invoiceNumber's length limit with no truncation/collision risk.
+ * The CIM Hosted Profile Page (customer/manage) -- unlike Accept Hosted's checkout page, this
+ * page's ONLY function is capturing a card into the given profile; there's no "pay now" step
+ * and no optional checkbox to fail to check, which is exactly why this replaced Accept Hosted
+ * here (see this module's top comment). Requires the profile to already exist (createCustomerProfile).
  */
-export async function createHostedPaymentPageToken(params: { checkoutSessionId: string; phone: string; plan: PlanKey }): Promise<string> {
-  const planDef = MEMBERSHIP_PLANS[params.plan];
+export async function createHostedProfilePageToken(params: { customerProfileId: string; checkoutSessionId: string }): Promise<string> {
   const returnBase = config.publicBaseUrl || "";
-  const customerProfileId = await createCustomerProfile(params.checkoutSessionId);
-  const response = await callAuthorizeNetApi<{ token: string }>("getHostedPaymentPageRequest", {
-    transactionRequest: {
-      transactionType: "authCaptureTransaction",
-      amount: (planDef.priceCents / 100).toFixed(2),
-      // Referencing an existing (empty) profile by id, not profile.createProfile:true -- see
-      // createCustomerProfile's comment above for why.
-      profile: { customerProfileId },
-      order: { invoiceNumber: params.checkoutSessionId, description: `Fi ${planDef.label} membership` },
-    },
-    hostedPaymentSettings: {
+  const response = await callAuthorizeNetApi<{ token: string }>("getHostedProfilePageRequest", {
+    customerProfileId: params.customerProfileId,
+    hostedProfileSettings: {
       setting: [
-        { settingName: "hostedPaymentButtonOptions", settingValue: JSON.stringify({ text: "Pay" }) },
-        { settingName: "hostedPaymentOrderOptions", settingValue: JSON.stringify({ show: true, merchantName: "LuxFi" }) },
-        // Attaches the card entered on the hosted page to the profile above as a new payment
-        // profile -- needed for ARB to bill month 2 onward.
-        { settingName: "hostedPaymentCustomerOptions", settingValue: JSON.stringify({ showEmail: false, requiredEmail: false, addPaymentProfile: true }) },
-        {
-          settingName: "hostedPaymentReturnOptions",
-          settingValue: JSON.stringify({
-            showReceipt: true,
-            url: returnBase ? `${returnBase}/pay/complete` : undefined,
-            // Plain ASCII only -- an em dash here got rejected live as E00013 "invalid
-            // characters" (confirmed against a real sandbox response).
-            urlText: "Done - Return to Fi",
-            cancelUrl: returnBase ? `${returnBase}/pay/${params.checkoutSessionId}` : undefined,
-            cancelUrlText: "Cancel",
-          }),
-        },
+        // Plain ASCII only -- an em dash previously got rejected live as E00013 "invalid
+        // characters" on a different hosted-page setting; kept plain here defensively too.
+        { settingName: "hostedProfileReturnUrl", settingValue: returnBase ? `${returnBase}/pay/complete` : "" },
+        { settingName: "hostedProfileReturnUrlText", settingValue: "Done - Return to Fi" },
+        { settingName: "hostedProfileHeadingBgColor", settingValue: "#0f172a" },
       ],
     },
   });
   return response.token;
 }
 
-export interface AuthorizeNetTransactionDetails {
+export interface AuthorizeNetChargeResult {
   transId: string;
-  responseCode: string; // "1" = approved
+  responseCode: string; // "1" = approved, "2" = declined
   settleAmountCents: number;
-  customerProfileId: string | null;
-  customerPaymentProfileId: string | null;
-  checkoutSessionId: string | null;
 }
 
-export async function getTransactionDetails(transId: string): Promise<AuthorizeNetTransactionDetails> {
+/**
+ * Charges a plan's month-1 amount against an already-saved CIM payment profile -- a plain
+ * server-to-server call (no hosted page involved), made once the net.authorize.customer.
+ * paymentProfile.created webhook confirms the card was actually saved. NOT the same as an API-
+ * level failure: a declined card still comes back as a normal (resultCode "Ok") response here,
+ * just with transactionResponse.responseCode "2" instead of "1" -- callers must check it.
+ */
+export async function createProfileTransaction(params: { plan: PlanKey; customerProfileId: string; customerPaymentProfileId: string }): Promise<AuthorizeNetChargeResult> {
+  const planDef = MEMBERSHIP_PLANS[params.plan];
   const response = await callAuthorizeNetApi<{
-    transaction: {
-      transId: string;
-      responseCode: string;
-      settleAmount?: string;
-      authAmount?: string;
-      profile?: { customerProfileId?: string; customerPaymentProfileId?: string };
-      order?: { invoiceNumber?: string };
-    };
-  }>("getTransactionDetailsRequest", { transId });
-  const tx = response.transaction;
-  const amount = Number(tx.settleAmount ?? tx.authAmount ?? "0");
+    transactionResponse: { transId: string; responseCode: string };
+  }>("createTransactionRequest", {
+    transactionRequest: {
+      transactionType: "authCaptureTransaction",
+      amount: (planDef.priceCents / 100).toFixed(2),
+      profile: {
+        customerProfileId: params.customerProfileId,
+        paymentProfile: { paymentProfileId: params.customerPaymentProfileId },
+      },
+    },
+  });
   return {
-    transId: tx.transId,
-    responseCode: tx.responseCode,
-    settleAmountCents: Math.round(amount * 100),
-    customerProfileId: tx.profile?.customerProfileId ?? null,
-    customerPaymentProfileId: tx.profile?.customerPaymentProfileId ?? null,
-    checkoutSessionId: tx.order?.invoiceNumber ?? null,
+    transId: response.transactionResponse.transId,
+    responseCode: response.transactionResponse.responseCode,
+    settleAmountCents: planDef.priceCents,
   };
 }
 
 /**
- * Sets up billing for month 2 onward against the payment profile the hosted page's first
- * charge already created. startDate is one interval out since month 1 was already charged by
- * the hosted transaction itself — ARB must never double-charge the first month.
+ * Sets up billing for month 2 onward against the same payment profile createProfileTransaction
+ * already charged for month 1. startDate is one interval out since month 1 was already charged
+ * directly — ARB must never double-charge the first month.
  */
 export async function createArbSubscription(params: { plan: PlanKey; customerProfileId: string; customerPaymentProfileId: string }): Promise<string> {
   const planDef = MEMBERSHIP_PLANS[params.plan];

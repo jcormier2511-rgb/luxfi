@@ -75,20 +75,24 @@ test("GET /pay/:id returns 404 for an unknown checkout session", async () => {
   assert.equal(res.status, 404);
 });
 
-test("GET /pay/:id fetches a fresh hosted-payment token and returns an auto-submitting form posting it to Authorize.net", async (t) => {
-  interceptAuthorizeNet(t, (body) => {
+test("GET /pay/:id creates a CIM profile, stores its id on the session, and returns an auto-submitting form posting the hosted-profile token to Authorize.net", async (t) => {
+  const calls = interceptAuthorizeNet(t, (body) => {
     if (body.createCustomerProfileRequest) {
       return { createCustomerProfileResponse: { customerProfileId: "cp-fresh-1", messages: { resultCode: "Ok", message: [] } } };
     }
-    return { getHostedPaymentPageResponse: { token: "hpp-token-xyz", messages: { resultCode: "Ok", message: [] } } };
+    return { getHostedProfilePageResponse: { token: "hpp-token-xyz", messages: { resultCode: "Ok", message: [] } } };
   });
   const session = await entitlements.createCheckoutSession("15551230000", "tier1");
 
   const res = await fetch(`${baseUrl}/pay/${session.id}`);
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /action="https:\/\/test\.authorize\.net\/payment\/payment"/);
+  assert.match(html, /action="https:\/\/test\.authorize\.net\/customer\/manage"/);
   assert.match(html, /value="hpp-token-xyz"/);
+  assert.equal(calls.length, 2, "createCustomerProfileRequest then getHostedProfilePageRequest");
+
+  const stored = await entitlements.getCheckoutSession(session.id);
+  assert.equal(stored?.authnetCustomerProfileId, "cp-fresh-1");
 });
 
 test("GET /pay/:id refuses a session that has already been completed", async () => {
@@ -101,7 +105,7 @@ test("GET /pay/:id refuses a session that has already been completed", async () 
 });
 
 test("POST /webhook/authorizenet rejects a missing or tampered signature", async () => {
-  const { raw } = signedWebhookRequest({ eventType: "net.authorize.payment.authcapture.created", payload: { id: "1" } });
+  const { raw } = signedWebhookRequest({ eventType: "net.authorize.customer.paymentProfile.created", payload: { id: "1" } });
 
   const missing = await fetch(`${baseUrl}/webhook/authorizenet`, { method: "POST", headers: { "Content-Type": "application/json" }, body: raw });
   assert.equal(missing.status, 401);
@@ -114,21 +118,13 @@ test("POST /webhook/authorizenet rejects a missing or tampered signature", async
   assert.equal(wrong.status, 401);
 });
 
-test("a successful authcapture webhook activates the membership, sets up ARB, and records a real billing_ledger charge", async (t) => {
+test("a paymentProfile.created webhook charges month 1, activates the membership, sets up ARB, and records a real billing_ledger charge", async (t) => {
   const session = await entitlements.createCheckoutSession("15559990001", "tier1");
+  await entitlements.setCheckoutSessionProfileId(session.id, "cp-1");
   const calls = interceptAuthorizeNet(t, (body) => {
-    if (body.getTransactionDetailsRequest) {
+    if (body.createTransactionRequest) {
       return {
-        getTransactionDetailsResponse: {
-          messages: { resultCode: "Ok", message: [] },
-          transaction: {
-            transId: "txn-1",
-            responseCode: "1",
-            settleAmount: "50.00",
-            profile: { customerProfileId: "cp-1", customerPaymentProfileId: "pp-1" },
-            order: { invoiceNumber: session.id },
-          },
-        },
+        createTransactionResponse: { transactionResponse: { transId: "txn-1", responseCode: "1" }, messages: { resultCode: "Ok", message: [] } },
       };
     }
     if (body.ARBCreateSubscriptionRequest) {
@@ -139,8 +135,8 @@ test("a successful authcapture webhook activates the membership, sets up ARB, an
 
   const { raw, signature } = signedWebhookRequest({
     notificationId: "note-1",
-    eventType: "net.authorize.payment.authcapture.created",
-    payload: { id: "txn-1", entityName: "transaction" },
+    eventType: "net.authorize.customer.paymentProfile.created",
+    payload: { id: "pp-1", entityName: "customerPaymentProfile", customerProfileId: "cp-1" },
   });
   const res = await fetch(`${baseUrl}/webhook/authorizenet`, {
     method: "POST",
@@ -151,7 +147,7 @@ test("a successful authcapture webhook activates the membership, sets up ARB, an
 
   await new Promise((r) => setTimeout(r, 200));
 
-  assert.equal(calls.length, 2, "getTransactionDetailsRequest then ARBCreateSubscriptionRequest");
+  assert.equal(calls.length, 2, "createTransactionRequest then ARBCreateSubscriptionRequest");
 
   const entitlement = await entitlements.getEntitlement("15559990001");
   assert.equal(entitlement.plan, "tier1");
@@ -167,6 +163,39 @@ test("a successful authcapture webhook activates the membership, sets up ARB, an
   };
   assert.equal(ledger.rows.length, 1);
   assert.equal(ledger.rows[0].amount_cents, 5000);
+});
+
+test("a paymentProfile.created webhook for a declined card marks the checkout session failed and never activates anything", async (t) => {
+  const session = await entitlements.createCheckoutSession("15559990003", "tier1");
+  await entitlements.setCheckoutSessionProfileId(session.id, "cp-declined");
+  interceptAuthorizeNet(t, (body) => {
+    if (body.createTransactionRequest) {
+      return {
+        createTransactionResponse: { transactionResponse: { transId: "txn-declined", responseCode: "2" }, messages: { resultCode: "Ok", message: [] } },
+      };
+    }
+    throw new Error("no ARB call should happen for a declined card: " + JSON.stringify(body));
+  });
+
+  const { raw, signature } = signedWebhookRequest({
+    notificationId: "note-3",
+    eventType: "net.authorize.customer.paymentProfile.created",
+    payload: { id: "pp-declined", entityName: "customerPaymentProfile", customerProfileId: "cp-declined" },
+  });
+  const res = await fetch(`${baseUrl}/webhook/authorizenet`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-anet-signature": signature },
+    body: raw,
+  });
+  assert.equal(res.status, 200);
+
+  await new Promise((r) => setTimeout(r, 200));
+
+  const entitlement = await entitlements.getEntitlement("15559990003");
+  assert.equal(entitlement.plan, null, "a declined card must never activate a membership");
+
+  const failedSession = await entitlements.getCheckoutSession(session.id);
+  assert.equal(failedSession?.status, "failed");
 });
 
 test("a subscription-cancelled webhook clears the plan and marks canceled_at", async (t) => {

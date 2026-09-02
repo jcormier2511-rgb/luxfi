@@ -407,8 +407,6 @@ The dashboard also includes:
 - **Activity by user** — the 20 most recently active users, with their search and approval
   counts.
 
-## Real payments (Authorize.net)
-
 ## One-time old-Fi returning-user campaign
 
 This migration is deliberately **never scheduled or run at deploy time**. It considers only
@@ -436,10 +434,16 @@ recipient's next three approved matches consumes one promotional task. Campaign 
 central Tier 1 `$50/month` price from `src/billing/plans.ts` and does not change subscription or
 payment enforcement.
 
-Fi memberships can now be charged for real, through Authorize.net — Accept Hosted for the
-first month (a hosted, Authorize.net-served payment page, so this server never touches card
-data) plus ARB (Automated Recurring Billing) for month 2 onward, billed against the payment
-profile Accept Hosted's first charge creates. See `src/billing/authorizeNet.ts` for the client,
+## Real payments (Authorize.net)
+
+Fi memberships can now be charged for real, through Authorize.net — the CIM **Hosted Profile
+Page** (`customer/manage`) to securely capture a card into a payment profile (this server never
+touches card data), a direct server-side charge for month 1 once that's confirmed, and ARB
+(Automated Recurring Billing) for month 2 onward against the same profile. (An earlier version
+of this used Accept Hosted's checkout page instead, which combines "pay now" with an optional
+"save this card" step; live testing showed that optional step never reliably fires, with no way
+from this side to force or verify it, so the flow now uses CIM's own dedicated card-capture page
+instead, which has no such ambiguity.) See `src/billing/authorizeNet.ts` for the client,
 `src/billing/entitlementStore.ts` for `activateMembership`/`cancelMembership`/checkout-session
 storage, and `handleAuthorizeNetWebhookEvent` in `src/server.ts` for the event handling.
 
@@ -460,19 +464,21 @@ storage, and `handleAuthorizeNetWebhookEvent` in `src/server.ts` for the event h
      payment link and the hosted page's return URL point back to.
 3. In the Merchant Interface, go to **Account → Settings → Webhooks**, add an endpoint at
    `https://<your-railway-domain>/webhook/authorizenet`, and subscribe it to at least:
-   `net.authorize.payment.authcapture.created`, `net.authorize.customer.subscription.suspended`,
+   `net.authorize.customer.paymentProfile.created`, `net.authorize.customer.subscription.suspended`,
    `net.authorize.customer.subscription.cancelled`, `net.authorize.customer.subscription.terminated`.
 
 **Behavior:** while any of the three credentials above are unset, `join`/`upgrade` fall back to
 the original admin-review message (`recordBillingRequested` — an admin manually assigns a plan
 via `POST /admin/entitlement/plan`). Once configured, `join` (tier1) and `upgrade tier1/2/3`
-send a real `/pay/<id>` link instead; once Authorize.net confirms the charge, the webhook
-activates the membership, sets up ARB for future months, and records the real amount in
-`billing_ledger` — automatically, no admin step. A subscription suspended/cancelled/terminated
-event clears the plan and sets `account_entitlements.canceled_at`, the real signal behind the
-admin dashboard's "canceled" count (previously always approximated — see below). The manual
-admin path (`setPlan`/`setManualOverride`) still works alongside this for comps, disputes, or
-accounts handled outside the automatic flow.
+send a real `/pay/<id>` link instead; once the customer saves a card on that page, the webhook
+charges month 1, activates the membership, sets up ARB for future months, and records the real
+amount in `billing_ledger` — automatically, no admin step. A declined card marks the checkout
+attempt failed and tells the customer to reply `join` again, without activating anything. A
+subscription suspended/cancelled/terminated event clears the plan and sets
+`account_entitlements.canceled_at`, the real signal behind the admin dashboard's "canceled"
+count (previously always approximated — see below). The manual admin path
+(`setPlan`/`setManualOverride`) still works alongside this for comps, disputes, or accounts
+handled outside the automatic flow.
 
 ## Not yet wired up
 

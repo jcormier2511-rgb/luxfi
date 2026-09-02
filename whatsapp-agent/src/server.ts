@@ -13,13 +13,25 @@ import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { getActiveListings, getSyncStatus, searchListingsForDiagnostics } from "./watchfacts/inventoryDb";
-import { getEntitlement, setManualOverride, setPlan, getCheckoutSession, markCheckoutSessionStatus, activateMembership, cancelMembership, findPhoneByAuthnetSubscriptionId } from "./billing/entitlementStore";
+import {
+  getEntitlement,
+  setManualOverride,
+  setPlan,
+  getCheckoutSession,
+  markCheckoutSessionStatus,
+  setCheckoutSessionProfileId,
+  findCheckoutSessionByProfileId,
+  activateMembership,
+  cancelMembership,
+  findPhoneByAuthnetSubscriptionId,
+} from "./billing/entitlementStore";
 import { isPlanKey } from "./billing/plans";
 import {
   isAuthorizeNetConfigured,
-  createHostedPaymentPageToken,
-  hostedPaymentFormActionUrl,
-  getTransactionDetails,
+  createCustomerProfile,
+  createHostedProfilePageToken,
+  hostedProfilePageFormActionUrl,
+  createProfileTransaction,
   createArbSubscription,
   verifyWebhookSignature as verifyAuthorizeNetSignature,
   AuthorizeNetWebhookEvent,
@@ -217,10 +229,14 @@ export async function handleWebhookPayload(body: IncomingWebhook): Promise<void>
  * immediate ACK. Exported (mirroring handleWebhookPayload above) so tests can drive it directly
  * without needing a live signed HTTP request.
  *
- * net.authorize.payment.authcapture.created: the ONLY successful-payment path — looks up the
- * full transaction (for the profile ids Accept Hosted's createProfile:true produced, and the
- * checkoutSessionId/phone/plan carried through as userFields), sets up ARB for month 2 onward
- * against that same payment profile, activates the membership, and records the real charge in
+ * net.authorize.customer.paymentProfile.created: the ONLY successful-checkout path — fires once
+ * the CIM Hosted Profile Page (see billing/authorizeNet.ts's createHostedProfilePageToken)
+ * actually saves a card, which is the one unambiguous signal that a payment method exists to
+ * charge (three earlier live attempts to infer this from Accept Hosted's checkout flow instead
+ * all came back with no profile at all). Looks up which checkout session created this
+ * customerProfileId (findCheckoutSessionByProfileId -- the only correlation Authorize.net's
+ * side gives us for this event), charges month 1 directly against the new payment profile, sets
+ * up ARB for month 2 onward, activates the membership, and records the real charge in
  * billing_ledger. Guards against replays/unknown sessions by only acting on a still-"pending"
  * checkout session.
  *
@@ -236,47 +252,32 @@ export async function handleAuthorizeNetWebhookEvent(event: AuthorizeNetWebhookE
   // log line either, with no way to tell which of the two had happened.
   console.log(`[webhook/authorizenet] received eventType=${event.eventType} notificationId=${event.notificationId} payloadId=${event.payload.id}`);
 
-  if (event.eventType === "net.authorize.payment.authcapture.created") {
-    const transId = event.payload.id;
-    if (!transId) {
-      console.warn("[webhook/authorizenet] authcapture.created event had no payload.id -- ignoring");
+  if (event.eventType === "net.authorize.customer.paymentProfile.created") {
+    const customerPaymentProfileId = event.payload.id;
+    const customerProfileId = typeof event.payload.customerProfileId === "string" ? event.payload.customerProfileId : undefined;
+    if (!customerPaymentProfileId || !customerProfileId) {
+      console.warn("[webhook/authorizenet] paymentProfile.created event missing id/customerProfileId -- ignoring");
       return;
     }
-    const details = await getTransactionDetails(transId);
-    console.log(
-      `[webhook/authorizenet] transaction ${transId}: responseCode=${details.responseCode} checkoutSessionId=${details.checkoutSessionId} customerProfileId=${details.customerProfileId} customerPaymentProfileId=${details.customerPaymentProfileId}`
-    );
-    if (details.responseCode !== "1" || !details.checkoutSessionId) {
-      console.warn(`[webhook/authorizenet] transaction ${transId} missing required fields -- not activating anything`);
-      return;
-    }
-    // phone/plan come from OUR OWN checkout_sessions row, not from Authorize.net -- see
-    // authorizeNet.ts's createHostedPaymentPageToken comment on why custom data round-tripped
-    // through Authorize.net (userFields) can't be trusted for this.
-    const session = await getCheckoutSession(details.checkoutSessionId);
+    const session = await findCheckoutSessionByProfileId(customerProfileId);
+    console.log(`[webhook/authorizenet] paymentProfile ${customerPaymentProfileId} for profile ${customerProfileId}: checkoutSession=${session?.id ?? "none"}`);
     if (!session || session.status !== "pending") {
       console.warn(
-        `[webhook/authorizenet] checkout session ${details.checkoutSessionId} is ${session ? `already "${session.status}"` : "not found"} -- skipping (likely a duplicate delivery)`
+        `[webhook/authorizenet] checkout session for profile ${customerProfileId} is ${session ? `already "${session.status}"` : "not found"} -- skipping (likely a duplicate delivery)`
       );
       return;
     }
-    if (!details.customerProfileId || !details.customerPaymentProfileId) {
-      console.warn(`[webhook/authorizenet] transaction ${transId} has no CIM profile -- marking checkout session ${session.id} failed`);
-      await markCheckoutSessionStatus(session.id, "failed", transId);
+    const charge = await createProfileTransaction({ plan: session.plan, customerProfileId, customerPaymentProfileId });
+    if (charge.responseCode !== "1") {
+      console.warn(`[webhook/authorizenet] month-1 charge (transId=${charge.transId}) was declined (responseCode=${charge.responseCode}) -- marking checkout session ${session.id} failed`);
+      await markCheckoutSessionStatus(session.id, "failed", charge.transId);
+      await sendText(session.phone, "Your card was declined when I tried to charge it — reply \"join\" to try again with a different card.").catch(() => undefined);
       return;
     }
-    const subscriptionId = await createArbSubscription({
-      plan: session.plan,
-      customerProfileId: details.customerProfileId,
-      customerPaymentProfileId: details.customerPaymentProfileId,
-    });
-    await activateMembership(session.phone, session.plan, {
-      customerProfileId: details.customerProfileId,
-      paymentProfileId: details.customerPaymentProfileId,
-      subscriptionId,
-    });
-    await recordMembershipPayment(session.phone, details.settleAmountCents, "membership_payment");
-    await markCheckoutSessionStatus(session.id, "completed", transId);
+    const subscriptionId = await createArbSubscription({ plan: session.plan, customerProfileId, customerPaymentProfileId });
+    await activateMembership(session.phone, session.plan, { customerProfileId, paymentProfileId: customerPaymentProfileId, subscriptionId });
+    await recordMembershipPayment(session.phone, charge.settleAmountCents, "membership_payment");
+    await markCheckoutSessionStatus(session.id, "completed", charge.transId);
     console.log(`[webhook/authorizenet] activated ${session.plan} for phone=${session.phone} (subscriptionId=${subscriptionId})`);
     return;
   }
@@ -495,11 +496,12 @@ export function createServer() {
 
   // Real payment link Fi sends in chat (see conversation/flow.ts's join/upgrade handling and
   // billing/entitlementStore.ts's createCheckoutSession) — a whatsapp-agent-hosted page whose
-  // ONLY job is to auto-submit the Accept Hosted token to Authorize.net's own hosted payment
-  // page, since that page requires a POSTed form field rather than a plain URL. The token is
-  // generated fresh on click (Accept Hosted tokens expire 15 minutes after issuance) rather
-  // than up front when the checkout session is created, so a link sitting unread in chat for a
-  // day still works the moment it's opened.
+  // ONLY job is to auto-submit the CIM Hosted Profile Page token to Authorize.net's own
+  // customer/manage page, since that page requires a POSTed form field rather than a plain URL.
+  // The profile+token are (re)created fresh on every visit (the token itself expires 15 minutes
+  // after issuance, and createCustomerProfile is idempotent -- see its own comment on E00039)
+  // rather than up front when the checkout session is created, so a link sitting unread in chat
+  // for a day still works the moment it's opened.
   app.get("/pay/:id", async (req, res) => {
     if (!isAuthorizeNetConfigured()) {
       return res.status(503).type("text/plain").send("Payments are not configured yet.");
@@ -513,18 +515,20 @@ export function createServer() {
     }
     let token: string;
     try {
-      token = await createHostedPaymentPageToken({ checkoutSessionId: session.id, phone: session.phone, plan: session.plan });
+      const customerProfileId = await createCustomerProfile(session.id);
+      await setCheckoutSessionProfileId(session.id, customerProfileId);
+      token = await createHostedProfilePageToken({ customerProfileId, checkoutSessionId: session.id });
     } catch (err) {
-      console.error("[GET /pay/:id] failed to create hosted payment page token:", err);
+      console.error("[GET /pay/:id] failed to create hosted profile page token:", err);
       return res.status(502).type("text/plain").send("Payments are temporarily unavailable — please try again in a moment.");
     }
-    // Auto-submitting form, not a redirect: Accept Hosted requires the token as a POSTed form
+    // Auto-submitting form, not a redirect: the hosted page requires the token as a POSTed form
     // field, not a query parameter. Escaped defensively even though the token is Authorize.net's
     // own API response, never user input.
     const escapedToken = token.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
     res.type("html").send(
       `<!doctype html><html><body onload="document.forms[0].submit()">` +
-        `<form method="POST" action="${hostedPaymentFormActionUrl()}"><input type="hidden" name="token" value="${escapedToken}"></form>` +
+        `<form method="POST" action="${hostedProfilePageFormActionUrl()}"><input type="hidden" name="token" value="${escapedToken}"></form>` +
         `<p>Redirecting to secure payment…</p></body></html>`
     );
   });
@@ -533,7 +537,7 @@ export function createServer() {
   // membership (see handleAuthorizeNetWebhookEvent above). Register this exact URL (this
   // deployment's base URL + /webhook/authorizenet) in the Authorize.net Merchant Interface
   // under Account > Settings > Webhooks, subscribed to at least:
-  // net.authorize.payment.authcapture.created, net.authorize.customer.subscription.suspended,
+  // net.authorize.customer.paymentProfile.created, net.authorize.customer.subscription.suspended,
   // net.authorize.customer.subscription.cancelled, net.authorize.customer.subscription.terminated.
   // Fails closed (503) while AUTHORIZENET_SIGNATURE_KEY is unset, same posture as every other
   // webhook here.

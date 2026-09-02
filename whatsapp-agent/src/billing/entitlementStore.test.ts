@@ -20,6 +20,8 @@ const {
   createCheckoutSession,
   getCheckoutSession,
   markCheckoutSessionStatus,
+  setCheckoutSessionProfileId,
+  findCheckoutSessionByProfileId,
   _resetDbForTests,
   _closePoolForTests,
 } = entitlements;
@@ -171,6 +173,21 @@ test("checkout sessions: created pending, retrievable by id, and status transiti
   assert.equal(completed?.authnetTransId, "txn123");
 
   assert.equal(await getCheckoutSession("does-not-exist"), null);
+});
+
+test("checkout session profile id: set once GET /pay/:id creates the CIM profile, and traceable back from that id (the only correlation the paymentProfile.created webhook gives us)", async () => {
+  await _resetDbForTests();
+  const session = await createCheckoutSession("15559990010", "tier2");
+  assert.equal(session.authnetCustomerProfileId, null);
+  assert.equal(await findCheckoutSessionByProfileId("cp-abc"), null);
+
+  await setCheckoutSessionProfileId(session.id, "cp-abc");
+  const updated = await getCheckoutSession(session.id);
+  assert.equal(updated?.authnetCustomerProfileId, "cp-abc");
+
+  const found = await findCheckoutSessionByProfileId("cp-abc");
+  assert.equal(found?.id, session.id);
+  assert.equal(found?.phone, "15559990010");
 });
 
 test("admin plan assignment creates briefing-eligible paid state; requested and cleared states remain ineligible", async () => {

@@ -71,6 +71,13 @@ async function ensureSchema(): Promise<void> {
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           completed_at TIMESTAMPTZ
         );
+
+        -- The CIM profile created for this specific checkout attempt (see billing/
+        -- authorizeNet.ts's createCustomerProfile) -- set as soon as GET /pay/:id creates or
+        -- recovers it, so the later net.authorize.customer.paymentProfile.created webhook (which
+        -- only carries Authorize.net's own customerProfileId, nothing of ours) can be traced
+        -- back to this session via findCheckoutSessionByProfileId.
+        ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS authnet_customer_profile_id TEXT;
         `
       )
       .then(() => undefined);
@@ -253,10 +260,25 @@ export interface CheckoutSession {
   plan: PlanKey;
   status: "pending" | "completed" | "failed";
   authnetTransId: string | null;
+  authnetCustomerProfileId: string | null;
 }
 
-function rowToCheckoutSession(row: { id: string; phone: string; plan: PlanKey; status: string; authnet_trans_id: string | null }): CheckoutSession {
-  return { id: row.id, phone: row.phone, plan: row.plan, status: row.status as CheckoutSession["status"], authnetTransId: row.authnet_trans_id };
+function rowToCheckoutSession(row: {
+  id: string;
+  phone: string;
+  plan: PlanKey;
+  status: string;
+  authnet_trans_id: string | null;
+  authnet_customer_profile_id: string | null;
+}): CheckoutSession {
+  return {
+    id: row.id,
+    phone: row.phone,
+    plan: row.plan,
+    status: row.status as CheckoutSession["status"],
+    authnetTransId: row.authnet_trans_id,
+    authnetCustomerProfileId: row.authnet_customer_profile_id,
+  };
 }
 
 /**
@@ -264,9 +286,10 @@ function rowToCheckoutSession(row: { id: string; phone: string; plan: PlanKey; s
  * configured — the id is what GET /pay/:id and the eventual webhook correlate back to a
  * phone+plan, so it's opaque and unguessable (20 random hex chars, 80 bits of entropy) rather
  * than a short/sequential value someone could enumerate to trigger another phone's checkout
- * page. Exactly 20 chars, not a full 36-char UUID, because Authorize.net's order.invoiceNumber
- * -- the field this id round-trips through (see billing/authorizeNet.ts) -- has a hard 20-
- * character limit; a longer id would need lossy truncation with a (tiny but real) collision risk.
+ * page. Exactly 20 chars, not a full 36-char UUID, because this id doubles as Authorize.net's
+ * merchantCustomerId when creating a CIM profile (see billing/authorizeNet.ts's
+ * createCustomerProfile), which has a hard 20-character limit; a longer id would need lossy
+ * truncation with a (tiny but real) collision risk.
  */
 export async function createCheckoutSession(phone: string, plan: PlanKey): Promise<CheckoutSession> {
   await ensureSchema();
@@ -278,6 +301,22 @@ export async function createCheckoutSession(phone: string, plan: PlanKey): Promi
 export async function getCheckoutSession(id: string): Promise<CheckoutSession | null> {
   await ensureSchema();
   const result = await getPool().query(`SELECT * FROM checkout_sessions WHERE id = $1`, [id]);
+  return result.rows.length > 0 ? rowToCheckoutSession(result.rows[0]) : null;
+}
+
+/** Set once GET /pay/:id creates or recovers the CIM profile for this checkout attempt. */
+export async function setCheckoutSessionProfileId(id: string, customerProfileId: string): Promise<void> {
+  await ensureSchema();
+  await getPool().query(`UPDATE checkout_sessions SET authnet_customer_profile_id = $2 WHERE id = $1`, [id, customerProfileId]);
+}
+
+/**
+ * The ONLY way to trace a net.authorize.customer.paymentProfile.created webhook back to a
+ * phone+plan -- that event carries Authorize.net's own customerProfileId, nothing of ours.
+ */
+export async function findCheckoutSessionByProfileId(customerProfileId: string): Promise<CheckoutSession | null> {
+  await ensureSchema();
+  const result = await getPool().query(`SELECT * FROM checkout_sessions WHERE authnet_customer_profile_id = $1`, [customerProfileId]);
   return result.rows.length > 0 ? rowToCheckoutSession(result.rows[0]) : null;
 }
 
