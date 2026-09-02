@@ -3,6 +3,7 @@ import { listAllEntitlements } from "../billing/entitlementStore";
 import { getTopRequests, TopRequest } from "../postings/analytics";
 import { config } from "../config";
 import { ChannelPlatform } from "../channels/identity";
+import { initAdminSchema } from "./store";
 
 export interface MembershipCounts {
   totalUsers: number;
@@ -41,8 +42,35 @@ export interface PaymentsSummary {
   currency: string;
 }
 
+export interface ChannelReach {
+  /** Active monitored groups registered to this channel. SMS has no groups, so this is 0. */
+  groupsConnected: number;
+  /** Gross memberships across active groups. One person in 3 groups contributes 3 memberships. */
+  groupMemberships: number;
+  /** Active groups whose member_count has not been populated yet. */
+  groupsMissingMemberCount: number;
+  /** Canonical Fi accounts that have at least one linked identity on this channel. */
+  knownUniqueUsers: number;
+  /** Known users with an inbound message or search on this channel in the last 30 days. */
+  activeUsers30d: number;
+}
+
+export interface NetworkReach {
+  channels: Record<ChannelPlatform, ChannelReach>;
+  total: {
+    groupsConnected: number;
+    groupMemberships: number;
+    groupsMissingMemberCount: number;
+    /** Deduplicated canonical accounts across all channels -- never a sum of channel rows. */
+    knownUniqueUsers: number;
+    /** Deduplicated canonical accounts active on any channel in the last 30 days. */
+    activeUsers30d: number;
+  };
+}
+
 export interface AdminMetrics {
   membership: MembershipCounts;
+  networkReach: NetworkReach;
   topRequests: TopRequest[];
   activityByUser: UserActivity[];
   payments: PaymentsSummary;
@@ -92,6 +120,102 @@ async function getMembershipCounts(): Promise<MembershipCounts> {
   }
 
   return { totalUsers: userRows.rows.length, paid, trial, nonPaying, canceledApprox };
+}
+
+function emptyChannelReach(): ChannelReach {
+  return { groupsConnected: 0, groupMemberships: 0, groupsMissingMemberCount: 0, knownUniqueUsers: 0, activeUsers30d: 0 };
+}
+
+/**
+ * A deliberately conservative reach metric. `groupMemberships` comes only from the explicit
+ * member_count stored for an approved active group; it is gross reach, not unique people.
+ * `knownUniqueUsers` comes from linked identities and is deduplicated by canonical user.
+ * The grand-total known-user figure is queried independently so a dealer linked on WhatsApp
+ * and Telegram is counted once, not twice.
+ */
+export async function getNetworkReach(): Promise<NetworkReach> {
+  await initAdminSchema();
+  const channels: Record<ChannelPlatform, ChannelReach> = {
+    whatsapp: emptyChannelReach(),
+    telegram: emptyChannelReach(),
+    sms: emptyChannelReach(),
+  };
+
+  const [groupRows, identityRows, activeRows, totals] = await Promise.all([
+    withSchema((pool) => pool.query<{
+      platform: string; groups_connected: string; group_memberships: string; groups_missing_member_count: string;
+    }>(
+      `SELECT lower(COALESCE(platform,'whatsapp')) AS platform,
+              count(*)::int AS groups_connected,
+              COALESCE(sum(member_count),0)::int AS group_memberships,
+              count(*) FILTER (WHERE member_count IS NULL)::int AS groups_missing_member_count
+       FROM approved_groups
+       WHERE status='active'
+       GROUP BY lower(COALESCE(platform,'whatsapp'))`
+    )),
+    withSchema((pool) => pool.query<{ platform: ChannelPlatform; known_unique_users: string }>(
+      `SELECT platform, count(DISTINCT canonical_user_id)::int AS known_unique_users
+       FROM linked_identities
+       WHERE platform IN ('whatsapp','telegram','sms')
+       GROUP BY platform`
+    )),
+    withSchema((pool) => pool.query<{ platform: ChannelPlatform; active_users_30d: string }>(
+      `WITH raw_activity AS (
+         SELECT phone AS identity, max(created_at) AS last_active_at FROM search_requests GROUP BY phone
+         UNION ALL
+         SELECT identity, max(last_inbound_at) AS last_active_at FROM user_lifecycle GROUP BY identity
+       ), identity_activity AS (
+         SELECT identity, max(last_active_at) AS last_active_at FROM raw_activity GROUP BY identity
+       )
+       SELECT li.platform, count(DISTINCT li.canonical_user_id)::int AS active_users_30d
+       FROM linked_identities li
+       JOIN identity_activity a ON a.identity=li.identity
+       WHERE li.platform IN ('whatsapp','telegram','sms')
+         AND a.last_active_at >= now() - interval '30 days'
+       GROUP BY li.platform`
+    )),
+    withSchema((pool) => pool.query<{
+      known_unique_users: string; active_users_30d: string;
+    }>(
+      `WITH raw_activity AS (
+         SELECT phone AS identity, max(created_at) AS last_active_at FROM search_requests GROUP BY phone
+         UNION ALL
+         SELECT identity, max(last_inbound_at) AS last_active_at FROM user_lifecycle GROUP BY identity
+       ), identity_activity AS (
+         SELECT identity, max(last_active_at) AS last_active_at FROM raw_activity GROUP BY identity
+       )
+       SELECT
+         count(DISTINCT li.canonical_user_id)::int AS known_unique_users,
+         count(DISTINCT li.canonical_user_id) FILTER (
+           WHERE a.last_active_at >= now() - interval '30 days'
+         )::int AS active_users_30d
+       FROM linked_identities li
+       LEFT JOIN identity_activity a ON a.identity=li.identity
+       WHERE li.platform IN ('whatsapp','telegram','sms')`
+    )),
+  ]);
+
+  for (const row of groupRows.rows) {
+    if (!(row.platform in channels)) continue;
+    const platform = row.platform as ChannelPlatform;
+    channels[platform].groupsConnected = Number(row.groups_connected);
+    channels[platform].groupMemberships = Number(row.group_memberships);
+    channels[platform].groupsMissingMemberCount = Number(row.groups_missing_member_count);
+  }
+  for (const row of identityRows.rows) channels[row.platform].knownUniqueUsers = Number(row.known_unique_users);
+  for (const row of activeRows.rows) channels[row.platform].activeUsers30d = Number(row.active_users_30d);
+
+  const totalRow = totals.rows[0] ?? { known_unique_users: "0", active_users_30d: "0" };
+  return {
+    channels,
+    total: {
+      groupsConnected: Object.values(channels).reduce((sum, c) => sum + c.groupsConnected, 0),
+      groupMemberships: Object.values(channels).reduce((sum, c) => sum + c.groupMemberships, 0),
+      groupsMissingMemberCount: Object.values(channels).reduce((sum, c) => sum + c.groupsMissingMemberCount, 0),
+      knownUniqueUsers: Number(totalRow.known_unique_users),
+      activeUsers30d: Number(totalRow.active_users_30d),
+    },
+  };
 }
 
 async function getActivityByUser(limit: number): Promise<UserActivity[]> {
@@ -155,11 +279,12 @@ async function getPaymentsSummary(): Promise<PaymentsSummary> {
 }
 
 export async function getAdminMetrics(): Promise<AdminMetrics> {
-  const [membership, topRequests, activityByUser, payments] = await Promise.all([
+  const [membership, networkReach, topRequests, activityByUser, payments] = await Promise.all([
     getMembershipCounts(),
+    getNetworkReach(),
     getTopRequests(10, 30),
     getActivityByUser(20),
     getPaymentsSummary(),
   ]);
-  return { membership, topRequests, activityByUser, payments };
+  return { membership, networkReach, topRequests, activityByUser, payments };
 }
