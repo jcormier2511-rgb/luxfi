@@ -65,6 +65,23 @@ test("mapToInventoryListings maps structured API fields, never CTA/button text",
   assert.doesNotMatch(listing.item, /view details|check availability/i);
 });
 
+test("required regression: mapToInventoryListings carries dial/model/box+papers through from the listing detail, not just brand/ref/condition", () => {
+  const [listing] = mapToInventoryListings(sale(), "FS");
+  assert.equal(listing.dial, "White");
+  assert.equal(listing.model, undefined); // the default fixture's detail.model is null
+  assert.equal(listing.boxPapers, "Box: Yes, Papers: No");
+});
+
+test("mapToInventoryListings leaves dial/model/boxPapers undefined when WatchFacts reports none of them", () => {
+  const bare = sale({
+    listings: [{ ...sale().listings[0], model: null, box: null, papers: null, dialColor: null }],
+  });
+  const [listing] = mapToInventoryListings(bare, "FS");
+  assert.equal(listing.dial, undefined);
+  assert.equal(listing.model, undefined);
+  assert.equal(listing.boxPapers, undefined);
+});
+
 test("mapToInventoryListings captures the listing's own frontImage as its primary photo", () => {
   const withPhoto = sale({
     listings: [{ ...sale().listings[0], frontImage: "https://watchfacts.com/media/sale-1.jpg" }],

@@ -20,6 +20,14 @@ export interface InventoryListing {
   condition: string;
   price: string;
   location: string;
+  // Structured detail fields from WatchFacts' own sub-listing data (see watchfacts/api.ts's
+  // RawListingDetail) — undefined when WatchFacts didn't report a value for this listing.
+  // Carried through to the `postings` mirror (see watchfacts/syncInventory.ts) so a WTB
+  // naming a specific dial color/model can actually match real WatchFacts inventory instead
+  // of always seeing a blank value on the FS side.
+  dial?: string;
+  model?: string;
+  boxPapers?: string;
   contactName: string;
   contactPhone: string;
   source: string;

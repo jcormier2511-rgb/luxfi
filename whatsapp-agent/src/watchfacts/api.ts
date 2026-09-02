@@ -129,6 +129,14 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
     // never feeds into the "ASK" bundle-price safety rule, only into currency-aware display/
     // budget comparison for whichever price ends up being used.
     const native = extractNativePrice(title);
+    // WatchFacts reports box/papers as two separate yes/no-ish fields — combined into one
+    // free-text value here since nothing downstream matches on box/papers structurally, only
+    // displays it (see postings/postingsStore.ts's boxPapers, matching.ts's scoreMatch which
+    // never gates on it).
+    const boxPapers =
+      [detail?.box ? `Box: ${detail.box}` : null, detail?.papers ? `Papers: ${detail.papers}` : null]
+        .filter((v): v is string => v !== null)
+        .join(", ") || undefined;
     return {
       id: isBundleOfMultiple ? `${sale.id}-${detail?.id ?? i}` : sale.id,
       type,
@@ -149,6 +157,9 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
       nativePriceAmount: native?.amount,
       nativeCurrency: native?.currency,
       originalPriceText: native?.originalText,
+      dial: detail?.dialColor ?? undefined,
+      model: detail?.model ?? undefined,
+      boxPapers,
     };
   });
 }

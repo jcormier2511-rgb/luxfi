@@ -7,6 +7,8 @@ import type { RawFlashSale } from "./api";
 // same note in inventoryDb.test.ts.
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
+// The postings-mirror regression test below needs the v4 mirror step to actually run.
+process.env.ENABLE_V4_POSTINGS = "true";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const api = require("./api") as typeof import("./api");
@@ -14,8 +16,15 @@ const api = require("./api") as typeof import("./api");
 const inventoryDb = require("./inventoryDb") as typeof import("./inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { syncOneSide } = require("./syncInventory") as typeof import("./syncInventory");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const db = require("../postings/db") as typeof import("../postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { scoreMatch } = require("../postings/matching") as typeof import("../postings/matching");
 
-after(() => inventoryDb._closePoolForTests());
+after(() => {
+  inventoryDb._closePoolForTests();
+  db._closePoolForTests();
+});
 
 function fakeSale(id: string): RawFlashSale {
   return {
@@ -99,4 +108,53 @@ test("syncOneSide: an FS failure never touches WTB's already-saved data or statu
   assert.ok(status.wtb.lastSuccessAt);
   assert.equal(status.wtb.lastError, null);
   assert.ok(status.fs.lastError);
+});
+
+test("required regression: a WatchFacts FS listing's dial/model/location reach the postings mirror, so a dial-specific WTB can actually match it", async (t) => {
+  await inventoryDb._resetDbForTests();
+  await db._resetDbForTests();
+
+  t.mock.method(api, "fetchAllFlashSales", async (_page: Page, auctionType: string) => {
+    if (auctionType !== "sale") throw new Error("this test only exercises the FS side");
+    return [
+      {
+        ...fakeSale("wf-daytona-1"),
+        title: "Rolex Daytona 116500LN",
+        listings: [
+          {
+            id: "wf-daytona-1",
+            brand: "Rolex",
+            model: "Daytona",
+            reference: "116500LN",
+            normalizedReference: null,
+            title: "Rolex Daytona 116500LN",
+            condition: "Used",
+            frontImage: null,
+            box: "Yes",
+            papers: "Yes",
+            dialColor: "Black",
+          },
+        ],
+      },
+    ];
+  });
+
+  const dummyPage = {} as Page;
+  const fsResult = await syncOneSide(dummyPage, "FS", "sale", new Date());
+  assert.equal(fsResult.count, 1);
+  assert.equal(fsResult.error, undefined);
+
+  const mirrored = await db.withSchema((pool) => pool.query(`SELECT * FROM postings WHERE external_listing_id=$1`, ["wf-daytona-1"]));
+  assert.equal(mirrored.rows.length, 1);
+  const fsPosting = mirrored.rows[0];
+  assert.equal(fsPosting.dial, "Black", "the dial WatchFacts reported must reach the postings mirror, not stay blank");
+  assert.equal(fsPosting.model, "Daytona");
+  assert.equal(fsPosting.location, "North America");
+
+  // The real reported bug: a WTB naming a specific dial color always rejected a WatchFacts FS
+  // listing because fs.dial was permanently "" — reproduce that exact WTB shape here and
+  // confirm scoreMatch now finds it.
+  const wtbPosting = { ...fsPosting, reference: "116500LN", dial: "black", condition: "", location: "" };
+  const result = scoreMatch(fsPosting, wtbPosting);
+  assert.ok(result, "a dial-specific WTB must be able to match a WatchFacts FS listing once its dial actually reaches the postings table");
 });

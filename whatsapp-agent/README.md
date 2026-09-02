@@ -276,6 +276,19 @@ Known gaps: no persistent session reuse across scheduler ticks (fresh login ever
 currently shows; the response-envelope shape (raw array vs `{data:[...]}`) is handled
 defensively but not confirmed either way.
 
+**Diagnosing "zero matches against WatchFacts inventory"**: a WTB match against a
+WatchFacts-sourced FS listing only happens through the separate `postings` table mirror (see
+"Structured matching (v4)" below), which is gated behind `ENABLE_V4_POSTINGS` (off by
+default) — confirm it's `true` in production via `GET
+/admin/v4-status?token=<WEBHOOK_TOKEN>` before assuming a data problem. If it's on and
+matches still aren't appearing, check that WatchFacts' own dial/model/location fields
+actually reached that specific listing's mirrored row — `GET
+/admin/inventory-search?token=<WEBHOOK_TOKEN>&q=<brand or ref>` shows what's really stored.
+`mapToInventoryListings` (`watchfacts/api.ts`) and the FS→`ApiFsListing` mapping in
+`watchfacts/syncInventory.ts` are the two places that must both carry a field through, or it
+silently comes out blank on the FS side and `scoreMatch` (`postings/matching.ts`) rejects any
+WTB that named that field explicitly (e.g. a specific dial color) rather than guessing.
+
 ### Adding Postgres on Railway
 
 1. In your Railway project, click **+ New** → **Database** → **Add PostgreSQL**. This creates
