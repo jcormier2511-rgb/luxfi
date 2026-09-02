@@ -230,14 +230,35 @@ export async function handleWebhookPayload(body: IncomingWebhook): Promise<void>
  * subscription is in any of these three states, so all three clear it the same way.
  */
 export async function handleAuthorizeNetWebhookEvent(event: AuthorizeNetWebhookEvent): Promise<void> {
+  // Every branch below that stops processing logs WHY -- a fully successful run used to print
+  // nothing at all, which was indistinguishable in Railway's logs from "the webhook never
+  // arrived." Confirmed live: a real sandbox payment showed no membership activation and no
+  // log line either, with no way to tell which of the two had happened.
+  console.log(`[webhook/authorizenet] received eventType=${event.eventType} notificationId=${event.notificationId} payloadId=${event.payload.id}`);
+
   if (event.eventType === "net.authorize.payment.authcapture.created") {
     const transId = event.payload.id;
-    if (!transId) return;
+    if (!transId) {
+      console.warn("[webhook/authorizenet] authcapture.created event had no payload.id -- ignoring");
+      return;
+    }
     const details = await getTransactionDetails(transId);
-    if (details.responseCode !== "1" || !details.checkoutSessionId || !details.phone || !details.plan) return;
+    console.log(
+      `[webhook/authorizenet] transaction ${transId}: responseCode=${details.responseCode} checkoutSessionId=${details.checkoutSessionId} phone=${details.phone} plan=${details.plan} customerProfileId=${details.customerProfileId} customerPaymentProfileId=${details.customerPaymentProfileId}`
+    );
+    if (details.responseCode !== "1" || !details.checkoutSessionId || !details.phone || !details.plan) {
+      console.warn(`[webhook/authorizenet] transaction ${transId} missing required fields -- not activating anything`);
+      return;
+    }
     const session = await getCheckoutSession(details.checkoutSessionId);
-    if (!session || session.status !== "pending") return;
+    if (!session || session.status !== "pending") {
+      console.warn(
+        `[webhook/authorizenet] checkout session ${details.checkoutSessionId} is ${session ? `already "${session.status}"` : "not found"} -- skipping (likely a duplicate delivery)`
+      );
+      return;
+    }
     if (!details.customerProfileId || !details.customerPaymentProfileId) {
+      console.warn(`[webhook/authorizenet] transaction ${transId} has no CIM profile -- marking checkout session ${session.id} failed`);
       await markCheckoutSessionStatus(session.id, "failed", transId);
       return;
     }
@@ -253,14 +274,23 @@ export async function handleAuthorizeNetWebhookEvent(event: AuthorizeNetWebhookE
     });
     await recordMembershipPayment(details.phone, details.settleAmountCents, "membership_payment");
     await markCheckoutSessionStatus(session.id, "completed", transId);
+    console.log(`[webhook/authorizenet] activated ${details.plan} for phone=${details.phone} (subscriptionId=${subscriptionId})`);
     return;
   }
 
   if (event.payload.entityName === "subscription" && /\.(suspended|cancelled|terminated)$/.test(event.eventType)) {
     const subscriptionId = event.payload.id;
-    if (!subscriptionId) return;
+    if (!subscriptionId) {
+      console.warn("[webhook/authorizenet] subscription event had no payload.id -- ignoring");
+      return;
+    }
     const phone = await findPhoneByAuthnetSubscriptionId(subscriptionId);
-    if (phone) await cancelMembership(phone);
+    if (!phone) {
+      console.warn(`[webhook/authorizenet] no account found for subscriptionId=${subscriptionId} -- nothing to cancel`);
+      return;
+    }
+    await cancelMembership(phone);
+    console.log(`[webhook/authorizenet] canceled membership for phone=${phone} (subscriptionId=${subscriptionId})`);
   }
 }
 
@@ -506,10 +536,12 @@ export function createServer() {
   // webhook here.
   app.post("/webhook/authorizenet", async (req, res) => {
     if (!config.billing.authorizeNet.signatureKey) {
+      console.warn("[webhook/authorizenet] request received but AUTHORIZENET_SIGNATURE_KEY is not configured -- rejecting with 503");
       return res.status(503).json({ error: "AUTHORIZENET_SIGNATURE_KEY is not configured" });
     }
     const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
     if (!rawBody || !verifyAuthorizeNetSignature(rawBody, req.header("x-anet-signature"))) {
+      console.warn(`[webhook/authorizenet] request rejected: ${rawBody ? "invalid signature" : "no raw body captured"} (X-ANET-Signature present: ${Boolean(req.header("x-anet-signature"))})`);
       return res.sendStatus(401);
     }
     res.sendStatus(200); // ack immediately — Authorize.net retries on slow/failed responses
