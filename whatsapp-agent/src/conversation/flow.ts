@@ -713,7 +713,7 @@ function parseMarketReferenceCommand(text: string): { reference: string; brand?:
   return { reference, ...(brand ? { brand } : {}) };
 }
 
-interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB"; indices?: number[]; all?: boolean }
+interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "reference" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB"; indices?: number[]; all?: boolean }
 
 /** "listing 1", "listing #1", "listing  2" — anywhere in the sentence, not only after the verb. */
 const LISTING_INDEX_PATTERN = /\blisting\s*#?\s*(\d+)\b/i;
@@ -723,10 +723,13 @@ const LISTING_MANAGEMENT_VERB = /^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?
 
 /** The editable fields, matched at the START of what's left after the listing number and the
  *  management verb have been removed. */
-const LISTING_EDIT_FIELDS: ReadonlyArray<{ action: "price" | "location" | "dial"; pattern: RegExp }> = [
+const LISTING_EDIT_FIELDS: ReadonlyArray<{ action: "price" | "location" | "dial" | "reference"; pattern: RegExp }> = [
   { action: "price", pattern: /^(?:asking\s+)?(?:price|budget|ask|max(?:imum)?)\b/i },
   { action: "location", pattern: /^(?:location|region|country|market|area)\b/i },
   { action: "dial", pattern: /^dial(?:\s+colou?r)?\b/i },
+  // A mistyped reference is the one identity field worth correcting in place — the rest of a
+  // listing's identity comes from the original message and is never re-derived from an edit.
+  { action: "reference", pattern: /^(?:reference|ref)\b/i },
 ];
 
 /** Optional connector between a field and its new value — "price to 2500", "price = 2500",
@@ -817,6 +820,12 @@ function parseListingEditCommand(text: string): ListingEditCommand | null {
     const value = body.slice(named[0].length).trim().replace(LISTING_FIELD_CONNECTOR, "").trim();
     // Named the field but not the new value ("edit listing 1 price") — ask, don't guess.
     if (!value) return { action: "edit", index };
+    if (field.action === "reference") {
+      const reference = extractReference(value);
+      // "edit listing 1 reference 28500" is a price typed into the wrong field, not a reference.
+      if (!reference || looksLikePriceAnswer(value)) return null;
+      return { action: "reference", index, value: reference };
+    }
     if (field.action !== "price") return { action: field.action, index, value };
     const amount = parseListingAmount(value);
     return amount === null ? null : { action: "price", index, value: amount };
@@ -864,14 +873,14 @@ async function handleListingEdit(phone: string, command: ListingEditCommand): Pr
   if (command.index === null && rows.length !== 1) return chooseListingMessage(rows, "to manage");
   const posting = command.index === null ? rows[0] : rows[command.index - 1];
   if (!posting) return `I couldn't find listing ${command.index}. Say "my listings" to see the current numbers.`;
-  if (command.action === "edit") return `What would you like to change on listing ${command.index ?? 1}? You can change its price/budget, location, or dial.`;
+  if (command.action === "edit") return `What would you like to change on listing ${command.index ?? 1}? You can change its price/budget, location, dial, or reference.`;
   let updated: PostingRow | null;
   if (["pause","resume","close"].includes(command.action)) {
     updated = await setPostingManagementStatus(posting.id, command.action as "pause" | "resume" | "close");
     if (!updated) return `Listing ${command.index ?? 1} is not currently eligible to ${command.action}.`;
     return `Listing ${command.index ?? 1} ${command.action === "pause" ? "paused" : command.action === "resume" ? "resumed" : "closed"}:\n\n${formatStructuredPosting(updated)}`;
   }
-  updated = await updatePostingField(posting.id, command.action as "price" | "location" | "dial", command.value!);
+  updated = await updatePostingField(posting.id, command.action as "price" | "location" | "dial" | "reference", command.value!, posting.canonical_user_id ?? undefined);
   if (!updated) return "That listing is no longer active.";
   await runImmediateMatch(updated);
   return `Updated:\n\n${formatStructuredPosting(updated)}\n\nI'll use the updated terms for matching going forward.`;
@@ -1996,7 +2005,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     return handleIncomingMessage(phone, text, contact, imageUrl);
   }
 
-  if ((state.pendingSellIntake || state.pendingBuyIntake) && (/^\s*(?:FS|for sale|sell(?:ing)?)\b/i.test(text) || FRESH_BUY_LEAD_IN.test(text))) {
+  if ((state.pendingSellIntake || state.pendingBuyIntake) && (/^\s*(?:FS|WTS|for sale|sell(?:ing)?)\b/i.test(text) || FRESH_BUY_LEAD_IN.test(text))) {
     state.pendingReplacementRequest = text;
     messages.push("You already have an incomplete request. Should I replace it or add another?");
     saveState(state);

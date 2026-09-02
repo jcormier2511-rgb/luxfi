@@ -452,3 +452,56 @@ test("full live sequence: listings, two edits, an untouched draft, a pulse, and 
   const submariner = cards.find((c) => /^2\. FS/.test(c))!;
   assert.match(submariner, /Current FS: 1\nCurrent WTB: 0\nAvg FS ask: \$3,500/);
 });
+
+/**
+ * Ported from codex/continue-stabilization-branch-tasks (08d16e1), whose own listing-edit parser
+ * is superseded by the grammar above but which carried two things this branch lacked: correcting
+ * a mistyped reference in place, and enforcing ownership in the UPDATE rather than only in the
+ * lookup that found the row.
+ */
+test("a mistyped reference can be corrected in place, in any of the supported phrasings", async () => {
+  for (const command of ["edit listing 1 reference 126500LN", "change listing 1 ref to 126500LN", "listing 1 reference 126500LN"]) {
+    const phone = freshPhone();
+    const one = await makeListing(phone, "FS", "116500LN", 30000);
+    const draftBefore = await openBuyDraft(phone);
+
+    const reply = await handleIncomingMessage(phone, command);
+    assert.match(reply.messages.join("\n"), /Updated:/, `"${command}" was not recognized`);
+    const row = await store.getPosting(one.id);
+    assert.equal(row?.reference, "126500LN");
+    assert.equal(Number(row?.price), 30000, "correcting identity must not touch price");
+    assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), draftBefore);
+  }
+});
+
+test("a price typed into the reference field is refused rather than stored as identity", async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "FS", "116500LN", 30000);
+  await handleIncomingMessage(phone, "edit listing 1 reference 28500");
+  assert.equal((await store.getPosting(one.id))?.reference, "116500LN", "the reference must be unchanged");
+});
+
+test("a listing edit cannot reach another account's posting", async () => {
+  const owner = freshPhone();
+  const other = freshPhone();
+  const theirs = await makeListing(other, "FS", "126610LN", 14000);
+  const mine = await makeListing(owner, "FS", "116500LN", 30000);
+
+  // The owner's "listing 1" is their own row, never the other account's.
+  await handleIncomingMessage(owner, "edit listing 1 price 2500");
+  assert.equal(Number((await store.getPosting(mine.id))?.price), 2500);
+  assert.equal(Number((await store.getPosting(theirs.id))?.price), 14000, "another account's listing must be untouched");
+
+  // And the UPDATE itself refuses a row the user does not own, not just the lookup.
+  const userId = await require("../postings/identity").getOrCreateCanonicalUser("telegram", owner);
+  const blocked = await store.updatePostingField(theirs.id, "price", 999, userId);
+  assert.equal(blocked, null, "an id from elsewhere must not update another account's listing");
+  assert.equal(Number((await store.getPosting(theirs.id))?.price), 14000);
+});
+
+test("a WTS message during an open draft asks to replace rather than being swallowed", async () => {
+  const phone = freshPhone();
+  await openBuyDraft(phone);
+  const reply = await handleIncomingMessage(phone, "WTS Rolex 126610LN, 14000");
+  assert.match(reply.messages.join("\n"), /replace it or add another/i);
+});

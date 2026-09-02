@@ -405,14 +405,31 @@ export async function getManageablePostingsForUser(canonicalUserId: number): Pro
   });
 }
 
-export type EditablePostingField = "price" | "location" | "dial";
+export type EditablePostingField = "price" | "location" | "dial" | "reference";
 
-/** Change one structured field only. In particular, never reparse original_text. */
-export async function updatePostingField(id: number, field: EditablePostingField, value: string | number): Promise<PostingRow | null> {
+/**
+ * Change one structured field only. In particular, never reparse original_text.
+ *
+ * Ownership is enforced in the UPDATE itself, not only by how the caller found the row. The
+ * caller does scope its lookup to the user's own postings, so this is defence in depth rather
+ * than a fix for a live hole — but an id that reached here from anywhere else still cannot
+ * touch another account's listing.
+ */
+export async function updatePostingField(
+  id: number,
+  field: EditablePostingField,
+  value: string | number,
+  canonicalUserId?: number
+): Promise<PostingRow | null> {
   return withSchema(async (pool) => {
-    const result = await pool.query<PostingRow>(
-      `UPDATE postings SET ${field}=$1, updated_at=now() WHERE id=$2 AND status='active' RETURNING *`, [value, id]
-    );
+    const result = canonicalUserId === undefined
+      ? await pool.query<PostingRow>(
+          `UPDATE postings SET ${field}=$1, updated_at=now() WHERE id=$2 AND status='active' RETURNING *`, [value, id]
+        )
+      : await pool.query<PostingRow>(
+          `UPDATE postings SET ${field}=$1, updated_at=now()
+           WHERE id=$2 AND canonical_user_id=$3 AND status='active' RETURNING *`, [value, id, canonicalUserId]
+        );
     return result.rows[0] ?? null;
   });
 }
