@@ -190,6 +190,45 @@ test('"pause 1" (no "listing" said at all) still pauses it', async () => {
   assert.equal(await statusOf(one.id), "paused");
 });
 
+test('"close all listings" closes every listing with no number said at all', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "FS", "116500LN", 30000);
+  const two = await makeListing(phone, "FS", "126610LN", 14000, { model: "Submariner" });
+  const three = await makeListing(phone, "WTB", "116500", 25000);
+
+  // Live-reported follow-up failure: no digit at all ("all" instead of "1 and 2 and 3") also
+  // fell through to the open draft's answer handler.
+  const reply = await handleIncomingMessage(phone, "close all listings");
+  assert.doesNotMatch(reply.messages.join("\n"), /kept your request draft open/i);
+  assert.equal(await statusOf(one.id), "stopped");
+  assert.equal(await statusOf(two.id), "stopped");
+  assert.equal(await statusOf(three.id), "stopped");
+});
+
+test('"close all listings" beats an open draft too, just like a specific listing number', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "FS", "116500LN", 30000);
+  const two = await makeListing(phone, "FS", "126610LN", 14000, { model: "Submariner" });
+  const draftBefore = await openBuyDraft(phone);
+
+  const reply = await handleIncomingMessage(phone, "close all listings");
+  assert.doesNotMatch(reply.messages.join("\n"), /kept your request draft open/i);
+  assert.equal(await statusOf(one.id), "stopped");
+  assert.equal(await statusOf(two.id), "stopped");
+  assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), draftBefore, "the WTB draft must be untouched");
+});
+
+test('"pause all my listings" accepts the "my" variant, and reports gracefully with none', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "FS", "116500LN", 30000);
+  await handleIncomingMessage(phone, "pause all my listings");
+  assert.equal(await statusOf(one.id), "paused");
+
+  const empty = freshPhone();
+  const reply = await handleIncomingMessage(empty, "close all listings");
+  assert.match(reply.messages.join("\n"), /no listings to manage/i);
+});
+
 test("an intake answer that names no listing number still reaches the draft", async () => {
   const phone = freshPhone();
   const one = await makeListing(phone, "FS", "116500LN", 30000);

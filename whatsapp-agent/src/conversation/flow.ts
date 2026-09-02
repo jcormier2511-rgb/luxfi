@@ -526,7 +526,7 @@ function parseMarketReferenceCommand(text: string): { reference: string; brand?:
   return { reference, ...(brand ? { brand } : {}) };
 }
 
-interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB"; indices?: number[] }
+interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB"; indices?: number[]; all?: boolean }
 
 /** "listing 1", "listing #1", "listing  2" — anywhere in the sentence, not only after the verb. */
 const LISTING_INDEX_PATTERN = /\blisting\s*#?\s*(\d+)\b/i;
@@ -572,6 +572,18 @@ function parseListingAmount(raw: string): number | null {
 function parseListingEditCommand(text: string): ListingEditCommand | null {
   const t = text.trim().replace(/\s*[?.!]+$/, "");
   if (!t) return null;
+
+  // "close all listings"/"pause all my listings" — every manageable listing at once, with no
+  // number said at all. Checked before the numbered form below since it shares the same verbs
+  // but never a digit.
+  const lifecycleAll = t.match(/^(?:please\s+)?(pause|pausing|hold|resume|reactivate|restart|unpause|close|closing|delete|deleting|remove|cancel|stop|end)\s+(?:my\s+)?all\s+(?:my\s+)?listings?$/i);
+  if (lifecycleAll) {
+    const verb = lifecycleAll[1].toLowerCase();
+    const action: ListingEditCommand["action"] = /^(pause|pausing|hold|stop)$/.test(verb) ? "pause"
+      : /^(resume|reactivate|restart|unpause)$/.test(verb) ? "resume"
+      : "close";
+    return { action, index: null, all: true };
+  }
 
   // A listing number may be a list ("close listing 1 and 2", "close listings 1, 2 & 3") rather
   // than one bare digit — the live-reported failure was that "close listing 1 and 2" matched
@@ -642,12 +654,17 @@ function chooseListingMessage(rows: PostingRow[], purpose: string): string {
 async function handleListingEdit(phone: string, command: ListingEditCommand): Promise<string> {
   let rows = await userListings(phone);
   if (command.typeHint) rows = rows.filter((p) => p.type === command.typeHint);
+  if (command.all && rows.length === 0) return "You have no listings to manage right now.";
+  // "close all listings" acts on every row in this same snapshot — reuses the indices path below
+  // rather than a separate loop, since "every index" and "these specific indices" are the same
+  // operation once the row count is known.
+  const indices = command.all ? rows.map((_, i) => i + 1) : command.indices;
   // Every index in a bulk command ("close listing 1 and 2") resolves against this ONE snapshot
   // of rows, taken before any of them are actioned — closing #1 first would otherwise drop it
   // out of the manageable set and shift #2 into #1's place before it's even looked up.
-  if (command.indices) {
+  if (indices) {
     const results = await Promise.all(
-      command.indices.map(async (idx) => {
+      indices.map(async (idx) => {
         const posting = rows[idx - 1];
         if (!posting) return `I couldn't find listing ${idx}. Say "my listings" to see the current numbers.`;
         const updated = await setPostingManagementStatus(posting.id, command.action as "pause" | "resume" | "close");
@@ -1513,7 +1530,11 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   // unambiguous and always wins. One that names NONE is ambiguous while an intake draft is open:
   // mid interview, "change my budget to 32000" is a correction to the draft Fi is collecting,
   // not a command about a stored listing, so it is left for the intake handler below.
-  const namesAListing = Boolean(listingEdit && (listingEdit.index !== null || listingEdit.indices?.length));
+  // "close all listings" names every listing just as unambiguously as a specific number would --
+  // without also checking `all` here, it would read as naming NONE (index null, no indices) and
+  // fall to the open draft's answer handler whenever one was open, the exact bug the "all" form
+  // was added to fix.
+  const namesAListing = Boolean(listingEdit && (listingEdit.index !== null || listingEdit.indices?.length || listingEdit.all));
   if (listingEdit && (namesAListing || !(state.pendingBuyIntake || state.pendingSellIntake))) {
     messages.push(await handleListingEdit(state.phone, listingEdit));
     // Listing edits are persisted by the postings store. Do not re-save the unrelated
