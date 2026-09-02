@@ -3,10 +3,14 @@ import { initInventorySchema } from "../watchfacts/inventoryDb";
 
 export interface MarketPulse {
   reference: string;
+  label?: string;
+  scope?: "reference" | "model" | "brand";
   fsCount: number;
   wtbCount: number;
   averageFsAsk: number | null;
 }
+
+export interface MarketScope { brand?: string; model?: string; reference?: string }
 
 /**
  * Aggregate an exact-reference pulse from Fi's existing normalized Postgres stores.
@@ -67,9 +71,50 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
   });
 }
 
+/** Broader identity scopes expose counts only; pricing is intentionally exact-reference only. */
+export async function getScopedMarketPulse(scope: MarketScope): Promise<MarketPulse> {
+  if (scope.reference) {
+    const pulse = await getMarketPulse(scope.reference);
+    return { ...pulse, label: [scope.brand, scope.model, pulse.reference].filter(Boolean).join(" "), scope: "reference" };
+  }
+  const model = scope.model?.trim();
+  const brand = scope.brand?.trim();
+  if (!model && !brand) throw new Error("A brand, model, or reference is required");
+  const level: "model" | "brand" = model ? "model" : "brand";
+  const value = (model || brand)!.toUpperCase();
+  await initInventorySchema();
+  return withSchema(async (pool) => {
+    const postingColumn = level === "model" ? "model" : "brand";
+    const inventoryColumn = level === "model" ? "item" : "brand";
+    const result = await pool.query(
+      `WITH scoped AS (
+         SELECT p.type FROM postings p WHERE p.status='active' AND p.expires_at>now() AND upper(trim(p.${postingColumn}))=$1
+         UNION ALL
+         SELECT i.type FROM inventory_listings i WHERE i.is_active=TRUE AND i.type IN ('FS','WTB')
+           AND upper(trim(i.${inventoryColumn}))=$1
+           AND NOT EXISTS (SELECT 1 FROM postings p WHERE p.source_type='api' AND p.source_platform='watchfacts_api'
+             AND p.status='active' AND p.expires_at>now() AND p.type=i.type AND p.external_listing_id=i.external_id)
+       ) SELECT count(*) FILTER(WHERE type='FS')::int fs_count,
+                count(*) FILTER(WHERE type='WTB')::int wtb_count FROM scoped`, [value]
+    );
+    return { reference: "", label: [brand, model].filter(Boolean).join(" "), scope: level,
+      fsCount: Number(result.rows[0].fs_count), wtbCount: Number(result.rows[0].wtb_count), averageFsAsk: null };
+  });
+}
+
 export function formatMarketPulse(pulse: MarketPulse): string {
   const average = pulse.averageFsAsk === null
     ? "Unavailable"
     : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pulse.averageFsAsk);
-  return `Market Pulse — ${pulse.reference}\n\nFS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests\nAverage FS ask: ${average}\n\nBased on current activity across the dealer groups and WatchFacts inventory Fi monitors.`;
+  const title = pulse.label || pulse.reference;
+  if (!pulse.scope) {
+    return `Market Pulse — ${title}\n\nFS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests\nAverage FS ask: ${average}\n\nBased on current activity across the dealer groups and WatchFacts inventory Fi monitors.`;
+  }
+  const counts = pulse.scope === "brand"
+    ? `FS: ${pulse.fsCount} active ${title} listings\nWTB: ${pulse.wtbCount} active ${title} requests`
+    : `FS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests`;
+  const averageLine = pulse.scope === "brand" || pulse.scope === "model"
+    ? "Reference-level average asking price unavailable because no reference is selected."
+    : `Average FS ask: ${average}`;
+  return `Market Pulse — ${title}\n\n${counts}\n${averageLine}\n\nBased on current active WatchFacts inventory and normalized listings.`;
 }
