@@ -26,6 +26,10 @@ const postingsDb = require("./postings/db") as typeof import("./postings/db");
 const entitlements = require("./billing/entitlementStore") as typeof import("./billing/entitlementStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { withSchema } = require("./postings/db") as typeof import("./postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { handleIncomingMessage } = require("./conversation/flow") as typeof import("./conversation/flow");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { resetState } = require("./conversation/stateStore") as typeof import("./conversation/stateStore");
 
 const app = createServer();
 let httpServer: Server;
@@ -226,4 +230,74 @@ test("a subscription-cancelled webhook clears the plan and marks canceled_at", a
   assert.equal(entitlement.plan, null);
   assert.ok(entitlement.canceledAt);
   assert.equal(entitlement.authnetSubscriptionId, "sub-live-2", "kept as a record of what was canceled");
+});
+
+/**
+ * Live report: "join said paid but status shows 0/3". Tracing it end to end showed the webhook
+ * path itself activating correctly — and "status" printing the SAME line before and after,
+ * because the complimentary allowance is spent ahead of a plan's own allowance and the status
+ * reply never mentioned membership at all. A user could not tell an unactivated payment from a
+ * perfectly activated one, which is what made the trial counter look like evidence of failure.
+ */
+test('"status" names an active plan, so it cannot be mistaken for an unactivated payment', async (t) => {
+  const phone = "15559990010";
+  resetState(phone);
+  const session = await entitlements.createCheckoutSession(phone, "tier1");
+  await entitlements.setCheckoutSessionProfileId(session.id, "cp-status");
+
+  const before = await handleIncomingMessage(phone, "status");
+  assert.match(before.messages[0], /Approved matches: 0\/3/);
+  assert.doesNotMatch(before.messages[0], /Membership:/, "no plan yet, so nothing to name");
+
+  interceptAuthorizeNet(t, (body) => {
+    if (body.createTransactionRequest) {
+      return { createTransactionResponse: { transactionResponse: { transId: "txn-status", responseCode: "1" }, messages: { resultCode: "Ok", message: [] } } };
+    }
+    if (body.ARBCreateSubscriptionRequest) {
+      return { ARBCreateSubscriptionResponse: { subscriptionId: "sub-status", messages: { resultCode: "Ok", message: [] } } };
+    }
+    throw new Error("unexpected Authorize.net call: " + JSON.stringify(body));
+  });
+  const { raw, signature } = signedWebhookRequest({
+    notificationId: "note-status",
+    eventType: "net.authorize.customer.paymentProfile.created",
+    payload: { id: "pp-status", entityName: "customerPaymentProfile", customerProfileId: "cp-status" },
+  });
+  await fetch(`${baseUrl}/webhook/authorizenet`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-anet-signature": signature },
+    body: raw,
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal((await entitlements.getEntitlement(phone)).plan, "tier1", "precondition: the membership really did activate");
+
+  const after = await handleIncomingMessage(phone, "status");
+  assert.match(after.messages[0], /Membership: Tier 1 — active/, "an activated plan must be named");
+  assert.notEqual(after.messages[0], before.messages[0], "status must not read identically before and after paying");
+
+  const membership = await handleIncomingMessage(phone, "membership status");
+  assert.match(membership.messages[0], /Membership: Tier 1 \(\$50\/month\) — active/);
+  assert.match(membership.messages[0], /Approvals this week: 0\/5/);
+});
+
+test('"membership status" distinguishes an unconfirmed checkout from never having joined', async () => {
+  const never = "15559990011";
+  resetState(never);
+  const untouched = await handleIncomingMessage(never, "membership status");
+  assert.match(untouched.messages[0], /Membership: none active yet/);
+  assert.doesNotMatch(untouched.messages[0], /checkout was started/);
+
+  const started = "15559990012";
+  resetState(started);
+  await entitlements.createCheckoutSession(started, "tier2");
+  const pending = await handleIncomingMessage(started, "membership status");
+  assert.match(pending.messages[0], /A Tier 2 checkout was started just now and hasn't been confirmed yet/);
+
+  // A declined attempt says so rather than looking like an unfinished one.
+  const declined = "15559990013";
+  resetState(declined);
+  const failedSession = await entitlements.createCheckoutSession(declined, "tier1");
+  await entitlements.markCheckoutSessionStatus(failedSession.id, "failed", "txn-declined");
+  const reply = await handleIncomingMessage(declined, "membership status");
+  assert.match(reply.messages[0], /last Tier 1 payment attempt was declined/);
 });

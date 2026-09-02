@@ -320,6 +320,26 @@ export async function findCheckoutSessionByProfileId(customerProfileId: string):
   return result.rows.length > 0 ? rowToCheckoutSession(result.rows[0]) : null;
 }
 
+/**
+ * The most recent checkout attempt for a phone, whatever became of it.
+ *
+ * Activation happens only when Authorize.net's paymentProfile.created webhook arrives (see
+ * server.ts's handleAuthorizeNetWebhookEvent), so a checkout that was started and then never
+ * confirmed leaves no trace on the entitlement record at all — the account just looks like one
+ * that never tried to join. Reading the attempt itself is what lets Fi tell those two apart.
+ */
+export async function findLatestCheckoutAttempt(
+  phone: string
+): Promise<{ id: string; plan: PlanKey; status: CheckoutSession["status"]; createdAt: string } | null> {
+  await ensureSchema();
+  const result = await getPool().query(
+    `SELECT id, plan, status, created_at FROM checkout_sessions WHERE phone = $1 ORDER BY created_at DESC LIMIT 1`,
+    [phone]
+  );
+  const row = result.rows[0];
+  return row ? { id: row.id, plan: row.plan, status: row.status, createdAt: new Date(row.created_at).toISOString() } : null;
+}
+
 export async function markCheckoutSessionStatus(id: string, status: "completed" | "failed", authnetTransId?: string): Promise<void> {
   await ensureSchema();
   await getPool().query(

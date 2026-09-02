@@ -6,7 +6,7 @@ import { requestPhotosForMatch } from "../matching/photoRequests";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
-import { recordBillingRequested, getEntitlement, createCheckoutSession } from "../billing/entitlementStore";
+import { recordBillingRequested, getEntitlement, createCheckoutSession, findLatestCheckoutAttempt } from "../billing/entitlementStore";
 import { MEMBERSHIP_PLANS, PlanKey } from "../billing/plans";
 import { isAuthorizeNetConfigured } from "../billing/authorizeNet";
 import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, getApprovedMatchesSummary } from "../postings/approvalUsage";
@@ -575,9 +575,20 @@ async function maybeNudgeChannelPreference(state: ConversationState, messages: s
 async function handleStatusCommand(state: ConversationState, messages: string[]): Promise<void> {
   const pendingCount = state.pendingMatches?.decisions.filter((d) => d === "pending").length ?? 0;
   const usage = await getApprovalUsage(state.phone);
+  // The complimentary allowance is spent before a plan's own allowance regardless of whether a
+  // membership exists, so the approval line below reads identically for a paid and an unpaid
+  // account until three approvals have been used. Naming the plan separately is what makes the
+  // two distinguishable: a live "status" reading 0/3 was taken as evidence that a completed
+  // payment had not activated, when status simply never mentioned membership at all.
+  const membershipLine = usage.entitlement.plan
+    ? `Membership: ${MEMBERSHIP_PLANS[usage.entitlement.plan].label}${usage.entitlement.canceledAt ? " — canceled" : " — active"}`
+    : null;
   let approvalLine: string;
   if (usage.isComplimentary) {
-    approvalLine = `Approved matches: ${usage.totalApproved}/${config.trial.maxApprovedMatches} (complimentary trial)`;
+    approvalLine =
+      `Approved matches: ${usage.totalApproved}/${config.trial.maxApprovedMatches} (complimentary trial` +
+      (usage.entitlement.plan ? `, used before your plan's allowance` : "") +
+      ")";
   } else if (usage.weeklyLimit === null) {
     approvalLine = `Approved matches: unlimited (your plan has no weekly cap)`;
   } else if (usage.weeklyLimit === 0) {
@@ -590,13 +601,24 @@ async function handleStatusCommand(state: ConversationState, messages: string[])
     pendingCount > 0
       ? `Pending decisions: ${pendingCount} match${pendingCount === 1 ? "" : "es"} awaiting approve/pass`
       : "No matches currently awaiting a decision.";
-  messages.push([approvalLine, pendingLine].join("\n"));
+  messages.push([membershipLine, approvalLine, pendingLine].filter(Boolean).join("\n"));
 }
 
 /** "cancel" — clears the current pending match set (and any in-progress preference interview)
  *  without unsubscribing. A deliberate, explicit user action, distinct from a new search
  *  superseding an old one — see the "never delete a pending match merely because another search
  *  starts" rule this does NOT apply to. */
+/** "12 minutes ago" / "3 hours ago" / "2 days ago" — plain enough for a chat message. */
+function describeAge(isoTimestamp: string): string {
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(isoTimestamp).getTime()) / 60000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 /**
  * Answers "membership status" / "what plan am I on" from the entitlement record itself, rather
  * than from the approval counter alone — a user asking about their membership wants to know
@@ -617,6 +639,17 @@ async function handleMembershipCommand(state: ConversationState, messages: strin
   } else {
     lines.push("Membership: none active yet.");
     lines.push(`Complimentary approvals used: ${usage.totalApproved}/${config.trial.maxApprovedMatches}`);
+    // A membership activates only when Authorize.net's webhook confirms the saved card, so a
+    // checkout that was started and never confirmed is invisible on the entitlement record —
+    // the account reads exactly like one that never tried to join. Saying which of the two it
+    // is turns "I paid and nothing happened" into something answerable.
+    const attempt = await findLatestCheckoutAttempt(state.phone);
+    if (attempt?.status === "pending") {
+      lines.push(`A ${MEMBERSHIP_PLANS[attempt.plan].label} checkout was started ${describeAge(attempt.createdAt)} and hasn't been confirmed yet.`);
+      lines.push(`If you already paid, tell me and I'll have it checked — otherwise finish here: ${config.publicBaseUrl}/pay/${attempt.id}`);
+    } else if (attempt?.status === "failed") {
+      lines.push(`Your last ${MEMBERSHIP_PLANS[attempt.plan].label} payment attempt was declined.`);
+    }
     lines.push('Reply "join" to start a membership, or "upgrade" to compare the plans.');
   }
   // Surfaced whenever it exists so a checkout that was started but never completed is visible
