@@ -1158,8 +1158,18 @@ function applyNamedIdentityCorrections(p: PendingSellIntake | PendingBuyIntake, 
     const brand = normalizeText(text).brand;
     if (brand) { p.brand = brand; changed = true; }
   }
-  const model = /\bmodel\s+(?:to|is)\s+([^,.;]+)/i.exec(text)?.[1]?.trim();
-  if (model) { p.model = model; changed = true; }
+  // Connector ("to"/"is") is optional -- "make model 116500" and "set model 116500" name the
+  // field just as plainly as "model is 116500", and the live-reported failure was exactly this
+  // stricter form silently doing nothing ("I kept your request draft open."). A captured value
+  // that's ENTIRELY a reference number ("model 116500") almost always means the reference in
+  // this domain ("what's the model" colloquially asking for the ref), not a free-text name, so
+  // it's routed there instead -- "model is Daytona" still names an actual model normally.
+  const model = /\bmodel\b\s*(?:to|is|[:=])?\s*([^,.;]+)/i.exec(text)?.[1]?.trim();
+  if (model) {
+    const asReference = extractReference(model);
+    if (asReference && normalizeReference(asReference) === normalizeReference(model)) { p.reference = asReference; changed = true; }
+    else { p.model = model; changed = true; }
+  }
   if (/\b(?:reference|ref)\b/i.test(text)) {
     const reference = extractReference(text);
     if (reference && !looksLikePriceAnswer(reference)) { p.reference = reference; changed = true; }
@@ -1221,6 +1231,17 @@ function applyScopedBuyAnswer(p: PendingBuyIntake, text: string): boolean {
     if (budget === undefined) return false;
     p.budget = budget; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; return true;
   }
+  // "any"/"all" explicitly broadens the search to every model of the brand rather than naming
+  // one -- matching (postings/matching.ts's scoreMatch) already treats a WTB with a brand but no
+  // reference as matching ANY same-brand FS listing, so this is enough to satisfy "send me all
+  // Rolex models under that price" once the request is confirmed and monitoring starts.
+  if (p.step === "model") {
+    const t = text.trim();
+    if (/^(?:any|all|skip|none|no|n\/a|unsure|not\s+sure|don'?t\s+know|do\s+not\s+know)$/i.test(t)) { p.modelSkipped = true; return true; }
+    if (!t || isOnlyNonModelLanguage(t)) return false;
+    p.model = t.replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
+    return true;
+  }
   if (p.step === "details" && /^\s*\d{6}\s*$/.test(text)) {
     p.reference = text.trim();
     return true;
@@ -1253,6 +1274,16 @@ function nextSell(p: PendingSellIntake): string | null {
 function nextBuy(p: PendingBuyIntake): string | null {
   if (!p.brand && !p.reference) { p.step="details"; return "What would you like to buy? Please include the brand and model."; }
   if (p.budget === undefined) { p.step="budget"; return BUY_BUDGET_QUESTION; }
+  // Only asked when NOTHING beyond brand/budget is known yet -- a message that already answered
+  // condition or location too clearly front-loaded everything it means to give, and re-asking
+  // for a model it never mentioned would contradict that (the live-tested contract: a fully
+  // detailed message goes straight to confirmation, no back-and-forth). Live-reported gap this
+  // closes: "wtb rolex" alone never got asked for a model at all -- it silently confirmed with
+  // "Model: Not provided" with no chance to say "any" and broaden the search on purpose.
+  if (!p.model && !p.modelSkipped && !p.reference && !p.condition && !p.location) {
+    p.step = "model";
+    return `Which model? (or say "any" to consider all ${displayBrand(p.brand) || "matching"} models under your budget)`;
+  }
   if (dialRelevant(p.reference) && !p.dialColor) { p.step="dial"; return DIAL_INTAKE_QUESTION; }
   if (!p.condition) { p.step="condition"; return BUY_CONDITION_QUESTION; }
   if (!p.location) { p.step="location"; return BUY_LOCATION_QUESTION; }
@@ -1260,7 +1291,7 @@ function nextBuy(p: PendingBuyIntake): string | null {
 }
 const confirmed = (text: string) => /^(yes|yep|yeah|confirm|correct|sure|ok(?:ay)?|start|do it)\b/i.test(text.trim());
 const cash = (n: number, c = "USD") => `${c === "USD" ? "$" : c+" "}${n.toLocaleString("en-US")}`;
-const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{const priceLabel=type==="FS"?`asking ${cash(price,p.currency)}`:`maximum ${cash(price,p.currency)}`;return [`I have: ${type} ${p.description}${p.dialColor?`, ${p.dialColor} dial`:""}${p.condition?`, ${p.condition}`:""}${p.location?`, ${p.location}`:""}, ${priceLabel}. Should I start monitoring?`,`${type} listing review`,`Brand: ${displayBrand(p.brand)||"Not provided"}`,`Model: ${p.model||"Not provided"}`,`Reference: ${p.reference||"Not provided"}`,p.dialColor&&`Dial: ${p.dialColor}`,p.condition&&`Condition: ${p.condition}`,`${type==="FS"?"Price":"Budget"}: ${cash(price,p.currency)}`,p.location&&`Location: ${p.location}`,p.boxPapers&&`Box/Papers: ${p.boxPapers}`,p.year&&`Year: ${p.year}`,`Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}. Should I start monitoring?`,`Reply confirm to activate, or send a correction.`].filter(Boolean).join("\n");};
+const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{const priceLabel=type==="FS"?`asking ${cash(price,p.currency)}`:`maximum ${cash(price,p.currency)}`;return [`I have: ${type} ${p.description}${p.dialColor?`, ${p.dialColor} dial`:""}${p.condition?`, ${p.condition}`:""}${p.location?`, ${p.location}`:""}, ${priceLabel}. Should I start monitoring?`,`${type} listing review`,`Brand: ${displayBrand(p.brand)||"Not provided"}`,`Model: ${p.model||("modelSkipped" in p && p.modelSkipped ? "Any" : "Not provided")}`,`Reference: ${p.reference||"Not provided"}`,p.dialColor&&`Dial: ${p.dialColor}`,p.condition&&`Condition: ${p.condition}`,`${type==="FS"?"Price":"Budget"}: ${cash(price,p.currency)}`,p.location&&`Location: ${p.location}`,p.boxPapers&&`Box/Papers: ${p.boxPapers}`,p.year&&`Year: ${p.year}`,`Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}. Should I start monitoring?`,`Reply confirm to activate, or send a correction.`].filter(Boolean).join("\n");};
 const sellSummary = (p: PendingSellIntake) => review("FS",p,p.price!);
 const buySummary = (p: PendingBuyIntake) => review("WTB",p,p.budget!);
 

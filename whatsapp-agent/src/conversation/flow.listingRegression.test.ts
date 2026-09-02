@@ -302,3 +302,50 @@ test("current inventory compares formatted references canonically", async (t) =>
   assert.match(result.messages.at(-1)!, /1165080013/);
   assert.doesNotMatch(result.messages.at(-1)!, /don’t see any/i);
 });
+
+test('a bare "wtb rolex" is asked for a model (after budget), and "any" broadens rather than blocking', async () => {
+  const phone = "15550002016"; resetState(phone);
+  const afterBrand = await handleIncomingMessage(phone, "wtb rolex");
+  assert.equal(afterBrand.state.pendingBuyIntake?.step, "budget", "budget is still asked before the model question");
+
+  const afterBudget = await handleIncomingMessage(phone, "35000");
+  assert.equal(afterBudget.state.pendingBuyIntake?.step, "model", "live-reported gap: model was never asked for at all");
+  assert.match(afterBudget.messages.join("\n"), /which model/i);
+
+  const afterAny = await handleIncomingMessage(phone, "any");
+  assert.equal(afterAny.state.pendingBuyIntake?.modelSkipped, true);
+  assert.equal(afterAny.state.pendingBuyIntake?.model, undefined);
+  assert.doesNotMatch(afterAny.messages.join("\n"), /kept your request draft open/i);
+
+  await handleIncomingMessage(phone, "pre-owned");
+  const summary = await handleIncomingMessage(phone, "usa");
+  assert.match(summary.messages.join("\n"), /Model: Any/);
+});
+
+test('"wtb rolex daytona" already names a model and is never asked for one', async () => {
+  const phone = "15550002017"; resetState(phone);
+  const afterBrand = await handleIncomingMessage(phone, "wtb rolex daytona");
+  assert.equal(afterBrand.state.pendingBuyIntake?.model, "daytona");
+  assert.equal(afterBrand.state.pendingBuyIntake?.step, "budget");
+});
+
+test('a fully detailed first message still goes straight to confirmation, never asking for a model', async () => {
+  const phone = "15550002018"; resetState(phone);
+  const result = await handleIncomingMessage(phone, "wtb rolex, pre-owned, usa, maximum $25,000");
+  assert.match(result.messages.join("\n"), /Should I start monitoring/i, "condition+location were already given, so this must not stop for a model question");
+  assert.match(result.messages.join("\n"), /Model: Not provided/);
+});
+
+test('"make model 116500" corrects the reference, not a free-text model — that\'s what "model" means for a watch reference', async () => {
+  const phone = "15550002019"; resetState(phone);
+  await handleIncomingMessage(phone, "wtb rolex, pre-owned, usa, maximum $25,000");
+  // Live-reported: this silently did nothing ("I kept your request draft open.") because the
+  // correction grammar required "model to X"/"model is X" with an explicit connector.
+  const corrected = await handleIncomingMessage(phone, "make model 116500");
+  assert.doesNotMatch(corrected.messages.join("\n"), /kept your request draft open/i);
+  assert.equal(corrected.state.pendingBuyIntake?.reference, "116500");
+  assert.equal(corrected.state.pendingBuyIntake?.model, undefined);
+
+  const named = await handleIncomingMessage(phone, "model is Daytona");
+  assert.equal(named.state.pendingBuyIntake?.model, "Daytona", "a genuine name (not a reference number) still sets the model");
+});

@@ -125,12 +125,13 @@ export interface PendingSellIntake {
 }
 
 export interface PendingBuyIntake {
-  step: "details" | "budget" | "condition" | "location" | "dial" | "confirm";
+  step: "details" | "budget" | "model" | "condition" | "location" | "dial" | "confirm";
   description: string;
   reference: string | null;
   referenceSkipped?: boolean;
   brand?: string;
   model?: string;
+  modelSkipped?: boolean;
   boxPapers?: string;
   year?: string;
   notes?: string;
