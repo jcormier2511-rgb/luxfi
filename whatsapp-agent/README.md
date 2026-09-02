@@ -423,6 +423,15 @@ booleans like "configured" and non-secret operational values.
 https://<your-railway-domain>/admin
 ```
 
+`GET /admin/whapi-status?token=<WEBHOOK_TOKEN>` is the same Whapi connectivity check the
+dashboard above shows, as raw JSON for scripting/curl — `{configured, reachable, authorized,
+statusText, version, error}` from Whapi's own `GET /health` (see `whapi/client.ts`'s
+`checkWhapiHealth`). `authorized: false` / `statusText !== "AUTH"` means the WhatsApp channel
+itself needs re-authorizing in the Whapi.Cloud dashboard — a configured, reachable
+`WHAPI_TOKEN` is not the same as an authorized channel, and this is what a burst of
+`notificationsFailed` with "need channel authorization for send message" (see `/admin/v4-status`)
+is actually reporting.
+
 ### Membership & activity metrics
 
 The dashboard also includes:

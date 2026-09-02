@@ -42,6 +42,18 @@ export const config = {
       // public URL Twilio was configured with — required for X-Twilio-Signature verification.
       webhookBaseUrl: process.env.TWILIO_WEBHOOK_BASE_URL ?? "",
     },
+    // Safety valve for testing in production: comma-separated identity strings (same raw
+    // format sendText itself takes — WhatsApp is bare digits, e.g. "15551234567"; see
+    // channels/identity.ts for the telegram:/sms: prefixed forms). Empty (default) means every
+    // outbound send goes to its real intended recipient, unrestricted. Once set, EVERY outbound
+    // message — direct chat replies, match/opportunity notifications, market updates, all of
+    // it — whose target identity isn't on this list is redirected to the first entry instead of
+    // the real recipient, with a note of who it would have gone to, so nothing a real member
+    // would have received is silently lost, just kept out of their hands while iterating.
+    restrictOutboundTo: (process.env.RESTRICT_OUTBOUND_TO ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
   server: {
     port: Number(process.env.PORT ?? 3000),
@@ -323,6 +335,16 @@ export function isAiChatEnabled(): boolean {
 /** Pure — the actual chat-id/allowlist matching logic, unit-testable without env/config wiring. */
 export function isChatIdAllowed(chatId: string, allowedChatIds: string[]): boolean {
   return allowedChatIds.includes("*") || allowedChatIds.includes(chatId);
+}
+
+/** True when RESTRICT_OUTBOUND_TO is unset — the normal, unrestricted posture. */
+export function isOutboundUnrestricted(): boolean {
+  return config.channels.restrictOutboundTo.length === 0;
+}
+
+/** True when this identity is allowed to receive its own real messages under the restriction. */
+export function isOutboundRecipientAllowed(identity: string): boolean {
+  return isOutboundUnrestricted() || config.channels.restrictOutboundTo.includes(identity);
 }
 
 /** Both conditions required: the master flag AND this specific chat explicitly allowed. */
