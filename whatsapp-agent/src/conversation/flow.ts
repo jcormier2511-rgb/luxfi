@@ -184,7 +184,31 @@ function parsePhotoRequestCommand(text: string): number | null {
 // while help must always return the complete deterministic menu without consuming onboarding.
 const MENU_COMMAND = /^(?:help|menu)\b/i;
 const CANCEL_COMMAND = /^cancel\b/i;
-const STATUS_COMMAND = /^status\b/i;
+
+/** A message that is ONLY a greeting — nothing else in it to act on. "hi, I want a Daytona"
+ *  deliberately does not match; that message has a real request in it. */
+const BARE_GREETING = /^(?:hi|hello|hey|hiya|yo|sup|good\s+(?:morning|afternoon|evening))(?:\s+(?:there|fi|bot))?\s*[!.,?]*$/i;
+
+/**
+ * Account-level intents: questions about the USER — their membership, their plan, their usage —
+ * never an answer to whatever question Fi last asked about a draft.
+ *
+ * Matched on content words rather than as fixed sentences. The live failure this replaces:
+ * "status" worked because it was an exact anchored command, but "membership status" and "what
+ * plan am I on" matched nothing, fell through to the open WTB intake, and got answered with a
+ * reprint of the draft. Enumerating more exact sentences would just move the boundary; asking
+ * "does this name an account topic AND ask about it" generalizes instead.
+ */
+function parseAccountIntent(text: string): "membership" | "status" | null {
+  const t = normalize(text).replace(/[?.!,]+$/g, "").trim();
+  if (!t) return null;
+  const topic = /\b(?:membership|member|subscription|billing|plan|tier|package)\b/.test(t);
+  const asking = /\b(?:status|state|what|whats|which|current|currently|level|check|show|tell|have|has|do|does|am|is|are|my|on)\b/.test(t);
+  if (topic && asking) return "membership";
+  if (/^(?:status|account\s+status|my\s+status|what(?:'s|s| is)\s+my\s+status|where\s+do\s+i\s+stand)\b/.test(t)) return "status";
+  if (/\b(?:how\s+many)\b.*\b(?:approvals?|matches)\b.*\b(?:left|remaining)\b/.test(t)) return "status";
+  return null;
+}
 // Broadened past the exact word "listings" for the same reason — "listing summary", "my
 // listing", "edit my listings", and "summary" are all natural ways to ask for the same thing.
 const LISTINGS_COMMAND = /^(my\s+)?(listings?(\s+summary)?|summary)\b/i;
@@ -420,6 +444,34 @@ async function handleStatusCommand(state: ConversationState, messages: string[])
  *  without unsubscribing. A deliberate, explicit user action, distinct from a new search
  *  superseding an old one — see the "never delete a pending match merely because another search
  *  starts" rule this does NOT apply to. */
+/**
+ * Answers "membership status" / "what plan am I on" from the entitlement record itself, rather
+ * than from the approval counter alone — a user asking about their membership wants to know
+ * whether a payment actually landed, which the trial counter cannot tell them.
+ */
+async function handleMembershipCommand(state: ConversationState, messages: string[]): Promise<void> {
+  const usage = await getApprovalUsage(state.phone);
+  const { plan, paymentStatus, canceledAt } = usage.entitlement;
+  const lines: string[] = [];
+  if (plan) {
+    const planDef = MEMBERSHIP_PLANS[plan];
+    lines.push(`Membership: ${planDef.label} (${planDef.priceLabel})${canceledAt ? " — canceled" : " — active"}`);
+    lines.push(
+      usage.weeklyLimit === null
+        ? "Approvals: unlimited on this plan"
+        : `Approvals this week: ${usage.weeklyUsed}/${usage.weeklyLimit}`
+    );
+  } else {
+    lines.push("Membership: none active yet.");
+    lines.push(`Complimentary approvals used: ${usage.totalApproved}/${config.trial.maxApprovedMatches}`);
+    lines.push('Reply "join" to start a membership, or "upgrade" to compare the plans.');
+  }
+  // Surfaced whenever it exists so a checkout that was started but never completed is visible
+  // here instead of looking like an unexplained locked account.
+  if (paymentStatus) lines.push(`Last payment status: ${paymentStatus}`);
+  messages.push(lines.join("\n"));
+}
+
 function handleCancelCommand(state: ConversationState, messages: string[]): void {
   const hadSomethingToCancel = Boolean(
     state.pendingMatches || state.pendingPreferenceCollection || state.pendingNaturalFollowUp || state.pendingSellIntake || state.pendingBuyIntake
@@ -1016,6 +1068,24 @@ function intakeSlots(text: string, reference: string | null) {
   return { reference: extractReference(text), price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial,brand,model,boxPapers,year };
 }
 
+/**
+ * Whether a free-text reply may be stored as a location.
+ *
+ * The location step used to accept ANY non-empty text, which is what let the live session store
+ * "hi" as the buyer's location. A place is a short phrase of words: no digits or currency, not a
+ * greeting, and not an account question. Anything else falls through to normal handling with the
+ * draft left alone, rather than being absorbed into the field Fi happened to be asking about.
+ */
+function looksLikePlace(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 40) return false;
+  if (/[\d$€£]/.test(t)) return false;
+  if (BARE_GREETING.test(t)) return false;
+  if (parseAccountIntent(t)) return false;
+  if (!/^[\p{L}][\p{L}\s.,'’-]*$/u.test(t)) return false;
+  return t.split(/\s+/).length <= 5;
+}
+
 function dialRelevant(reference: string | null): boolean { return /^(116500LN|126500LN)$/i.test(reference ?? ""); }
 
 function applySellSlots(p: PendingSellIntake, text: string): boolean {
@@ -1239,7 +1309,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   if (skippedPhoto) p.photoSkipped = true;
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your listing draft open."); messages.push(nextSell(p)??sellSummary(p)); return; }
-  const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&Boolean(text.trim()); if(freeLocation)p.location=text.trim();
+  const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text); if(freeLocation)p.location=text.trim();
   const changed=applyScopedSellAnswer(p,text) || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
@@ -1252,7 +1322,7 @@ async function handleBuyIntakeAnswer(state: ConversationState, text: string, mes
   if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingBuyIntake=undefined; return; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
-  const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&Boolean(text.trim()); if(freeLocation)p.location=text.trim();
+  const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text); if(freeLocation)p.location=text.trim();
   const changed=applyScopedBuyAnswer(p,text)||skippedReference||freeLocation;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if(!changed && /^any$/i.test(text.trim())) { if(p.step==="dial")p.dialColor="either"; else if(p.step==="condition")p.condition="any"; else if(p.step==="location")p.location="any"; }
@@ -1412,8 +1482,39 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     saveState(state);
     return { state, messages };
   }
+  // Account questions and bare greetings are about the conversation, never about the draft Fi
+  // is collecting, so they are answered here — before any pending-intake handling — and return
+  // without saveState, which round-trips through JSON and would drop the draft's explicitly
+  // undefined fields.
+  const accountIntent = parseAccountIntent(commandText);
+  if (accountIntent === "membership") {
+    await handleMembershipCommand(state, messages);
+    return { state, messages };
+  }
+  if (accountIntent === "status") {
+    await handleStatusCommand(state, messages);
+    return { state, messages };
+  }
+  // A brand-new contact's first "hi" must still reach onboarding (see state.stage === "new"
+  // below), so this only claims a greeting once that has already happened. The live bug: with a
+  // WTB draft open at its location step, "hi" was accepted as the buyer's location.
+  if (state.stage !== "new" && BARE_GREETING.test(commandText.trim())) {
+    const unresolved = state.pendingMatches?.decisions.filter((d) => d === "pending").length ?? 0;
+    const canned = unresolved > 0
+      ? 'Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.'
+      : `Hi ${firstName}, how can I help you today?`;
+    const aiReply = isAiChatEnabled() ? await generateGeneralChatReply(text, unresolved) : null;
+    messages.push(aiReply ?? canned);
+    return { state, messages };
+  }
+
   const listingEdit = parseListingEditCommand(commandText);
-  if (listingEdit) {
+  // A command that names a listing number — one, or several ("close listing 1 and 2") — is
+  // unambiguous and always wins. One that names NONE is ambiguous while an intake draft is open:
+  // mid interview, "change my budget to 32000" is a correction to the draft Fi is collecting,
+  // not a command about a stored listing, so it is left for the intake handler below.
+  const namesAListing = Boolean(listingEdit && (listingEdit.index !== null || listingEdit.indices?.length));
+  if (listingEdit && (namesAListing || !(state.pendingBuyIntake || state.pendingSellIntake))) {
     messages.push(await handleListingEdit(state.phone, listingEdit));
     // Listing edits are persisted by the postings store. Do not re-save the unrelated
     // conversation state here: JSON serialization drops explicitly-undefined intake fields,
@@ -1422,11 +1523,6 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   }
   if (CANCEL_COMMAND.test(text.trim())) {
     handleCancelCommand(state, messages);
-    saveState(state);
-    return { state, messages };
-  }
-  if (STATUS_COMMAND.test(text.trim())) {
-    await handleStatusCommand(state, messages);
     saveState(state);
     return { state, messages };
   }
