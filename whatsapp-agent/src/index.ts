@@ -1,3 +1,5 @@
+import { runCheckoutReconciliation } from "./billing/checkoutReconciliation";
+import { isAuthorizeNetConfigured } from "./billing/authorizeNet";
 import { config } from "./config";
 import { createServer } from "./server";
 import { runInventorySync } from "./watchfacts/syncInventory";
@@ -67,6 +69,30 @@ if (config.postingsV4.enabled) {
   };
   reconciliationTick();
   setInterval(reconciliationTick, reconciliationIntervalMs);
+}
+
+// A membership can only be activated by Authorize.net's paymentProfile.created webhook, so a
+// webhook that is never delivered leaves a customer charged nothing, un-activated, and with
+// nothing anywhere recording that it happened. Same safety-net reasoning as the v4 match
+// reconciliation above: the failures worth sweeping for are precisely the ones that cannot
+// report themselves. runCheckoutReconciliation only looks at checkouts old enough that a
+// healthy webhook would already have arrived, and claims each one before charging, so a normal
+// delivery always wins and an overlapping tick is a no-op rather than a second charge.
+if (isAuthorizeNetConfigured()) {
+  const checkoutReconciliationIntervalMs = Number(process.env.CHECKOUT_RECONCILIATION_INTERVAL_MINUTES ?? 15) * 60_000;
+  const checkoutReconciliationTick = () => {
+    runCheckoutReconciliation()
+      .then((r) => {
+        if (r.error) console.error(`[billing] checkout reconciliation failed: ${r.error}`);
+        else if (r.activated > 0 || r.declined > 0)
+          console.log(`[billing] checkout reconciliation activated ${r.activated}, declined ${r.declined} (scanned ${r.scanned})`);
+      })
+      .catch((err) => console.error("[billing] checkout reconciliation run threw:", err.message));
+  };
+  checkoutReconciliationTick();
+  setInterval(checkoutReconciliationTick, checkoutReconciliationIntervalMs);
+} else {
+  console.log("[billing] Authorize.net not configured — checkout reconciliation sweep disabled.");
 }
 
 // Refresh the WatchFacts Trading Floor feed on boot, then on a fixed interval. Each run is a

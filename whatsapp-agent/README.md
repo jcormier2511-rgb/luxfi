@@ -512,13 +512,31 @@ storage, and `handleAuthorizeNetWebhookEvent` in `src/server.ts` for the event h
    `net.authorize.customer.paymentProfile.created`, `net.authorize.customer.subscription.suspended`,
    `net.authorize.customer.subscription.cancelled`, `net.authorize.customer.subscription.terminated`.
 
+4. Webhook delivery is not guaranteed, and a membership can only be activated by that webhook,
+   so a **reconciliation sweep** covers the case where it never arrives (same safety-net role as
+   `V4_RECONCILIATION_INTERVAL_MINUTES` plays for matches). It asks Authorize.net directly
+   whether a card was ever saved for each still-pending checkout, and finishes the activation if
+   one was. Optional knobs, both with working defaults:
+   - `CHECKOUT_RECONCILIATION_INTERVAL_MINUTES` — how often the sweep runs (default `15`).
+   - `CHECKOUT_RECONCILIATION_MIN_AGE_MINUTES` — how old a pending checkout must be before the
+     sweep touches it (default `10`), so a webhook arriving normally always wins the race.
+
+   `POST /admin/billing/reconciliation?token=<ADMIN_TOKEN>` runs it immediately, and accepts
+   `&minAgeMinutes=<n>` to include newer checkouts. It reports
+   `{activated, declined, noCardSaved, alreadyActive, scanned, skipped}`.
+
 **Behavior:** while any of the three credentials above are unset, `join`/`upgrade` fall back to
 the original admin-review message (`recordBillingRequested` — an admin manually assigns a plan
 via `POST /admin/entitlement/plan`). Once configured, `join` (tier1) and `upgrade tier1/2/3`
 send a real `/pay/<id>` link instead; once the customer saves a card on that page, the webhook
 charges month 1, activates the membership, sets up ARB for future months, and records the real
 amount in `billing_ledger` — automatically, no admin step. A declined card marks the checkout
-attempt failed and tells the customer to reply `join` again, without activating anything. A
+attempt failed and tells the customer to reply `join` again, without activating anything. If
+that webhook never arrives, the sweep in step 4 performs the identical activation — both paths
+call the same `activateClaimedCheckout`, and each must win an atomic claim on the checkout row
+before charging, so a delayed webhook and a sweep firing together can never both charge the
+card. A recovered customer is told their membership is now active, since the `join` reply had
+promised it would unlock on its own. A
 subscription suspended/cancelled/terminated event clears the plan and sets
 `account_entitlements.canceled_at`, the real signal behind the admin dashboard's "canceled"
 count (previously always approximated — see below). The manual admin path

@@ -172,6 +172,27 @@ export async function createProfileTransaction(params: { plan: PlanKey; customer
  * already charged for month 1. startDate is one interval out since month 1 was already charged
  * directly — ARB must never double-charge the first month.
  */
+/**
+ * The payment profiles saved against a CIM customer profile, newest last.
+ *
+ * This is the reconciliation counterpart to the paymentProfile.created webhook: it answers the
+ * same question ("did a card actually get saved for this checkout?") by asking Authorize.net
+ * directly, so a membership no longer depends on a webhook that may never be delivered. An
+ * empty array means the hosted page was opened but no card was ever saved.
+ *
+ * Authorize.net omits `paymentProfiles` entirely when there are none, and collapses it to a
+ * single object rather than a one-element array when there is exactly one — both normalized here.
+ */
+export async function getCustomerPaymentProfileIds(customerProfileId: string): Promise<string[]> {
+  const response = await callAuthorizeNetApi<{
+    profile?: { paymentProfiles?: { customerPaymentProfileId?: string } | { customerPaymentProfileId?: string }[] };
+  }>("getCustomerProfileRequest", { customerProfileId });
+  const raw = response.profile?.paymentProfiles;
+  if (!raw) return [];
+  const list = Array.isArray(raw) ? raw : [raw];
+  return list.map((p) => p?.customerPaymentProfileId).filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
 export async function createArbSubscription(params: { plan: PlanKey; customerProfileId: string; customerPaymentProfileId: string }): Promise<string> {
   const planDef = MEMBERSHIP_PLANS[params.plan];
   const startDate = new Date();

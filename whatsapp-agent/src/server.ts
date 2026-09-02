@@ -24,7 +24,7 @@ import {
   activateMembership,
   cancelMembership,
   findPhoneByAuthnetSubscriptionId,
-} from "./billing/entitlementStore";
+  claimCheckoutSessionForActivation,} from "./billing/entitlementStore";
 import { isPlanKey } from "./billing/plans";
 import {
   isAuthorizeNetConfigured,
@@ -39,6 +39,7 @@ import {
 import { recordMembershipPayment } from "./postings/approvalUsage";
 import { handleIncomingSellerPhoto } from "./matching/photoRequests";
 import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation } from "./postings/notify";
+import { runCheckoutReconciliation, activateClaimedCheckout } from "./billing/checkoutReconciliation";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
 import { getPosting, extendPosting, getOwnPostingForMatch } from "./postings/postingsStore";
@@ -259,26 +260,22 @@ export async function handleAuthorizeNetWebhookEvent(event: AuthorizeNetWebhookE
       console.warn("[webhook/authorizenet] paymentProfile.created event missing id/customerProfileId -- ignoring");
       return;
     }
-    const session = await findCheckoutSessionByProfileId(customerProfileId);
-    console.log(`[webhook/authorizenet] paymentProfile ${customerPaymentProfileId} for profile ${customerProfileId}: checkoutSession=${session?.id ?? "none"}`);
-    if (!session || session.status !== "pending") {
-      console.warn(
-        `[webhook/authorizenet] checkout session for profile ${customerProfileId} is ${session ? `already "${session.status}"` : "not found"} -- skipping (likely a duplicate delivery)`
-      );
+    const found = await findCheckoutSessionByProfileId(customerProfileId);
+    console.log(`[webhook/authorizenet] paymentProfile ${customerPaymentProfileId} for profile ${customerProfileId}: checkoutSession=${found?.id ?? "none"}`);
+    if (!found) {
+      console.warn(`[webhook/authorizenet] checkout session for profile ${customerProfileId} not found -- skipping`);
       return;
     }
-    const charge = await createProfileTransaction({ plan: session.plan, customerProfileId, customerPaymentProfileId });
-    if (charge.responseCode !== "1") {
-      console.warn(`[webhook/authorizenet] month-1 charge (transId=${charge.transId}) was declined (responseCode=${charge.responseCode}) -- marking checkout session ${session.id} failed`);
-      await markCheckoutSessionStatus(session.id, "failed", charge.transId);
-      await sendText(session.phone, "Your card was declined when I tried to charge it — reply \"join\" to try again with a different card.").catch(() => undefined);
+    // Claiming, rather than reading the status and then acting on it: the reconciliation sweep
+    // (billing/checkoutReconciliation.ts) can now activate the same checkout, and a read-then-act
+    // check cannot keep two activators from both seeing "pending" and both charging the card.
+    // Exactly one claim succeeds; the loser stops here.
+    const session = await claimCheckoutSessionForActivation(found.id);
+    if (!session) {
+      console.warn(`[webhook/authorizenet] checkout session ${found.id} is "${found.status}" or already claimed -- skipping (duplicate delivery or reconciliation in flight)`);
       return;
     }
-    const subscriptionId = await createArbSubscription({ plan: session.plan, customerProfileId, customerPaymentProfileId });
-    await activateMembership(session.phone, session.plan, { customerProfileId, paymentProfileId: customerPaymentProfileId, subscriptionId });
-    await recordMembershipPayment(session.phone, charge.settleAmountCents, "membership_payment");
-    await markCheckoutSessionStatus(session.id, "completed", charge.transId);
-    console.log(`[webhook/authorizenet] activated ${session.plan} for phone=${session.phone} (subscriptionId=${subscriptionId})`);
+    await activateClaimedCheckout(session, customerProfileId, customerPaymentProfileId, "webhook");
     return;
   }
 
@@ -888,6 +885,21 @@ export function createServer() {
       return res.status(401).json({ error: "invalid token" });
     }
     const result = await runReconciliation();
+    res.json({ ok: !result.error, ...result });
+  });
+
+  // The billing counterpart to the match reconciliation above: recovers checkouts whose
+  // activation webhook never arrived. Runs on a timer too (see index.ts); this endpoint exists
+  // for the case where someone needs it to have already happened.
+  app.post("/admin/billing/reconciliation", async (req, res) => {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const minAgeMinutes = req.query.minAgeMinutes !== undefined ? Number(req.query.minAgeMinutes) : undefined;
+    if (minAgeMinutes !== undefined && (!Number.isFinite(minAgeMinutes) || minAgeMinutes < 0)) {
+      return res.status(400).json({ error: "minAgeMinutes must be a non-negative number" });
+    }
+    const result = await runCheckoutReconciliation(minAgeMinutes === undefined ? {} : { minAgeMinutes });
     res.json({ ok: !result.error, ...result });
   });
 

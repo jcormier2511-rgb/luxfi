@@ -301,3 +301,40 @@ test('"membership status" distinguishes an unconfirmed checkout from never havin
   const reply = await handleIncomingMessage(declined, "membership status");
   assert.match(reply.messages[0], /last Tier 1 payment attempt was declined/);
 });
+
+test("POST /admin/billing/reconciliation recovers a checkout whose webhook never arrived", async (t) => {
+  const phone = "15559990020";
+  const session = await entitlements.createCheckoutSession(phone, "tier1");
+  await entitlements.setCheckoutSessionProfileId(session.id, "cp-admin-recon");
+  await entitlements._withPoolForTests((pool: any) =>
+    pool.query(`UPDATE checkout_sessions SET created_at = now() - interval '30 minutes' WHERE id = $1`, [session.id])
+  );
+
+  const calls = interceptAuthorizeNet(t, (body) => {
+    if (body.getCustomerProfileRequest) {
+      return { getCustomerProfileResponse: { profile: { paymentProfiles: { customerPaymentProfileId: "pp-admin-recon" } }, messages: { resultCode: "Ok", message: [] } } };
+    }
+    if (body.createTransactionRequest) {
+      return { createTransactionResponse: { transactionResponse: { transId: "txn-admin-recon", responseCode: "1" }, messages: { resultCode: "Ok", message: [] } } };
+    }
+    if (body.ARBCreateSubscriptionRequest) {
+      return { ARBCreateSubscriptionResponse: { subscriptionId: "sub-admin-recon", messages: { resultCode: "Ok", message: [] } } };
+    }
+    throw new Error("unexpected Authorize.net call: " + JSON.stringify(body));
+  });
+
+  const unauthorized = await fetch(`${baseUrl}/admin/billing/reconciliation?token=wrong`, { method: "POST" });
+  assert.equal(unauthorized.status, 401);
+  assert.equal(calls.length, 0, "an unauthorized call must not reach Authorize.net");
+
+  const res = await fetch(`${baseUrl}/admin/billing/reconciliation?token=test-webhook-token`, { method: "POST" });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { ok: boolean; activated: number; scanned: number };
+  assert.equal(body.ok, true);
+  assert.equal(body.activated, 1);
+
+  const entitlement = await entitlements.getEntitlement(phone);
+  assert.equal(entitlement.plan, "tier1");
+  assert.equal(entitlement.authnetSubscriptionId, "sub-admin-recon");
+  assert.equal(calls.filter((c: any) => c.createTransactionRequest).length, 1, "exactly one charge");
+});

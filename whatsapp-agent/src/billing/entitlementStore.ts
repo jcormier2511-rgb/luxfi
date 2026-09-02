@@ -78,6 +78,13 @@ async function ensureSchema(): Promise<void> {
         -- only carries Authorize.net's own customerProfileId, nothing of ours) can be traced
         -- back to this session via findCheckoutSessionByProfileId.
         ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS authnet_customer_profile_id TEXT;
+
+        -- Set by whichever activator (the webhook, or the reconciliation sweep that covers a
+        -- webhook that never arrived) has taken responsibility for turning this checkout into a
+        -- membership. Two activators charging the same saved card is the one failure this whole
+        -- mechanism must not have, and a read-then-check on status cannot prevent it -- both
+        -- would read "pending". Claiming is a single conditional UPDATE, so exactly one wins.
+        ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
         `
       )
       .then(() => undefined);
@@ -340,6 +347,53 @@ export async function findLatestCheckoutAttempt(
   return row ? { id: row.id, plan: row.plan, status: row.status, createdAt: new Date(row.created_at).toISOString() } : null;
 }
 
+/**
+ * Atomically take ownership of a still-pending checkout so exactly one activator can charge it.
+ *
+ * Returns the session on success, or null when another activator already holds it (or it is no
+ * longer pending). The stale-claim window lets a claim that died mid-flight — a process
+ * restart between the claim and the charge — be retried later rather than stranding the
+ * checkout forever; it is deliberately longer than a charge could plausibly take.
+ */
+export async function claimCheckoutSessionForActivation(
+  id: string,
+  staleClaimMinutes = 15
+): Promise<CheckoutSession | null> {
+  await ensureSchema();
+  const result = await getPool().query(
+    `UPDATE checkout_sessions SET claimed_at = now()
+     WHERE id = $1 AND status = 'pending'
+       AND (claimed_at IS NULL OR claimed_at < now() - ($2 || ' minutes')::interval)
+     RETURNING *`,
+    [id, String(staleClaimMinutes)]
+  );
+  return result.rows.length > 0 ? rowToCheckoutSession(result.rows[0]) : null;
+}
+
+/** Releases a claim taken by claimCheckoutSessionForActivation without resolving the checkout —
+ *  used when the card turns out not to be saved yet, so a later sweep can pick it up again. */
+export async function releaseCheckoutSessionClaim(id: string): Promise<void> {
+  await ensureSchema();
+  await getPool().query(`UPDATE checkout_sessions SET claimed_at = NULL WHERE id = $1 AND status = 'pending'`, [id]);
+}
+
+/**
+ * Checkouts that have been pending long enough that their webhook is not simply in flight, and
+ * that have a CIM profile to ask Authorize.net about. `minAgeMinutes` keeps the sweep from
+ * racing a webhook that is arriving normally.
+ */
+export async function findStalePendingCheckouts(minAgeMinutes: number, limit: number): Promise<CheckoutSession[]> {
+  await ensureSchema();
+  const result = await getPool().query(
+    `SELECT * FROM checkout_sessions
+     WHERE status = 'pending' AND authnet_customer_profile_id IS NOT NULL
+       AND created_at < now() - ($1 || ' minutes')::interval
+     ORDER BY created_at ASC LIMIT $2`,
+    [String(minAgeMinutes), limit]
+  );
+  return result.rows.map(rowToCheckoutSession);
+}
+
 export async function markCheckoutSessionStatus(id: string, status: "completed" | "failed", authnetTransId?: string): Promise<void> {
   await ensureSchema();
   await getPool().query(
@@ -349,6 +403,12 @@ export async function markCheckoutSessionStatus(id: string, status: "completed" 
 }
 
 /** Test-only escape hatch, mirroring inventoryDb.ts's pattern. */
+/** Test-only: run one query against this module's pool (used to backdate checkout rows). */
+export async function _withPoolForTests<T>(fn: (pool: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }) => Promise<T>): Promise<T> {
+  await ensureSchema();
+  return fn(getPool());
+}
+
 export async function _resetDbForTests(): Promise<void> {
   await getPool().query(`DROP TABLE IF EXISTS checkout_sessions`);
   await getPool().query(`DROP TABLE IF EXISTS account_entitlements`);
