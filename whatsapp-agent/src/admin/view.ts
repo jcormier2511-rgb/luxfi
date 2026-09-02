@@ -299,6 +299,23 @@ function renderMembershipCard(metrics: AdminDashboardData["metrics"], metricsErr
   </section>`;
 }
 
+function renderNetworkReachCard(metrics: AdminDashboardData["metrics"]): string {
+  if (!metrics) return "";
+  const r = metrics.networkReach;
+  const rows = (["whatsapp", "telegram", "sms"] as const).map((platform) => {
+    const c = r.channels[platform];
+    return `<tr><td>${escapeHtml(channelLabel(platform))}</td><td>${c.groupsConnected}</td><td>${c.groupMemberships.toLocaleString()}</td><td>${c.knownUniqueUsers.toLocaleString()}</td><td>${c.activeUsers30d.toLocaleString()}</td><td>${c.groupsMissingMemberCount}</td></tr>`;
+  }).join("");
+  return `<section class="card full">
+    <h2>Network Reach</h2>
+    <table>
+      <thead><tr><th>Channel</th><th>Groups</th><th>Group memberships</th><th>Known unique users</th><th>Active users (30d)</th><th>Groups missing count</th></tr></thead>
+      <tbody>${rows}<tr><th>Total</th><th>${r.total.groupsConnected}</th><th>${r.total.groupMemberships.toLocaleString()}</th><th>${r.total.knownUniqueUsers.toLocaleString()}</th><th>${r.total.activeUsers30d.toLocaleString()}</th><th>${r.total.groupsMissingMemberCount}</th></tr></tbody>
+    </table>
+    <p class="muted">Group memberships are gross reach from the stored member count on each active group, so the same dealer can appear in more than one group. Known unique users are canonical Fi accounts; the Total column deduplicates people linked on multiple channels. SMS has no groups, so its group counts are always zero.</p>
+  </section>`;
+}
+
 function renderPaymentsCard(metrics: AdminDashboardData["metrics"]): string {
   if (!metrics) return "";
   const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
@@ -365,6 +382,7 @@ export function renderDashboard(data: AdminDashboardData): string {
     ${renderWhapiCard(data.whapi)}
     ${renderDatabaseCard(data.database)}
     ${renderMembershipCard(data.metrics, data.metricsError)}
+    ${renderNetworkReachCard(data.metrics)}
     ${renderPaymentsCard(data.metrics)}
     ${renderTopRequestsCard(data.metrics)}
     ${renderMarketUpdatesCard(data.marketUpdates)}
