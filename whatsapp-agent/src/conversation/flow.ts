@@ -153,18 +153,56 @@ function classify(segment: string): ItemRequest | null {
   return { action, query };
 }
 
+/**
+ * Required regression fix (live failure): "I'm looking for a pre-owned Rolex Daytona 116500LN
+ * with a black dial. I'm in Miami and don't want to spend more than $25,000." was being split
+ * into two fake "items" on the bare word "and" — the second one just a budget/location clause
+ * with no product of its own — which triggered "I'll start with the first one..." for a message
+ * naming exactly ONE watch.
+ *
+ * A raw split on newline/semicolon/comma/"and" still happens below (those characters DO
+ * separate distinct items in "116500LN, 126710BLRO, and 5712G" or "Rolex X and a Patek Y"), but
+ * a resulting segment is only kept as its OWN item when it independently names a product — a
+ * recognized brand, or a reference-shaped token. A segment with neither (a price, a location, a
+ * plain description clause) is a continuation of the previous segment's sentence, not a second
+ * request, so it's merged back rather than classified on its own.
+ */
+function mergeContinuationSegments(rawSegments: string[]): string[] {
+  const segments: string[] = [];
+  for (const seg of rawSegments) {
+    const namesOwnProduct = containsKnownBrand(seg) || Boolean(extractReference(seg));
+    if (namesOwnProduct || segments.length === 0) {
+      segments.push(seg);
+    } else {
+      segments[segments.length - 1] = `${segments[segments.length - 1]} ${seg}`.trim();
+    }
+  }
+  return segments;
+}
+
 export function parseItemRequests(text: string): ItemRequest[] {
-  const segments = text
+  const rawSegments = text
     // A comma inside a formatted number is data, not an item separator. Splitting
     // "$110,000" here used to turn the request into "...under $110" plus "000".
     .split(/\n|,(?!\d)|;|\band\b/i)
     .map((s) => s.trim())
     .filter(Boolean);
+  const segments = mergeContinuationSegments(rawSegments);
   const items: ItemRequest[] = [];
   const seen = new Set<string>();
+  // A later segment that independently names a product but carries no buy/sell verb of its own
+  // ("...and a Patek 5712G") is still a second item, not unrelated remarks — it inherits the
+  // action of whichever request it's continuing, rather than being silently dropped for lacking
+  // its own "buy"/"looking for"/etc.
+  let lastAction: ItemRequest["action"] | null = null;
   for (const seg of segments) {
-    const parsed = classify(seg);
+    let parsed = classify(seg);
+    if (!parsed && lastAction && (containsKnownBrand(seg) || extractReference(seg))) {
+      const query = stripLeadingIntent(seg);
+      if (query) parsed = { action: lastAction, query };
+    }
     if (!parsed) continue;
+    lastAction = parsed.action;
     const key = `${parsed.action}:${parsed.query.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -1255,24 +1293,74 @@ function extractListingAmount(text: string, reference: string | null): number | 
   return normalizePriceShorthand(raw) ?? undefined;
 }
 
+/**
+ * Required regression fix (live failure): "...I'm in Miami and don't want to spend more than
+ * $25,000." never filled the location slot, because the old extractor only recognized a fixed
+ * list of countries/regions (US/UK/UAE/etc.) — never an actual city. Generalizes to any
+ * place-like phrase following "located in"/"based in"/"in"/"from", stopping at the next natural
+ * boundary (punctuation, or a connector word that starts a different clause) rather than
+ * swallowing the rest of the sentence.
+ *
+ * The bare "in"/"from" forms are also the ones most prone to false positives ("interested in a
+ * Rolex", "in stainless steel") — a place name is virtually always capitalized in real chat
+ * text, so requiring that (only for the bare forms; "located in"/"based in" are unambiguous
+ * regardless of case) keeps a material/description word from being mistaken for a location.
+ */
+function extractLocationPhrase(text: string, brand: string | undefined): string | undefined {
+  const boundary = "(?=[.,;!?]|\\s+(?:and|but|with|max(?:imum)?|budget|under|for|up\\s+to|no\\s+more|only|around|don'?t)\\b|$)";
+  const strong = text.match(new RegExp(`\\b(?:located\\s+in|based\\s+in)\\s+(?:the\\s+)?([A-Za-z][A-Za-z .'-]*?)${boundary}`, "i"));
+  const bare =
+    text.match(new RegExp(`\\bin\\s+(?:the\\s+)?([A-Z][A-Za-z .'-]*?)${boundary}`)) ??
+    text.match(new RegExp(`\\bfrom\\s+(?:the\\s+)?([A-Z][A-Za-z .'-]*?)${boundary}`));
+  // A short, common country/region abbreviation dropped bare into a comma-separated list
+  // ("...rolex, preowned, usa, maximum $2,500") names no preposition at all — kept as its own,
+  // narrow, case-insensitive fallback (the original behavior this generalization must not lose)
+  // precisely because it's a small fixed list, not the open-ended "any capitalized word" guess
+  // the prepositional forms above have to be, so it carries no comparable false-positive risk.
+  const bareAbbreviation =
+    text.match(/\b(?:in|from)\s+(?:the\s+)?(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\b/i) ??
+    text.match(/(?:^|,)\s*(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\s*(?=,|$)/i);
+  const raw = (strong ?? bare ?? bareAbbreviation)?.[1]?.trim();
+  if (!raw) return undefined;
+  if (brand && raw.toLowerCase().includes(brand.toLowerCase())) return undefined;
+  if (!looksLikePlace(raw)) return undefined;
+  return /^united states$/i.test(raw) ? "USA" : raw.toUpperCase() === "USA" ? "USA" : raw;
+}
+
 function intakeSlots(text: string, reference: string | null) {
   const price = extractListingAmount(text, reference);
-  const locationRaw =
-    text.match(/\b(?:in|from|located in|based in)\s+(?:the\s+)?(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\b/i)?.[1] ??
-    text.match(/(?:^|,)\s*(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\s*(?=,|$)/i)?.[1];
-  const location = locationRaw ? (/^united states$/i.test(locationRaw) ? "USA" : locationRaw.toUpperCase() === "USA" ? "USA" : locationRaw) : undefined;
   const conditionRaw = text.match(/\b(pre[- ]?owned|used|unworn|brand new|new|mint|any condition)\b/i)?.[1];
   const condition = conditionRaw && /^pre[- ]?owned$/i.test(conditionRaw) ? "pre-owned" : conditionRaw;
-  const dial = text.match(/^\s*(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)?\s*$/i)?.[1] ?? text.match(/\b(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)\b/i)?.[1];
+  // Dealer shorthand commonly names the dial color without ever writing the word "dial" — "black
+  // 116500LN" or "..., black, pre-owned, Miami, ..." — so a bare color word also counts as long
+  // as what follows it makes clear it's naming a standalone attribute (immediately before a
+  // comma/period, or immediately before a reference-shaped token), not describing something else
+  // ("black box", "black strap") that a blind bare-word match would misread.
+  const dial =
+    text.match(/^\s*(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)?\s*$/i)?.[1] ??
+    text.match(/\b(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)\b/i)?.[1] ??
+    text.match(/\b(black|white|blue|green|silver|champagne)\b(?=\s*[,.]|\s+\S*\d)/i)?.[1];
   const normalized=normalizeText(text);
   const brand=normalized.brand||undefined;
+  const location = extractLocationPhrase(text, brand);
   // Once the maker is identified, a model can only be what FOLLOWS the brand in the identity
   // clause. Everything before it is conversational lead-in, and must never be stored as the
   // model — the live bug this fixes persisted "ot buy a" (the tail of "i want ot buy a rolex")
   // as the model, which then displayed as "Rolex ot buy a". When the brand is named somewhere
   // else in the message but not in this clause, the clause is entirely lead-in and yields no
   // model at all rather than a guess.
-  let identityClause: string | null = stripLeadingIntent(text).split(",", 1)[0];
+  //
+  // Restricted to the SENTENCE that actually names the brand, not the rest of a multi-sentence
+  // message — required regression fix: "...Rolex Daytona 116500LN with a black dial. I'm in
+  // Miami and don't want to spend more than $25,000." was leaking the second sentence's "I'm"
+  // into the model ("Daytona with a I'm") once the dial/price/location words were stripped from
+  // it, because a later sentence about budget/location was never a candidate for the model to
+  // begin with.
+  const strippedFull = stripLeadingIntent(text);
+  const brandSentence = brand
+    ? strippedFull.split(/(?<=[.!?])\s+/).find((s) => s.toLowerCase().includes(brand.toLowerCase())) ?? strippedFull
+    : strippedFull;
+  let identityClause: string | null = brandSentence.split(",", 1)[0];
   if (brand) {
     const brandAt = identityClause.toLowerCase().indexOf(brand.toLowerCase());
     identityClause = brandAt >= 0 ? identityClause.slice(brandAt + brand.length) : null;
@@ -1287,9 +1375,20 @@ function intakeSlots(text: string, reference: string | null) {
     // "wtb a rolex 116500 black dial" (displayed as "Model: black") even though the dial field
     // was already being parsed correctly from the same message. Removing the whole phrase here,
     // before that cutoff runs, also stops the cutoff from eating a model that FOLLOWS one:
-    // "black dial daytona" keeps daytona instead of collapsing to the color.
-    .replace(/\b(?:black|white|blue|green|silver|champagne|grey|gray|salmon|panda|either|any)\s*(?:dials?|colou?rs?)\b/gi, " ")
-    .replace(/\bonly\b/gi, "")
+    // "black dial daytona" keeps daytona instead of collapsing to the color. Also swallows an
+    // immediately preceding "with (a/an)" connector ("with a black dial") as one unit, so that
+    // connector doesn't itself linger on as part of the model.
+    .replace(/\b(?:with\s+(?:an?\s+)?)?(?:black|white|blue|green|silver|champagne|grey|gray|salmon|panda|either|any)\s*(?:dials?|colou?rs?)\b/gi, " ")
+    // A bare color word naming the dial in dealer shorthand (no "dial"/"color" suffix — see the
+    // dial slot's own matching fallback just above in this function) is still a dial attribute,
+    // not part of the model: "Rolex Daytona 116500LN black, pre-owned, ..." left "black" sitting
+    // in the model once the reference was removed, since only the "<color> dial" phrase (not a
+    // bare "<color>,") was ever stripped here.
+    .replace(/\b(black|white|blue|green|silver|champagne)\b(?=\s*[,.]|\s+\S*\d)/gi, " ")
+    // Price-qualifier filler ("around $25k", "approximately $25k") describes the budget, not
+    // the watch — left unstripped, it survived as a bogus model ("around") once the price
+    // itself was removed by the next step.
+    .replace(/\b(?:only|around|approximately|roughly|about)\b/gi, "")
     .replace(/(?:under|max(?:imum)?|budget|asking|price|for)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
     .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
@@ -2174,12 +2273,20 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   // FS/WTB messages are postings, not generic searches. Complete and save the posting first;
   // only the completion handler is allowed to run matching. This also keeps seller fields out
   // of the buyer-preference interview entirely.
+  //
+  // A multi-item message only ever starts intake for the FIRST item (see the notice above) --
+  // slot extraction must be scoped to that item's own text too. Passing the full original text
+  // when a second item was recognized let its content leak into the first item's fields (the
+  // live-adjacent bug this fixes: "I'm looking for a Rolex 116500LN and a Patek 5712G." stored
+  // "and a Patek 5712G" as the FIRST item's model). A single-item message keeps passing the
+  // full text as before, since query/text only ever differ by the stripped leading phrase there.
+  const intakeText = parsed.length > 1 ? parsed[0].query : text;
   if (parsed[0].action === "sell") {
-    await startSellIntake(state, parsed[0], messages, text, imageUrl);
+    await startSellIntake(state, parsed[0], messages, intakeText, imageUrl);
     saveState(state);
     return { state, messages };
   }
-  await startBuyIntake(state, parsed[0], messages, text);
+  await startBuyIntake(state, parsed[0], messages, intakeText);
   saveState(state);
   return { state, messages };
 }
