@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { Pool } from "pg";
 import { parse } from "csv-parse/sync";
 import { config } from "../config";
+import { getActiveGroupCounts } from "../postings/groupActivity";
 
 export type AdminRole = "owner" | "administrator" | "support" | "read_only";
 export interface Administrator { id:number; name:string; username:string; email:string; role:AdminRole; status:"active"|"inactive"; last_login_at:string|null; created_at:string; updated_at:string }
@@ -83,7 +84,25 @@ export async function saveAdministrator(actor:Administrator,input:any,id?:number
 export async function resetAdministratorPassword(actor:Administrator,id:number,password:string){if(actor.role!=="owner")throw new Error("owner role required");await db().query("UPDATE administrators SET password_hash=$1,updated_at=now() WHERE id=$2",[await hashPassword(password),id]);await audit(actor,"administrator.password_reset","administrator",String(id));}
 
 const allowedUserFields=["phone","name","company","email","tier","specialty","wf_profile_id","membership_status","subscription_status","access_status","trial_limit","complimentary_access","opt_in_status","opt_in_source","notes"];
-export async function listUsers(q="",status="",page=1,limit=25){const values:any[]=[];let where="WHERE 1=1";if(q){values.push(`%${q}%`);where+=` AND (phone ILIKE $${values.length} OR name ILIKE $${values.length} OR company ILIKE $${values.length})`;}if(status){values.push(status);where+=` AND access_status=$${values.length}`;}values.push(limit,(page-1)*limit);const rows=(await db().query(`SELECT * FROM approved_users ${where} ORDER BY created_at DESC LIMIT $${values.length-1} OFFSET $${values.length}`,values)).rows;const count=Number((await db().query(`SELECT count(*) n FROM approved_users ${where}`,values.slice(0,-2))).rows[0].n);return{rows,count,page,limit}}
+/**
+ * Adds the "groups active in" signal (see postings/groupActivity.ts) to each approved-user row
+ * as active_groups_count, resolved phone -> linked_identities -> canonical user in one batch.
+ * Best-effort: the Users page must still render when the postings schema is absent or the
+ * lookup fails, so any error degrades to 0 for every row rather than failing the listing.
+ * Not part of allowedUserFields, so it is display-only and can never be written back.
+ */
+async function withActiveGroupCounts(rows:any[]):Promise<any[]>{
+  if(rows.length===0)return rows;
+  let counts=new Map<string,number>();
+  try{
+    const phones=[...new Set(rows.map(r=>String(r.phone)))];
+    const links=(await db().query("SELECT identity,canonical_user_id FROM linked_identities WHERE identity=ANY($1::text[])",[phones])).rows as {identity:string;canonical_user_id:number}[];
+    const byUser=await getActiveGroupCounts(links.map(l=>Number(l.canonical_user_id)));
+    for(const l of links)counts.set(l.identity,Math.max(counts.get(l.identity)??0,byUser.get(Number(l.canonical_user_id))??0));
+  }catch(err){console.error("[admin] active group count lookup failed (showing 0):",err);counts=new Map();}
+  return rows.map(r=>({...r,active_groups_count:counts.get(String(r.phone))??0}));
+}
+export async function listUsers(q="",status="",page=1,limit=25){const values:any[]=[];let where="WHERE 1=1";if(q){values.push(`%${q}%`);where+=` AND (phone ILIKE $${values.length} OR name ILIKE $${values.length} OR company ILIKE $${values.length})`;}if(status){values.push(status);where+=` AND access_status=$${values.length}`;}values.push(limit,(page-1)*limit);const rows=await withActiveGroupCounts((await db().query(`SELECT * FROM approved_users ${where} ORDER BY created_at DESC LIMIT $${values.length-1} OFFSET $${values.length}`,values)).rows);const count=Number((await db().query(`SELECT count(*) n FROM approved_users ${where}`,values.slice(0,-2))).rows[0].n);return{rows,count,page,limit}}
 export async function saveUser(actor:Administrator,input:any,id?:number){const phone=normalizePhone(String(input.phone));if(!String(input.name??"").trim())throw new Error("name required");const values=allowedUserFields.map(f=>f==='phone'?phone:f==='trial_limit'?Number(input[f]??3):f==='complimentary_access'?input[f]===true||input[f]==='true':input[f]||null);let row;if(id){values.push(id);row=(await db().query(`UPDATE approved_users SET ${allowedUserFields.map((f,i)=>`${f}=$${i+1}`).join(',')},updated_at=now() WHERE id=$${values.length} RETURNING *`,values)).rows[0]}else row=(await db().query(`INSERT INTO approved_users(${allowedUserFields.join(',')}) VALUES(${values.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`,values)).rows[0];await audit(actor,id?"user.updated":"user.created","approved_user",String(row.id));return row}
 export async function deleteUser(actor:Administrator,id:number){await db().query("DELETE FROM approved_users WHERE id=$1",[id]);await audit(actor,"user.deleted","approved_user",String(id))}
 export async function importUsersCsv(actor:Administrator,csv:string){const rows=parse(csv,{columns:true,skip_empty_lines:true,trim:true}) as any[];let added=0,updated=0,skipped=0;const errors:any[]=[];for(let i=0;i<rows.length;i++){try{const raw=rows[i],phone=normalizePhone(raw.phone||"");if(!raw.name)throw new Error("name required");const existing=(await db().query("SELECT * FROM approved_users WHERE phone=$1",[phone])).rows[0];if(existing){const patch:any={...existing};for(const f of allowedUserFields)if(raw[f]!==undefined&&raw[f]!=="")patch[f]=raw[f];await saveUser(actor,patch,existing.id);updated++;}else{await saveUser(actor,{...raw,phone},undefined);added++;}}catch(e){errors.push({row:i+2,error:(e as Error).message});}}await audit(actor,"users.csv_import","approved_user",undefined,{added,updated,skipped,errorCount:errors.length});return{added,updated,skipped,errors}}
@@ -101,3 +120,5 @@ export async function isPostingMonitoringEnabled(posting:{source_type:string;sou
     : config.postingsV4.allowedChatIds.includes(posting.source_chat_id)
       || (process.env.NODE_ENV !== "production" && config.postingsV4.allowedChatIds.includes("*"));
 }
+/** Test-only: releases the admin pool so a test process can exit promptly. */
+export async function _closePoolForTests():Promise<void>{await pool?.end();pool=null;adminSchemaReady=null}

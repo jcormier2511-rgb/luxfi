@@ -2,6 +2,7 @@ import { withSchema, withTransaction } from "./db";
 import { getOrCreateCanonicalUser } from "./identity";
 import { platformForIdentity } from "../channels/identity";
 import { PostingRow, getPrimaryImageUrl } from "./postingsStore";
+import { getActiveGroupCount } from "./groupActivity";
 import { recordNotificationFailure } from "./status";
 import { getEntitlement } from "../billing/entitlementStore";
 import { weeklyLimitFor, PlanKey } from "../billing/plans";
@@ -78,9 +79,11 @@ export interface MatchPresentation {
   sourceId?: string;
   sourceUrl?: string;
   photoUrl?: string;
+  /** "Groups active in" signal — omitted (not 0) when unknown, see groupActivity.ts. */
+  activeGroupCount?: number;
 }
 
-function presentationFor(posting: PostingRow, photoUrl?: string | null): MatchPresentation {
+function presentationFor(posting: PostingRow, photoUrl?: string | null, activeGroupCount?: number): MatchPresentation {
   return {
     identity: posting.contact_name || posting.source_identity || undefined,
     brand: posting.brand || undefined,
@@ -96,6 +99,7 @@ function presentationFor(posting: PostingRow, photoUrl?: string | null): MatchPr
     sourceId: posting.external_listing_id || undefined,
     sourceUrl: posting.detail_url || undefined,
     photoUrl: photoUrl || undefined,
+    activeGroupCount: activeGroupCount && activeGroupCount > 0 ? activeGroupCount : undefined,
   };
 }
 
@@ -103,6 +107,7 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
   const lines = [`${heading} ${matchId}`];
   if (match.sourceId) lines.push(`Candidate ID: ${match.sourceId}`);
   if (match.identity) lines.push(`${roleLabel}: ${match.identity}`);
+  if (match.activeGroupCount) lines.push(`Active in ${match.activeGroupCount} monitored dealer group${match.activeGroupCount === 1 ? "" : "s"}`);
   const watch = [match.brand, match.model, match.reference].filter(Boolean).join(" ");
   if (watch) lines.push(watch);
   if (match.dial) lines.push(`Dial/Color: ${match.dial}`);
@@ -132,24 +137,25 @@ export function formatMatchMessage(
   self: PostingRow,
   counterpart: PostingRow,
   reasons: string[],
-  imageUrl: string | null
+  imageUrl: string | null,
+  activeGroupCount?: number
 ): string {
   const roleLabel = self.type === "FS" ? "Buyer" : "Seller";
   return (
     // Keep the established notification discriminator as well as the numeric ID. Besides being
     // useful to people scanning a chat, downstream channel consumers and the PR #20 regression
     // suite intentionally recognize automatic notifications by the "Potential Match" heading.
-    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl), "Potential Match") +
+    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl, activeGroupCount), "Potential Match") +
     (reasons.length ? `\n\nWhy it matched:\n${reasons.map((r) => `- ${r}`).join("\n")}` : "") +
     `\n\nReply "approve ${matchId}" to connect, or "pass ${matchId}" to skip.`
   );
 }
 
-function groupMatchMessage(matchId:number,self:PostingRow,counterpart:PostingRow,reasons:string[],imageUrl:string|null):string{
+function groupMatchMessage(matchId:number,self:PostingRow,counterpart:PostingRow,reasons:string[],imageUrl:string|null,activeGroupCount?:number):string{
   const watch=[self.brand,self.model,self.reference].filter(Boolean).join(" ")||self.original_text.slice(0,80);
   const intro=self.type==="WTB"?`Hi — I’m Fi from WatchFacts. I saw your request for ${watch} and found a potential match.`:`Hi — I’m Fi from WatchFacts. I saw you’re selling ${watch} and found a potential buyer.`;
   const more=self.type==="WTB"?`I can also show you other available ${watch} listings on WatchFacts. Reply MORE.`:`I can also show you other relevant buyer opportunities on WatchFacts. Reply MORE.`;
-  return `${intro}\n\n${formatMatchMessage(matchId,self,counterpart,reasons,imageUrl)}\n\n${more}`;
+  return `${intro}\n\n${formatMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount)}\n\n${more}`;
 }
 
 /**
@@ -214,10 +220,18 @@ async function notifyOneRecipient(
   } catch (err) {
     console.error(`[postings] image lookup failed for posting ${counterpart.id} (falling back to text-only):`, err);
   }
+  // Same best-effort isolation for the "groups active in" line: a failed count just leaves
+  // the line out (the card omits it at 0 anyway) — it must never abort delivery.
+  let activeGroupCount: number | undefined;
+  try {
+    if (counterpart.canonical_user_id) activeGroupCount = await getActiveGroupCount(counterpart.canonical_user_id);
+  } catch (err) {
+    console.error(`[postings] active group count failed for user ${counterpart.canonical_user_id} (omitting line):`, err);
+  }
 
   try {
     const fromGroup=self.source_type==="chat"&&Boolean(self.source_chat_id);
-    const message = fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl);
+    const message = fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl, activeGroupCount);
     const deliveredTo = await sendToCanonicalUser(recipientCanonicalUserId, phone, message);
     await withSchema(pool=>pool.query(`UPDATE match_recipients SET delivered_at=now() WHERE match_id=$1 AND recipient_canonical_user_id=$2 AND match_revision=$3`,[matchId,recipientCanonicalUserId,revision]));
     if(fromGroup)await saveMoreContext(recipientCanonicalUserId,platformForIdentity(deliveredTo),self,counterpart,matchId);

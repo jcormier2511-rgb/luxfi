@@ -37,12 +37,15 @@ const telegramClient = require("../channels/telegram") as typeof import("../chan
 const identity = require("./identity") as typeof import("./identity");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const notificationPreferences = require("./notificationPreferences") as typeof import("./notificationPreferences");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const adminStore = require("../admin/store") as typeof import("../admin/store");
 
 const { ingestChatPosting, mirrorApiFsPosting } = store;
 const { runImmediateMatch } = matching;
 const { approveMatch, passMatch } = notify;
 
 after(async () => {
+  await adminStore._closePoolForTests();
   await db._closePoolForTests();
   await entitlements._closePoolForTests();
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
@@ -86,6 +89,10 @@ async function createMatch(buyerPhone: string): Promise<{ matchId: number; selle
 async function resetAll(): Promise<void> {
   await db._resetDbForTests();
   await entitlements._resetDbForTests();
+  // Any approved_groups row flips the allowlist into database mode (hasDatabaseGroupAllowlist),
+  // which would silently un-monitor chat "g1" for every test here — start each one clean.
+  await adminStore.initAdminSchema();
+  await db.withSchema((pool) => pool.query("DELETE FROM approved_groups"));
   counter = 0;
 }
 
@@ -135,6 +142,46 @@ test("presented match preserves every available decision field and remains appro
   assert.equal(outcome.status, "approved", "the exact delivered match remains actionable");
   assert.equal(outcome.match?.identity, "ABC Watches");
   assert.equal((await approveMatch(987654321, "buyer-rich-card")).status, "invalid", "unknown/expired IDs fail safely");
+});
+
+test("match card shows how many monitored dealer groups the counterpart is active in", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+  await db.withSchema((pool) =>
+    pool.query("INSERT INTO approved_groups(group_name,whatsapp_chat_id,status,monitoring_enabled) VALUES('G1','g1','active',true),('G2','g2','active',true),('Paused','g3','inactive',true)")
+  );
+  // The seller has posted in two active groups and one inactive one.
+  await ingestChatPosting({ platform: "whatsapp", chatId: "g2", messageId: "seller-elsewhere", senderIdentity: "seller-groups", text: "FS Rolex 126610LN $12,000" });
+  await ingestChatPosting({ platform: "whatsapp", chatId: "g3", messageId: "seller-paused", senderIdentity: "seller-groups", text: "FS Rolex 126710BLRO $18,000" });
+  await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "fs-groups", senderIdentity: "seller-groups", text: "FS Rolex GROUPS1 $10,000" });
+  const wtb = await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "wtb-groups", senderIdentity: "buyer-groups", text: "WTB Rolex GROUPS1 budget $12,000" });
+  await runImmediateMatch(wtb.posting!);
+
+  const buyerCard = sent.find((m) => m.phone === "buyer-groups")?.message;
+  assert.ok(buyerCard);
+  assert.match(buyerCard!, /Seller: seller-groups\nActive in 2 monitored dealer groups/, "line sits directly under the identity line");
+  const sellerCard = sent.find((m) => m.phone === "seller-groups")?.message;
+  assert.ok(sellerCard);
+  assert.match(sellerCard!, /Buyer: buyer-groups\nActive in 1 monitored dealer group\n/, "singular form for one group");
+  await db.withSchema((pool) => pool.query("DELETE FROM approved_groups"));
+});
+
+test("match card omits the groups line entirely when the counterpart is active in none", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+  // API-mirrored seller: no canonical user at all, so there is nothing to count.
+  await createMatch("buyer-no-groups");
+  const buyerCard = sent.find((m) => m.phone === "buyer-no-groups")?.message;
+  assert.ok(buyerCard);
+  assert.doesNotMatch(buyerCard!, /monitored dealer group/);
+  // Chat-vs-chat with no approved groups on file: still no line (never "Active in 0").
+  const { matchId } = await createChatVsChatMatch("buyer-no-groups-2", "seller-no-groups-2");
+  assert.ok(matchId);
+  const card2 = sent.find((m) => m.phone === "buyer-no-groups-2")?.message;
+  assert.ok(card2);
+  assert.doesNotMatch(card2!, /monitored dealer group/);
 });
 
 test("approveMatch succeeds and returns the counterpart's contact info", async () => {
