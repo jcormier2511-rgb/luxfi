@@ -113,6 +113,13 @@ async function ensureSchema(): Promise<void> {
         ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS native_price_amount DOUBLE PRECISION;
         ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS native_currency TEXT;
         ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS original_price_text TEXT;
+        -- The listing's OWN posted date, when the source supplies one. The flash-sale feed does
+        -- not (it carries only an expiry deadline), which is why the freshness window has had to
+        -- measure from first_seen_at -- the age of Fi's MIRROR of a listing, not of the listing.
+        -- Where a real posted date IS known the window uses it instead and finally means what it
+        -- says. NULL wherever it is unknown, and freshInventorySql falls back to first_seen_at
+        -- there, so every existing row behaves exactly as it did.
+        ALTER TABLE inventory_listings ADD COLUMN IF NOT EXISTS listed_at TIMESTAMPTZ;
         -- Exact-reference Market Pulse reads only normalized, currently-active inventory.
         -- Keep that read indexed; price/last_seen_at are included so Postgres can satisfy
         -- the aggregation from the index on installations that support index-only scans.
@@ -127,6 +134,9 @@ async function ensureSchema(): Promise<void> {
         -- referencesMatch ("116500" finding "116500LN") can use the index rather than scanning.
         CREATE INDEX IF NOT EXISTS inventory_listings_active_recent
           ON inventory_listings (is_active, type, first_seen_at DESC);
+        -- Same index over the expression the freshness window actually filters on.
+        CREATE INDEX IF NOT EXISTS inventory_listings_active_listed
+          ON inventory_listings (is_active, type, (COALESCE(listed_at, first_seen_at)) DESC);
         CREATE INDEX IF NOT EXISTS inventory_listings_normalized_ref
           ON inventory_listings (upper(regexp_replace(COALESCE(ref,''), '[^A-Za-z0-9]', '', 'g')) text_pattern_ops, is_active, type);
         `
@@ -173,6 +183,9 @@ export function _forceSchemaRecheckForTests(): void {
 
 export interface UpsertRow {
   id: string;
+  /** The listing's own posted date (ISO), when the source supplies one — see the listed_at
+   *  column. Omitted for feeds that don't, and the freshness window falls back to first sight. */
+  listedAt?: string;
   type: ListingType;
   category: string;
   item: string;
@@ -197,10 +210,11 @@ function upsertValues(r: UpsertRow, syncedAt: string, source: string): unknown[]
   return [
     source, r.type, r.id, r.category, r.item, r.brand, r.ref, r.condition, r.price, r.location,
     r.contactName, r.contactPhone, r.rating, r.description, r.detailUrl ?? "", r.imageUrl ?? "",
-    r.nativePriceAmount ?? null, r.nativeCurrency ?? null, r.originalPriceText ?? null, syncedAt,
+    r.nativePriceAmount ?? null, r.nativeCurrency ?? null, r.originalPriceText ?? null,
+    r.listedAt ?? null, syncedAt,
   ];
 }
-const UPSERT_COLUMNS = 20; // the 19 listing values plus syncedAt, which fills both timestamps
+const UPSERT_COLUMNS = 21; // the 20 listing values plus syncedAt, which fills both timestamps
 
 /**
  * Insert new listings, update existing ones (matched by source+type+external_id).
@@ -230,15 +244,15 @@ export async function upsertListings(rows: UpsertRow[], syncedAt: string, source
       const tuples = batch.map((_, i) => {
         const base = i * UPSERT_COLUMNS;
         const p = (n: number) => `$${base + n}`;
-        // $20 is syncedAt, used for BOTH first_seen_at and last_seen_at on a fresh insert.
-        return `(${Array.from({ length: 19 }, (_, c) => p(c + 1)).join(", ")}, TRUE, ${p(20)}, ${p(20)})`;
+        // $21 is syncedAt, used for BOTH first_seen_at and last_seen_at on a fresh insert.
+        return `(${Array.from({ length: 20 }, (_, c) => p(c + 1)).join(", ")}, TRUE, ${p(21)}, ${p(21)})`;
       });
       await client.query(
         `
         INSERT INTO inventory_listings
           (source, type, external_id, category, item, brand, ref, condition, price, location,
            contact_name, contact_phone, rating, description, detail_url, image_url,
-           native_price_amount, native_currency, original_price_text, is_active, first_seen_at, last_seen_at)
+           native_price_amount, native_currency, original_price_text, listed_at, is_active, first_seen_at, last_seen_at)
         VALUES
           ${tuples.join(",\n          ")}
         ON CONFLICT (source, type, external_id) DO UPDATE SET
@@ -248,6 +262,8 @@ export async function upsertListings(rows: UpsertRow[], syncedAt: string, source
           rating = excluded.rating, description = excluded.description, detail_url = excluded.detail_url,
           image_url = excluded.image_url, native_price_amount = excluded.native_price_amount,
           native_currency = excluded.native_currency, original_price_text = excluded.original_price_text,
+          -- Source data, refreshed like price/image. first_seen_at deliberately is not.
+          listed_at = excluded.listed_at,
           is_active = TRUE, last_seen_at = excluded.last_seen_at
         `,
         batch.flatMap((r) => upsertValues(r, syncedAt, source))
@@ -372,7 +388,7 @@ function loadGroupListings(type?: ListingType): InventoryListing[] {
  */
 export function freshInventorySql(alias: string): string {
   const days = config.watchfacts.maxListingAgeDays;
-  return days > 0 ? `${alias}.first_seen_at > now() - interval '${days} days'` : "TRUE";
+  return days > 0 ? `COALESCE(${alias}.listed_at, ${alias}.first_seen_at) > now() - interval '${days} days'` : "TRUE";
 }
 
 /** The normalized-reference expression, written once. Must stay identical to
@@ -442,7 +458,7 @@ export async function findCandidateListings(query: CandidateQuery = {}): Promise
 
   params.push(limit);
   const result = await getPool().query(
-    `SELECT * FROM inventory_listings WHERE ${where.join(" AND ")} ORDER BY first_seen_at DESC LIMIT $${params.length}`,
+    `SELECT * FROM inventory_listings WHERE ${where.join(" AND ")} ORDER BY COALESCE(listed_at, first_seen_at) DESC LIMIT $${params.length}`,
     params
   );
   return [...(result.rows as ListingRow[]).map(rowToListing), ...loadGroupListings(query.type)];

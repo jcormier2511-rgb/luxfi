@@ -344,3 +344,29 @@ test("a multi-batch upsert writes every row", async () => {
 
   assert.equal((await getActiveListings("FS")).length, 1200, "batching must not lose rows at a batch boundary");
 });
+
+test("a real posted date, when the source supplies one, is what the freshness window measures", async () => {
+  await _resetDbForTests();
+  // Both first seen by Fi just now — the difference is the listing's own posted date. Under
+  // first_seen_at alone both would look brand new, which is exactly the flaw a real date fixes.
+  const now = new Date().toISOString();
+  await upsertListings([
+    row("posted-recently", "FS", { ref: "116500LN", listedAt: daysAgo(3) }),
+    row("posted-long-ago", "FS", { ref: "116500LN", listedAt: daysAgo(45) }),
+    row("no-posted-date", "FS", { ref: "116500LN" }),
+  ], now);
+
+  const ids = (await getActiveListings("FS")).map((l) => l.id).sort();
+  assert.deepEqual(ids, ["no-posted-date", "posted-recently"],
+    "a listing posted 45 days ago is stale the day Fi first sees it; one with no date falls back to first sight");
+});
+
+test("a posted date is refreshed by a later sync, unlike first sight", async () => {
+  await _resetDbForTests();
+  await upsertListings([row("relisted", "FS", { listedAt: daysAgo(45) })], new Date().toISOString());
+  assert.deepEqual(await getActiveListings("FS"), [], "stale on its own posted date");
+
+  // The dealer reposts it; the source now reports a new date and the mirror must follow.
+  await upsertListings([row("relisted", "FS", { listedAt: daysAgo(1) })], new Date().toISOString());
+  assert.deepEqual((await getActiveListings("FS")).map((l) => l.id), ["relisted"]);
+});
