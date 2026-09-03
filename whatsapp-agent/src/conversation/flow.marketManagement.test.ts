@@ -35,7 +35,7 @@ test("brand-only pulse reports scoped counts without reference pricing",async()=
  await store.createDirectPosting({phone,type:"WTB",description:"WTB Rolex",brand:"Rolex",reference:null,price:null});
  await store.createDirectPosting({phone:"other",type:"FS",description:"FS Rolex",brand:"Rolex",reference:null,price:50000});
  const pulse=await handleIncomingMessage(phone,"market pulse");
- assert.match(pulse.messages.join("\n"),/Market Pulse — Rolex[\s\S]*active Rolex listings[\s\S]*average asking price unavailable/i);
+ assert.match(pulse.messages.join("\n"),/Market Pulse — Rolex[\s\S]*Scope: every Rolex listing[\s\S]*not shown for a whole brand/i);
  assert.doesNotMatch(pulse.messages.join("\n"),/Average FS ask: \$/);
 });
 

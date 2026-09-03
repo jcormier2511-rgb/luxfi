@@ -35,9 +35,11 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
 
   const pulse = await getMarketPulse(" 126500ln ");
   assert.deepEqual({ ...pulse, averageFsAsk: Math.round(pulse.averageFsAsk! * 100) / 100 },
-    { reference:"126500LN", fsCount:4, wtbCount:2, averageFsAsk:29833.33 });
+    { reference:"126500LN", requested:"126500LN", fsCount:4, wtbCount:2, averageFsAsk:29833.33 });
+  // Every pulse states the scope it counted, so a brand-wide number can't be mistaken for one
+  // about a single reference.
   assert.equal(formatMarketPulse(pulse),
-    "Market Pulse — 126500LN\n\nFS: 4 active listings\nWTB: 2 active requests\nAverage FS ask: $29,833\n\nBased on current activity across the dealer groups and WatchFacts inventory Fi monitors.");
+    "Market Pulse — 126500LN\n\nScope: this exact reference\nFS: 4 active listings\nWTB: 2 active requests\nAverage FS ask: $29,833\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.");
 });
 
 test("pulse rejects a missing exact reference", async () => {
@@ -76,7 +78,9 @@ test("116500 and 116500LN aggregate as one canonical bucket, in either direction
   const expected = { reference:"116500LN", fsCount:5, wtbCount:2, averageFsAsk:34400 };
   for (const typed of ["116500LN", "116500", " 116500ln ", "116500-LN"]) {
     const pulse = await getMarketPulse(typed);
-    assert.deepEqual({ ...pulse, averageFsAsk: Math.round(pulse.averageFsAsk!) }, expected,
+    const { requested, ...rest } = pulse;
+    assert.equal(requested, typed.trim().toUpperCase(), "the pulse reports what was actually asked for");
+    assert.deepEqual({ ...rest, averageFsAsk: Math.round(pulse.averageFsAsk!) }, expected,
       `"${typed}" must resolve to the same canonical bucket`);
   }
 
@@ -88,4 +92,24 @@ test("116500 and 116500LN aggregate as one canonical bucket, in either direction
   const ambiguous = await getMarketPulse("116610");
   assert.equal(ambiguous.reference, "116610", "a bare 116610 is ambiguous (LN vs LV) and is never rewritten");
   assert.equal(ambiguous.fsCount, 0);
+});
+
+test("a pulse always states which scope it counted, and discloses a canonical reference swap", () => {
+  // The same shape of numbers answers three different questions; without the scope line a
+  // brand-wide count reads as though it were about the single reference that was asked for.
+  const shorthand = formatMarketPulse({ reference:"116500LN", requested:"116500", label:"Rolex 116500LN", scope:"reference", fsCount:8, wtbCount:1, averageFsAsk:137286 });
+  assert.match(shorthand, /Scope: this exact reference \(116500 and 116500LN are the same watch\)/);
+  assert.match(shorthand, /WTB: 1 active request$/m, "a count of one is not pluralized");
+
+  const exact = formatMarketPulse({ reference:"116500LN", requested:"116500LN", label:"116500LN", scope:"reference", fsCount:2, wtbCount:0, averageFsAsk:100 });
+  assert.match(exact, /Scope: this exact reference$/m);
+  assert.doesNotMatch(exact, /same watch/, "nothing to disclose when the typed reference is already canonical");
+
+  const model = formatMarketPulse({ reference:"", label:"Rolex Daytona", scope:"model", fsCount:12, wtbCount:3, averageFsAsk:null });
+  assert.match(model, /Scope: every reference under Rolex Daytona/);
+  assert.match(model, /not shown across mixed references/);
+
+  const brand = formatMarketPulse({ reference:"", label:"Rolex", scope:"brand", fsCount:180, wtbCount:1, averageFsAsk:null });
+  assert.match(brand, /Scope: every Rolex listing Fi can see/);
+  assert.match(brand, /not shown for a whole brand/);
 });

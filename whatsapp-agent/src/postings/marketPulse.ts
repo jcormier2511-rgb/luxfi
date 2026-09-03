@@ -4,6 +4,9 @@ import { canonicalizeReference, referenceEquivalents } from "./normalize";
 
 export interface MarketPulse {
   reference: string;
+  /** Exactly what the user asked for, before canonicalization — so a pulse that answered under a
+   *  different reference than the one typed can say so instead of looking like the wrong watch. */
+  requested?: string;
   label?: string;
   scope?: "reference" | "model" | "brand";
   fsCount: number;
@@ -73,6 +76,7 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
     const row = result.rows[0];
     return {
       reference: canonicalReference,
+      requested: reference.trim().toUpperCase(),
       fsCount: Number(row.fs_count),
       wtbCount: Number(row.wtb_count),
       averageFsAsk: row.average_fs_ask === null ? null : Number(row.average_fs_ask),
@@ -116,16 +120,32 @@ export function formatMarketPulse(pulse: MarketPulse): string {
     ? "Unavailable"
     : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pulse.averageFsAsk);
   const title = pulse.label || pulse.reference;
-  if (!pulse.scope) {
-    return `Market Pulse — ${title}\n\nFS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests\nAverage FS ask: ${average}\n\nBased on current activity across the dealer groups and WatchFacts inventory Fi monitors.`;
+  const plural = (n: number, one: string, many: string) => `${n} active ${n === 1 ? one : many}`;
+  const counts = `FS: ${plural(pulse.fsCount, "listing", "listings")}\nWTB: ${plural(pulse.wtbCount, "request", "requests")}`;
+
+  // Every pulse says what it counted. Three different questions ("this exact watch", "this
+  // model", "this brand") return the same shape of numbers, and without the scope line a
+  // brand-wide count reads as though it were about the one reference that was asked for.
+  let scopeLine: string;
+  let averageLine: string;
+  if (pulse.scope === "brand") {
+    scopeLine = `Scope: every ${title} listing Fi can see`;
+    averageLine = "Average ask: not shown for a whole brand — ask for an exact reference.";
+  } else if (pulse.scope === "model") {
+    scopeLine = `Scope: every reference under ${title}`;
+    averageLine = "Average ask: not shown across mixed references — ask for an exact reference.";
+  } else {
+    // A shorthand reference resolves to its canonical form, so a pulse asked for as "116500"
+    // answers under "116500LN". Saying so is the difference between a trusted number and one
+    // that looks like it came back for the wrong watch.
+    const alias = pulse.requested && pulse.requested !== pulse.reference
+      ? ` (${pulse.requested} and ${pulse.reference} are the same watch)`
+      : "";
+    scopeLine = `Scope: this exact reference${alias}`;
+    averageLine = `Average FS ask: ${average}`;
   }
-  const counts = pulse.scope === "brand"
-    ? `FS: ${pulse.fsCount} active ${title} listings\nWTB: ${pulse.wtbCount} active ${title} requests`
-    : `FS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests`;
-  const averageLine = pulse.scope === "brand" || pulse.scope === "model"
-    ? "Reference-level average asking price unavailable because no reference is selected."
-    : `Average FS ask: ${average}`;
-  return `Market Pulse — ${title}\n\n${counts}\n${averageLine}\n\nBased on current active WatchFacts inventory and normalized listings.`;
+
+  return `Market Pulse — ${title}\n\n${scopeLine}\n${counts}\n${averageLine}\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.`;
 }
 
 
