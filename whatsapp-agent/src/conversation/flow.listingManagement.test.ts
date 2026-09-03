@@ -69,7 +69,7 @@ test("an explicit listing edit beats an open WTB draft instead of retargeting it
 
   assert.match(text, /Updated:[\s\S]*116500LN[\s\S]*Asking: \$2,500/);
   assert.doesNotMatch(text, /listing review/i);
-  assert.doesNotMatch(text, /Should I start monitoring/i);
+  assert.doesNotMatch(text, /Reply "CONFIRM" to start monitoring/i);
   assert.equal(await priceOf(one.id), 2500, "listing 1 must change");
   assert.equal(await priceOf(two.id), 14000, "listing 2 must not change");
   assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), draftBefore, "the WTB draft must be untouched");
@@ -379,7 +379,7 @@ for (const command of MARKET_REFERENCE_COMMANDS) {
     assert.match(text, /FS: 2 active listings/);
     assert.match(text, /Average FS ask: \$35,000/);
     assert.doesNotMatch(text, /listing review/i);
-    assert.doesNotMatch(text, /Should I start monitoring/i);
+    assert.doesNotMatch(text, /Reply "CONFIRM" to start monitoring/i);
     assert.doesNotMatch(text, /kept your request draft open/i);
     assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), draftBefore, "the WTB draft must be untouched");
   });

@@ -15,9 +15,9 @@ test("WTB fills fields in any order, accepts multiple slots and corrections, the
  assert.match(first.messages[0],/Fi/); assert.match(first.messages[1],/black dial, white dial, or either/);
  assert.equal(first.state.pendingBuyIntake?.budget,28000); assert.equal(first.state.pendingBuyIntake?.location,"US");
  const multi=await handleIncomingMessage(p,"white dial, pre-owned");
- assert.match(multi.messages[0],/I have: WTB/); assert.match(multi.messages[0],/white dial.*pre-owned.*US.*\$28,000/);
+ assert.match(multi.messages[0],/WTB listing review/); assert.match(multi.messages[0],/Dial: white[\s\S]*Condition: Pre-owned[\s\S]*Budget: \$28,000[\s\S]*Location: US/);
  const corrected=await handleIncomingMessage(p,"Actually my budget is 30k and I'm in Canada, new, black dial");
- assert.match(corrected.messages[0],/black dial.*new.*Canada.*\$30,000/);
+ assert.match(corrected.messages[0],/Dial: black[\s\S]*Condition: New[\s\S]*Budget: \$30,000[\s\S]*Location: Canada/);
  assert.equal(corrected.state.pendingBuyIntake?.reference,"116500LN");
 });
 
@@ -112,13 +112,13 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
   });
 
   const summary = await handleIncomingMessage(phone, "WTB Rolex 116500LN white dial pre-owned in the US for $28,000");
-  assert.match(summary.messages.at(-1)!, /Should I start monitoring\?/);
+  assert.match(summary.messages.at(-1)!, /Reply "CONFIRM" to start monitoring/);
   assert.equal(saved.length, 0, "a complete summarized request must remain a draft");
   assert.ok(summary.state.pendingBuyIntake, "draft remains pending before confirmation");
 
   const correction = await handleIncomingMessage(phone, "Actually make the budget $30,000 and condition new");
   assert.equal(saved.length, 0, "a correction at confirmation must not activate the request");
-  assert.match(correction.messages.at(-1)!, /new.*maximum \$30,000.*Should I start monitoring\?/);
+  assert.match(correction.messages.at(-1)!, /Condition: New[\s\S]*Budget: \$30,000[\s\S]*Reply "CONFIRM" to start monitoring/);
   assert.equal(correction.state.pendingBuyIntake?.budget, 30000);
   assert.equal(correction.state.pendingBuyIntake?.condition, "new");
 
@@ -160,14 +160,14 @@ test("FS confirmation boundary persists and activates every parsed field exactly
   const photoPrompt = await handleIncomingMessage(phone, "FS Rolex 116500LN black dial unworn in Canada for 28500");
   assert.match(photoPrompt.messages.at(-1)!, /attach a photo/i);
   const summary = await handleIncomingMessage(phone, "skip");
-  assert.match(summary.messages.at(-1)!, /Photo: none.*Should I start monitoring\?/);
+  assert.match(summary.messages.at(-1)!, /Photo: none\nReply "CONFIRM" to start monitoring/);
   assert.equal(inventoryWrites.length, 0, "summary must not persist inventory");
   assert.equal(activations.length, 0, "summary must not activate or match the listing");
 
   const correction = await handleIncomingMessage(phone, "Actually condition pre-owned and price $29,000");
   assert.equal(inventoryWrites.length, 0);
   assert.equal(activations.length, 0, "correction requires a fresh confirmation");
-  assert.match(correction.messages.at(-1)!, /pre-owned.*asking \$29,000.*Should I start monitoring\?/);
+  assert.match(correction.messages.at(-1)!, /Condition: Pre-owned[\s\S]*Price: \$29,000[\s\S]*Reply "CONFIRM" to start monitoring/);
 
   await handleIncomingMessage(phone, "yes");
   assert.equal(inventoryWrites.length, 1, "confirmed seller inventory is persisted once");
@@ -199,7 +199,7 @@ test("an original-message FS photo stays in the draft and appears in the confirm
     undefined,
     "https://cdn.example/original.jpg"
   );
-  assert.match(summary.messages.at(-1)!, /Photo: attached.*Should I start monitoring\?/);
+  assert.match(summary.messages.at(-1)!, /Photo: attached\nReply "CONFIRM" to start monitoring/);
   assert.equal(summary.state.pendingSellIntake?.imageUrl, "https://cdn.example/original.jpg");
   assert.equal(summary.state.pendingSellIntake?.currency, "EUR");
   assert.equal(inventoryWrites, 0);
@@ -333,7 +333,7 @@ test('"wtb rolex daytona" already names a model and is never asked for one', asy
 test('a fully detailed first message still goes straight to confirmation, never asking for a model', async () => {
   const phone = "15550002018"; resetState(phone);
   const result = await handleIncomingMessage(phone, "wtb rolex, pre-owned, usa, maximum $25,000");
-  assert.match(result.messages.join("\n"), /Should I start monitoring/i, "condition+location were already given, so this must not stop for a model question");
+  assert.match(result.messages.join("\n"), /Reply "CONFIRM" to start monitoring/i, "condition+location were already given, so this must not stop for a model question");
   assert.match(result.messages.join("\n"), /Model: Not provided/);
 });
 

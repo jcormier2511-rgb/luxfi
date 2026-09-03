@@ -81,7 +81,7 @@ for (const [message, expected] of INDEPENDENT_MESSAGES) {
 
     assert.match(text, expected);
     assert.doesNotMatch(text, /listing review/i, "must not reprint the draft");
-    assert.doesNotMatch(text, /Should I start monitoring/i, "must not reprint the draft");
+    assert.doesNotMatch(text, /Reply "CONFIRM" to start monitoring/i, "must not reprint the draft");
     assert.doesNotMatch(text, /kept your request draft open/i, "must not fall into intake handling");
     assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), before, "the draft must be unchanged");
   });
