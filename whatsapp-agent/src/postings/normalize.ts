@@ -51,7 +51,10 @@ const PRICE_PATTERN = new RegExp(
 // Trailing separator group allows for real reference shapes beyond a single dash/slash suffix:
 // Patek uses a dot ("3510.50") and can chain more than one separator ("5712/1A-001"), so the
 // group repeats (`*`) and accepts `.` alongside `-`/`/`.
-const REFERENCE_PATTERN = /(?<!\$\s?)\b(\d{4,6}[A-Z]{0,3}(?:[-/.][A-Z0-9]+)*|\d{3}(?:\.[A-Z0-9]+){2,})\b/i;
+// Up to FOUR trailing letters: Rolex's current GMT/Daytona/Sub families end in four
+// ("126710BLRO", "126711CHNR", "126720VTNR") and were not recognised as references at all with
+// a three-letter cap — a dealer's "Need these three: 116500LN, 126710BLRO, 5712G" lost one.
+const REFERENCE_PATTERN = /(?<!\$\s?)\b(\d{4,6}[A-Z]{0,4}(?:[-/.][A-Z0-9]+)*|\d{3}(?:\.[A-Z0-9]+){2,})\b/i;
 const BRAND_LIST = [
   "rolex",
   "patek philippe",
@@ -367,10 +370,22 @@ export function extractReference(text: string): string | null {
  *                            bare 116610 is genuinely undetermined and stays its own bucket.
  * Anything not listed here is left exactly as written.
  */
-const REFERENCE_ALIAS_GROUPS: ReadonlyArray<{ canonical: string; aliases: readonly string[] }> = [
-  { canonical: "116500LN", aliases: ["116500"] },
-  { canonical: "126500LN", aliases: ["126500"] },
+const REFERENCE_ALIAS_GROUPS: ReadonlyArray<{ canonical: string; aliases: readonly string[]; brand: string; model: string }> = [
+  { canonical: "116500LN", aliases: ["116500"], brand: "rolex", model: "Daytona" },
+  { canonical: "126500LN", aliases: ["126500"], brand: "rolex", model: "Daytona" },
 ];
+
+/**
+ * The maker and model a reference names on its own. Dealers routinely identify a watch by
+ * reference alone ("Need a black 116500LN"), and that IS a Rolex Daytona — a request that
+ * omits the words should not be recorded as brand-less. Only references with an entry above
+ * are known; anything else returns null rather than a guess.
+ */
+export function identityForReference(reference: string): { brand: string; model: string } | null {
+  const canonical = canonicalizeReference(reference);
+  const group = REFERENCE_ALIAS_GROUPS.find((g) => g.canonical === canonical);
+  return group ? { brand: group.brand, model: group.model } : null;
+}
 
 /** normalized alias form -> canonical display form. */
 const ALIAS_TO_CANONICAL = new Map<string, string>(

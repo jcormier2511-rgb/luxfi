@@ -43,7 +43,7 @@ async function openReportedDraft(phone: string): Promise<string> {
       dial: draft.dialColor, condition: draft.condition, budget: draft.budget,
     },
     {
-      brand: "rolex", model: undefined, reference: "116500",
+      brand: "rolex", model: "Daytona", reference: "116500",
       dial: "black", condition: "pre-owned", budget: 35000,
     },
     "the dial color must not be stored as the model"
@@ -111,7 +111,7 @@ test("the full reported sequence: six independent commands, then one real correc
   assert.equal(draft.reference, "116500", "and must not disturb the rest of it");
   assert.equal(draft.dialColor, "black");
   assert.equal(draft.condition, "pre-owned");
-  assert.equal(draft.model, undefined);
+  assert.equal(draft.model, "Daytona");
   assert.match(corrected.messages.join("\n"), /location/i, "the interview carries on from where it was");
 });
 

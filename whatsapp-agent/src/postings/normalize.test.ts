@@ -296,3 +296,14 @@ test("repeated dot thousands separators are consumed as one complete price", () 
   assert.equal(normalized.price, 1250000);
   assert.equal(normalized.currency, "EUR");
 });
+
+test("a four-letter reference suffix is a reference: 126710BLRO is the GMT-Master II", () => {
+  const { extractReference, identityForReference } = require("./normalize") as typeof import("./normalize");
+  assert.equal(extractReference("Need these three: 116500LN, 126710BLRO, 5712G."), "116500LN");
+  assert.equal(extractReference("126710BLRO"), "126710BLRO");
+  assert.equal(extractReference("wtb 126711CHNR full set"), "126711CHNR");
+  // The maker/model a reference implies — only for references the alias table knows.
+  assert.deepEqual(identityForReference("116500LN"), { brand: "rolex", model: "Daytona" });
+  assert.deepEqual(identityForReference("116500"), { brand: "rolex", model: "Daytona" });
+  assert.equal(identityForReference("5712G"), null, "an unknown reference implies nothing rather than a guess");
+});

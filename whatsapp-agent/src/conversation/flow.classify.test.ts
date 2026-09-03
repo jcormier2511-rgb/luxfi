@@ -76,3 +76,37 @@ test("stripLeadingIntent handles a bare reference with no lead-in at all", () =>
 test("stripLeadingIntent strips a leading article after the intent phrase", () => {
   assert.equal(stripLeadingIntent("want to buy an Omega Speedmaster"), "Omega Speedmaster");
 });
+
+// ---------------------------------------------------------------------------------------------
+// Multi-item detection is decided by product identity, never by conjunctions or intent words.
+// Live Stage 1 failure: "…116500LN with a black dial. I'm in Miami and don't want to spend more
+// than $25,000" split at "and", "don't WANT" read as a second buy, one watch became two.
+// ---------------------------------------------------------------------------------------------
+
+test("a clause joined by 'and' with no product of its own continues the item, it does not open a second one", () => {
+  const items = parseItemRequests("I'm looking for a pre-owned Rolex Daytona 116500LN with a black dial. I'm in Miami and don't want to spend more than $25,000.");
+  assert.equal(items.length, 1);
+  assert.equal(items[0].action, "buy");
+  assert.match(items[0].query, /^pre-owned Rolex Daytona 116500LN with a black dial\. I'm in Miami and don't want to spend more than \$25,000$/, "the folded query keeps the author's own text, not a comma list");
+});
+
+test("intent words alone never open a second item", () => {
+  assert.equal(parseItemRequests("WTB Rolex 116500LN, and I need it pre-owned, and I want to spend under 25k").length, 1);
+  assert.equal(parseItemRequests("Looking for a 116500LN black dial and pre-owned, Miami, up to 25k").length, 1);
+});
+
+test("a second segment that names its own product IS a second item", () => {
+  const two = parseItemRequests("I'm looking for a Rolex 116500LN and a Patek 5712G.");
+  assert.deepEqual(two.map((i) => i.query), ["Rolex 116500LN", "Patek 5712G"]);
+});
+
+test("later products inherit the intent of the request that introduced them", () => {
+  const three = parseItemRequests("Need these three: 116500LN, 126710BLRO, 5712G.");
+  assert.equal(three.length, 3);
+  assert.deepEqual(three.map((i) => i.action), ["buy", "buy", "buy"]);
+  assert.deepEqual(three.slice(1).map((i) => i.query), ["126710BLRO", "5712G"]);
+});
+
+test("details strung together with commas stay one item", () => {
+  assert.ok(parseItemRequests("WTB Rolex Daytona 116500LN, black dial, pre-owned, Miami, max $25k.").length === 1);
+});

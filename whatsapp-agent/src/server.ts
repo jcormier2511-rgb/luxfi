@@ -43,7 +43,7 @@ import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation } fro
 import { runCheckoutReconciliation, activateClaimedCheckout } from "./billing/checkoutReconciliation";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
-import { getPosting, extendPosting, getOwnPostingForMatch } from "./postings/postingsStore";
+import { getPosting, extendPosting, getOwnPostingForMatch, getActivePostingsForUser, closePosting } from "./postings/postingsStore";
 import { getV4OperationalStatus } from "./postings/status";
 import { initSchema } from "./postings/db";
 import { handleCoverageCommand } from "./fulfillment/coverage";
@@ -754,6 +754,28 @@ export function createServer() {
       console.error("[watchfacts/probe] failed:", err);
       res.status(500).json({ error: (err as Error).message });
     }
+  });
+
+  /**
+   * Retire every active posting on one identity — the "purge my test listings" action.
+   *
+   * Test runs against pre-fix code left drafts persisted as live requests ("WTB — rolex i want
+   * ot buy a", "WTB — rolex 38000") that keep appearing in that account's morning briefing and
+   * keep counting toward market pulse. Closing them one message at a time is tedious; this
+   * closes them all, as admin_closed, so the record says why. Scoped to ONE identity by
+   * design — there is no "purge everything", because the same mistake at that scope would
+   * take real members' listings with it.
+   */
+  app.post("/admin/postings/purge", async (req, res) => {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const identity = String(req.query.phone ?? "").trim();
+    if (!identity) return res.status(400).json({ error: "?phone=<identity> required (e.g. telegram:5703391972 or 13053897000)" });
+    const userId = await getOrCreateCanonicalUser(platformForIdentity(identity), identity);
+    const active = await getActivePostingsForUser(userId);
+    for (const posting of active) await closePosting(posting.id, "admin_closed");
+    res.json({ ok: true, identity, closed: active.map((p) => ({ id: p.id, type: p.type, brand: p.brand, model: p.model, reference: p.reference })) });
   });
 
   // Flat-fee, weekly-capped Fi membership tiers (billing/plans.ts) — the ONLY way to assign

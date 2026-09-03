@@ -26,7 +26,7 @@ import { detectCurrency } from "../matching/currency";
 
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
-import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch, canonicalizeReference, normalizeReference, splitLeadingBrand, INTENT_TOKENS, isOnlyNonModelLanguage } from "../postings/normalize";
+import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch, canonicalizeReference, normalizeReference, splitLeadingBrand, INTENT_TOKENS, isOnlyNonModelLanguage, identityForReference } from "../postings/normalize";
 import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
@@ -64,7 +64,25 @@ const SELL_KEYWORDS = /\b(sell|selling|fs|for sale|i have|wts)\b/i;
  * mid-interview ANSWER reads ("I want the black dial", "I need it in the US"), and must never
  * reset the very draft it's answering.
  */
-const FRESH_BUY_LEAD_IN = /^\s*(?:i\s+(?:am\s+|'m\s+)?)?(?:would\s+like\s+to\s+|want(?:ing)?\s+to\s+|need\s+to\s+)?(?:wtb|buy(?:ing)?|looking\s+for|in\s+search\s+of|iso|find\s+me)\b/i;
+// "I'm" has no space before the apostrophe. The earlier form, i\s+(?:'m\s+)?, demanded one, so
+// every sentence opening "I'm looking for…" — the most common natural opener there is — failed
+// this gate and was swallowed by an open draft's answer handler. That was the Stage 1 live
+// failure's contamination half.
+const FRESH_BUY_LEAD_IN = /^\s*(?:i(?:\s+am|\s*['’]m)?\s+)?(?:would\s+like\s+to\s+|want(?:ing)?\s+to\s+|need\s+to\s+)?(?:wtb|buy(?:ing)?|looking\s+for|in\s+search\s+of|iso|find\s+me)\b/i;
+
+/**
+ * Is this message a NEW buy request, rather than an answer to the open draft's question?
+ *
+ * The lead-in regex above is the fast safeguard. The semantic rule beside it is what the
+ * product promises: a message that states buy intent AND names a product of its own (a maker
+ * or a reference) is a request, however it is phrased. An interview answer never has both —
+ * "rolex daytona" (which model?) has no intent word; "I want the black dial" / "I need it in
+ * the US" have intent but name no product — so answers still reach the draft they answer.
+ */
+function isFreshBuyRequest(text: string): boolean {
+  if (FRESH_BUY_LEAD_IN.test(text)) return true;
+  return parseItemRequests(text).some((item) => item.action === "buy" && carriesProductIdentity(item.query));
+}
 
 // Tried longest/most-specific first, in a loop, so a compound lead-in ("I want to buy a...")
 // gets fully consumed rather than just its first word — the real reported bug this fixes: the
@@ -152,24 +170,67 @@ function classify(segment: string): ItemRequest | null {
   return { action, query };
 }
 
+/**
+ * A segment that names a product of its OWN — a known maker, or a watch reference. Only such a
+ * segment can be a separate item. Everything else ("black dial", "pre-owned", "I'm in Miami",
+ * "don't want to spend more than $25,000") is a clause continuing the item before it.
+ */
+function carriesProductIdentity(segment: string): boolean {
+  return containsKnownBrand(segment) || extractReference(segment) !== null;
+}
+
+/**
+ * Splits a message into the distinct products it asks about.
+ *
+ * Commas, semicolons, line breaks and "and" are where a SECOND product would start — but they
+ * are also how one product's details are strung together, and how ordinary sentences join
+ * clauses. The live failure: "…116500LN with a black dial. I'm in Miami and don't want to spend
+ * more than $25,000" split at "and", and "don't WANT to spend" read as a second buy request, so
+ * one watch became two and Fi answered "I'll start with the first one". Intent words alone can
+ * never open a second item; only a segment carrying its own product identity can. A segment
+ * with intent but no identity continues the current item, and a later identity-bearing segment
+ * with no intent of its own ("Need these three: 116500LN, 126710BLRO, 5712G") inherits it.
+ *
+ * Folded segments keep the author's original text between them, so the item's query reads as
+ * they wrote it rather than as a comma list.
+ */
 export function parseItemRequests(text: string): ItemRequest[] {
-  const segments = text
-    // A comma inside a formatted number is data, not an item separator. Splitting
-    // "$110,000" here used to turn the request into "...under $110" plus "000".
-    .split(/\n|,(?!\d)|;|\band\b/i)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const items: ItemRequest[] = [];
-  const seen = new Set<string>();
-  for (const seg of segments) {
-    const parsed = classify(seg);
-    if (!parsed) continue;
-    const key = `${parsed.action}:${parsed.query.toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    items.push(parsed);
+  // A comma inside a formatted number is data, not a separator: "$110,000" must stay whole.
+  const splitter = /\n|,(?!\d)|;|\band\b/gi;
+  const segments: { text: string; start: number; end: number }[] = [];
+  let cursor = 0;
+  for (const m of text.matchAll(splitter)) {
+    segments.push({ text: text.slice(cursor, m.index).trim(), start: cursor, end: m.index! });
+    cursor = m.index! + m[0].length;
   }
-  return items;
+  segments.push({ text: text.slice(cursor).trim(), start: cursor, end: text.length });
+
+  const items: (ItemRequest & { start: number })[] = [];
+  const seen = new Set<string>();
+  let inheritedAction: ItemRequest["action"] | null = null;
+  const push = (action: ItemRequest["action"], rawQuery: string, start: number) => {
+    const query = rawQuery.replace(/[\s,;.!?]+$/, "");
+    const key = `${action}:${query.toLowerCase()}`;
+    if (seen.has(key) || !query) return;
+    seen.add(key);
+    items.push({ action, query, start });
+  };
+  const fold = (end: number) => {
+    const last = items[items.length - 1];
+    last.query = stripLeadingIntent(text.slice(last.start, end).trim()).replace(/[\s,;.]+$/, "");
+  };
+
+  for (const seg of segments) {
+    if (!seg.text) continue;
+    const own = classify(seg.text);
+    const identity = carriesProductIdentity(seg.text);
+    if (own && identity) { inheritedAction = own.action; push(own.action, own.query, seg.start); }
+    else if (own && !items.length) { inheritedAction = own.action; push(own.action, own.query, seg.start); } // "I want to buy a watch"
+    else if (!own && identity && inheritedAction && items.length) push(inheritedAction, stripLeadingIntent(seg.text), seg.start);
+    else if (items.length) fold(seg.end);
+    // Chatter before any item ("hi there, …") is ignored, as it always was.
+  }
+  return items.map(({ action, query }) => ({ action, query }));
 }
 
 interface DecisionCommand {
@@ -1268,22 +1329,95 @@ function extractListingRange(text: string): { low: number; high: number } | null
 function extractListingAmount(text: string, reference: string | null, prefer: "max" | "min" = "max"): number | undefined {
   const range = extractListingRange(text);
   if (range) return prefer === "max" ? range.high : range.low;
-  const marked = text.match(/(?:under|max(?:imum)?|budget|asking|price|for|[$€£])(?:\s+is)?\s*[$€£]?\s*([\d,.]+\s*k?)/i);
+  const marked = text.match(/(?:under|max(?:imum)?|budget|asking|price|for|up\s+to|(?:no\s+)?more\s+than|around|about|spend(?:ing)?|[$€£])(?:\s+is)?\s*[$€£]?\s*([\d,.]+\s*k?)/i);
   const trailing = text.match(/(?:^|\s)([\d,.]+\s*k?)\s*$/i);
   const raw = marked?.[1] ?? trailing?.[1];
   if (!raw || raw.toUpperCase() === reference?.toUpperCase()) return undefined;
   return normalizePriceShorthand(raw) ?? undefined;
 }
 
+const DIAL_COLORS = "black|white|blue|green|silver|champagne|grey|gray|salmon|panda";
+/** Words that can follow a locative preposition without naming a place: "in stock", "in good
+ *  condition", "in a black dial", "from 2019". A place is a proper noun or a known region. */
+const NOT_A_PLACE = /^(?:stock|good|great|excellent|mint|new|used|full|box|papers|a|an|the|my|this|that|good|perfect|condition|\d)/i;
+/** Filler that survives slot-stripping but never names a place. Used only for the dealer
+ *  shorthand fallback ("max 25k Miami"), where the location is whatever is left over. */
+const LEFTOVER_STOPWORDS = new Set(["with","w","and","but","or","spend","spending","more","than","up","around","about","under","over","max","maximum","budget","located","based","near","ship","shipping","to","in","from","at","of","only","please","pls","thanks","thank","you","ok","okay","hi","hello","hey","if","possible","preferably","ideally","dial","color","colour","condition","set","full","box","papers","paper"]);
+
+/**
+ * Where the buyer is, or wants the watch from — read the way people actually say it.
+ *
+ * Two forms. A locative phrase: "I'm in Miami", "located in Florida", "from Hong Kong", "based
+ * in the UK" — the place is what follows the preposition up to the next clause boundary, and it
+ * must read as a place (a proper noun or a known region, not "stock" or "a black dial"). Then
+ * dealer shorthand, where the place is simply the last thing left once every other slot is
+ * accounted for: "black 116500LN, used, max 25k, Miami". That fallback only runs for a message
+ * that already names a product, so a bare interview answer ("daytona") can never be mistaken
+ * for a place, and the extracted model is excluded from what counts as left over.
+ */
+function extractLocation(text: string, consumed: { model?: string; brand?: string }): string | undefined {
+  const region = (raw: string) => (/^united states$/i.test(raw) || raw.toUpperCase() === "USA" ? "USA" : raw);
+  // The preposition is matched loosely; the place itself is NOT — a proper noun keeps its
+  // capitals, and a case-insensitive [A-Z] would run on through "Miami and don't want".
+  const locative = text.match(/\b(?:in|from|located\s+in|based\s+in|near|out\s+of|ship(?:ping)?\s+to)\s+(?:the\s+)?([^,.;!?\n]+)/i);
+  if (locative) {
+    const clause = locative[1].trim();
+    const place =
+      clause.match(/^(?:US|USA|UK|UAE|EU|HK|Hong Kong|Singapore|Canada|Europe|United States)(?=\s|$)/i)?.[0] ??
+      clause.match(/^[A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*){0,3}/)?.[0];
+    const raw = place?.trim();
+    if (raw && !NOT_A_PLACE.test(raw) && !containsKnownBrand(raw) && looksLikePlace(raw) && !new RegExp(`^(?:${DIAL_COLORS})$`, "i").test(raw)) return region(raw);
+  }
+  // Dealer shorthand fallback: strip every recognised slot and see what is left. Only for a
+  // FRESH REQUEST — one that states buy/sell intent and names a product by maker or reference.
+  // Without that gate it fired on "change my budget to 32000" (the amount passes as a
+  // five-digit "reference", leaving "change" as the place) and on a bare interview answer
+  // like "NY 10001", which the location step already accepts whole.
+  if (!BUY_KEYWORDS.test(text) && !SELL_KEYWORDS.test(text)) return undefined;
+  const reference = extractReference(text);
+  const amount = extractListingAmount(text, reference);
+  const realReference = reference !== null && (amount === undefined || reference.replace(/\D/g, "") !== String(amount));
+  if (!containsKnownBrand(text) && !realReference) return undefined;
+  let leftover = text
+    .replace(/\b(?:HK|US|C|S|A|CN)?[$€£¥]\s*[\d][\d,.]*\s*k?\b/gi, " ")
+    .replace(/\b[\d][\d,.]*\s*k\b/gi, " ")
+    .replace(/\b(?:USD|CAD|HKD|EUR|GBP|AED|SGD|AUD|JPY|CNY|RMB|CHF)\b/gi, " ")
+    .replace(/\b(?:pre[- ]?owned|unworn|brand\s+new|used|new|mint|any\s+condition)\b/gi, " ")
+    .replace(new RegExp(`\\b(?:${DIAL_COLORS}|either|any)\\s*(?:dials?|colou?rs?)?\\b`, "gi"), " ")
+    .replace(/\b(?:full\s+set|box(?:\s+and\s+|\s*&\s*|\/)?papers?|papers)\b/gi, " ")
+    .replace(/\b(?:19|20)\d{2}\b/g, " ");
+  for (const known of [extractReference(text), consumed.brand, consumed.model].filter((v): v is string => Boolean(v))) {
+    leftover = leftover.replace(new RegExp(`\\b${known.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), " ");
+  }
+  const words = leftover.split(/[^A-Za-z'’]+/).filter((w) => w && !INTENT_TOKENS.has(w.toLowerCase().replace(/’/g, "'")) && !isOnlyNonModelLanguage(w) && !LEFTOVER_STOPWORDS.has(w.toLowerCase()));
+  if (words.length === 0 || words.length > 3) return undefined;
+  const place = words.join(" ");
+  return looksLikePlace(place) && !containsKnownBrand(place) ? region(place) : undefined;
+}
+
+/**
+ * The dial, read from any of the ways a dealer writes it: "black dial", a bare colour right
+ * beside the reference ("black 116500LN", "116500LN black,"), or a colour ending the identity
+ * clause. A colour that is FOLLOWED by another word is left alone — "Black Bay" is a model.
+ */
+function extractDial(text: string, reference: string | null): string | undefined {
+  const bare = text.match(new RegExp(`^\\s*(${DIAL_COLORS}|either|any)\\s*(?:dial|color)?\\s*$`, "i"))?.[1];
+  if (bare) return bare.toLowerCase();
+  const explicit = text.match(new RegExp(`\\b(${DIAL_COLORS}|either|any)\\s*(?:dial|colou?r)\\b`, "i"))?.[1];
+  if (explicit) return explicit.toLowerCase();
+  if (reference) {
+    const ref = reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const beside = text.match(new RegExp(`\\b(${DIAL_COLORS})\\s+${ref}\\b|\\b${ref}\\s+(${DIAL_COLORS})(?=[\\s,.;!?]|$)`, "i"));
+    if (beside) return (beside[1] ?? beside[2]).toLowerCase();
+  }
+  return undefined;
+}
+
 function intakeSlots(text: string, reference: string | null, prefer: "max" | "min" = "max") {
   const price = extractListingAmount(text, reference, prefer);
-  const locationRaw =
-    text.match(/\b(?:in|from|located in|based in)\s+(?:the\s+)?(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\b/i)?.[1] ??
-    text.match(/(?:^|,)\s*(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\s*(?=,|$)/i)?.[1];
-  const location = locationRaw ? (/^united states$/i.test(locationRaw) ? "USA" : locationRaw.toUpperCase() === "USA" ? "USA" : locationRaw) : undefined;
   const conditionRaw = text.match(/\b(pre[- ]?owned|used|unworn|brand new|new|mint|any condition)\b/i)?.[1];
   const condition = conditionRaw && /^pre[- ]?owned$/i.test(conditionRaw) ? "pre-owned" : conditionRaw;
-  const dial = text.match(/^\s*(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)?\s*$/i)?.[1] ?? text.match(/\b(black|white|blue|green|silver|champagne|either|any)\s*(?:dial|color)\b/i)?.[1];
+  const dial = extractDial(text, extractReference(text));
   const normalized=normalizeText(text);
   const brand=normalized.brand||undefined;
   // Once the maker is identified, a model can only be what FOLLOWS the brand in the identity
@@ -1292,7 +1426,11 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
   // as the model, which then displayed as "Rolex ot buy a". When the brand is named somewhere
   // else in the message but not in this clause, the clause is entirely lead-in and yields no
   // model at all rather than a guess.
-  let identityClause: string | null = stripLeadingIntent(text).split(",", 1)[0];
+  // The identity clause ends where the description of the watch ends: at the first comma, at a
+  // sentence boundary, or at "with"/"w/" introducing its details ("116500LN with a black dial").
+  // The live bug this closes stored "Daytona  with aI'm" as the model, because only the comma
+  // was ever treated as an end.
+  let identityClause: string | null = stripLeadingIntent(text).split(/,|[.!?](?:\s|$)|\s+(?:with|w\/)\s+/i, 1)[0];
   if (brand) {
     const brandAt = identityClause.toLowerCase().indexOf(brand.toLowerCase());
     identityClause = brandAt >= 0 ? identityClause.slice(brandAt + brand.length) : null;
@@ -1309,16 +1447,31 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
     // before that cutoff runs, also stops the cutoff from eating a model that FOLLOWS one:
     // "black dial daytona" keeps daytona instead of collapsing to the color.
     .replace(/\b(?:black|white|blue|green|silver|champagne|grey|gray|salmon|panda|either|any)\s*(?:dials?|colou?rs?)\b/gi, " ")
+    // A bare colour that ENDS the clause is the dial, not part of the model ("116500LN black").
+    .replace(new RegExp(`\\s+(?:${DIAL_COLORS})\\s*$`, "i"), " ")
     .replace(/\bonly\b/gi, "")
-    .replace(/(?:under|max(?:imum)?|budget|asking|price|for)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
+    // Same budget markers extractListingAmount understands — "around $25k" must not leave
+    // "around" behind as the model any more than "under 25k" leaves "under".
+    .replace(/(?:under|max(?:imum)?|budget|asking|price|for|up\s+to|(?:no\s+)?more\s+than|around|about|spend(?:ing)?)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
     .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
   // Belt and braces: whatever survives the scrubbing above is still rejected outright if it
   // identifies nothing — lead-in language, or a descriptor like a dial color that already has
   // its own slot. No phrasing can round-trip either into the model.
-  const model=brand&&itemPhrase&&!isOnlyNonModelLanguage(itemPhrase) ? itemPhrase : undefined;
+  const reference_ = extractReference(text);
+  // A reference alone is how dealers name a watch ("Need a black 116500LN"); the maker and
+  // model it implies are filled in only when the message did not state them itself.
+  const implied = reference_ ? identityForReference(reference_) : null;
+  const resolvedBrand = brand ?? implied?.brand;
+  const scrubbed = itemPhrase.replace(/\s+/g, " ").trim();
+  const typedModel = brand && scrubbed && !isOnlyNonModelLanguage(scrubbed) ? scrubbed : undefined;
+  // A model the user typed always wins. Otherwise the reference supplies it — "Rolex 116500LN"
+  // is a Daytona whether or not the word appears — but never across a brand disagreement: a
+  // stated brand the reference does not belong to gets no model attached to it.
+  const model = typedModel ?? (implied && (!brand || brand === implied.brand) ? implied.model : undefined);
+  const location = extractLocation(text, { brand: resolvedBrand, model });
   const boxPapers=/\b(full set|box(?: and | & |\/)?papers?|papers)\b/i.exec(text)?.[1]; const year=/\b(19\d{2}|20\d{2})\b/.exec(text)?.[1];
-  return { reference: extractReference(text), price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial,brand,model,boxPapers,year };
+  return { reference: reference_, price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial,brand: resolvedBrand,model,boxPapers,year };
 }
 
 /**
@@ -1574,7 +1727,13 @@ function nextBuy(p: PendingBuyIntake): string | null {
 }
 const confirmed = (text: string) => /^(yes|yep|yeah|confirm|correct|sure|ok(?:ay)?|start|do it)\b/i.test(text.trim());
 const cash = (n: number, c = "USD") => `${c === "USD" ? "$" : c+" "}${n.toLocaleString("en-US")}`;
-const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{const priceLabel=type==="FS"?`asking ${cash(price,p.currency)}`:`maximum ${cash(price,p.currency)}`;return [`I have: ${type} ${p.description}${p.dialColor?`, ${p.dialColor} dial`:""}${p.condition?`, ${p.condition}`:""}${p.location?`, ${p.location}`:""}, ${priceLabel}. Should I start monitoring?`,`${type} listing review`,`Brand: ${displayBrand(p.brand)||"Not provided"}`,`Model: ${p.model||("modelSkipped" in p && p.modelSkipped ? "Any" : "Not provided")}`,`Reference: ${p.reference||"Not provided"}`,p.dialColor&&`Dial: ${p.dialColor}`,p.condition&&`Condition: ${p.condition}`,`${type==="FS"?"Price":"Budget"}: ${cash(price,p.currency)}`,p.location&&`Location: ${p.location}`,p.boxPapers&&`Box/Papers: ${p.boxPapers}`,p.year&&`Year: ${p.year}`,`Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}. Should I start monitoring?`,`Reply confirm to activate, or send a correction.`].filter(Boolean).join("\n");};
+// The one-line summary names the WATCH, not the sentence it arrived in. Echoing the whole
+// message back ("I have: WTB pre-owned Rolex Daytona 116500LN with a black dial. I'm in Miami
+// and don't want to spend more than $25,000., black dial, pre-owned, Miami, maximum $25,000")
+// repeats every detail twice and reads as if Fi did not understand it. The stored description
+// is untouched — it remains the customer's own words.
+const identityLine=(p:PendingSellIntake|PendingBuyIntake)=>[displayBrand(p.brand),p.model,p.reference].filter(Boolean).join(" ")||p.description;
+const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{const priceLabel=type==="FS"?`asking ${cash(price,p.currency)}`:`maximum ${cash(price,p.currency)}`;return [`I have: ${type} ${identityLine(p)}${p.dialColor?`, ${p.dialColor} dial`:""}${p.condition?`, ${p.condition}`:""}${p.location?`, ${p.location}`:""}, ${priceLabel}. Should I start monitoring?`,`${type} listing review`,`Brand: ${displayBrand(p.brand)||"Not provided"}`,`Model: ${p.model||("modelSkipped" in p && p.modelSkipped ? "Any" : "Not provided")}`,`Reference: ${p.reference||"Not provided"}`,p.dialColor&&`Dial: ${p.dialColor}`,p.condition&&`Condition: ${p.condition}`,`${type==="FS"?"Price":"Budget"}: ${cash(price,p.currency)}`,p.location&&`Location: ${p.location}`,p.boxPapers&&`Box/Papers: ${p.boxPapers}`,p.year&&`Year: ${p.year}`,`Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}. Should I start monitoring?`,`Reply confirm to activate, or send a correction.`].filter(Boolean).join("\n");};
 const sellSummary = (p: PendingSellIntake) => review("FS",p,p.price!);
 const buySummary = (p: PendingBuyIntake) => review("WTB",p,p.budget!);
 
@@ -2058,13 +2217,13 @@ export async function handleIncomingMessage(phone: string, text: string, contact
 
   // A fresh WTB can restate and complete an existing WTB draft in one message. Cross-type
   // requests still use the explicit replace/add safeguard below.
-  if (state.pendingBuyIntake && FRESH_BUY_LEAD_IN.test(text)) {
+  if (state.pendingBuyIntake && isFreshBuyRequest(text)) {
     state.pendingBuyIntake = undefined;
     saveState(state);
     return handleIncomingMessage(phone, text, contact, imageUrl);
   }
 
-  if ((state.pendingSellIntake || state.pendingBuyIntake) && (/^\s*(?:FS|WTS|for sale|sell(?:ing)?)\b/i.test(text) || FRESH_BUY_LEAD_IN.test(text))) {
+  if ((state.pendingSellIntake || state.pendingBuyIntake) && (/^\s*(?:FS|WTS|for sale|sell(?:ing)?)\b/i.test(text) || isFreshBuyRequest(text))) {
     state.pendingReplacementRequest = text;
     messages.push("You already have an incomplete request. Should I replace it or add another?");
     saveState(state);

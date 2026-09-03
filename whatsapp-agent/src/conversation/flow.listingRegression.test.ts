@@ -54,8 +54,9 @@ test("WTB conversational lead-ins and trailing only never become models", async 
     // Live-reported bug: "black" (the dial color, correctly captured separately as
     // pendingBuyIntake.dialColor) was also leaking into the model slot because the itemPhrase
     // scrubber only cut the text starting at the word "dial", leaving its preceding color word
-    // behind — displayed as "Model: black" instead of "Model: Not provided".
-    ["wtb a rolex 116500 black dial", undefined, "116500"],
+    // behind — displayed as "Model: black". The model here is what the reference implies
+    // (116500 is a Daytona); the colour is still never it.
+    ["wtb a rolex 116500 black dial", "Daytona", "116500"],
   ] as const;
   for (const [index, [message, model, reference]] of cases.entries()) {
     const phone = `155500021${index}`;
@@ -129,10 +130,9 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
     senderName: undefined,
     description: "Rolex 116500LN white dial pre-owned in the US for $28,000",
     brand: "rolex",
-    // A dial color is not a model. It has its own slot (dialColor, below) and storing it here
-    // too both duplicated it and invented an identity — this assertion previously locked in the
-    // live "Model: black" defect.
-    model: undefined,
+    // A dial color is not a model — that assertion previously locked in the live "Model: black"
+    // defect. The model here comes from the reference: 116500LN names a Daytona.
+    model: "Daytona",
     modelSkipped: undefined,
     reference: "116500LN",
     price: 30000,
@@ -142,7 +142,7 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
     location: "US",
   });
   assert.equal(confirmed.state.pendingBuyIntake, undefined);
-  assert.match(confirmed.messages.join("\n"), /Your WTB request is active:[\s\S]*rolex 116500LN[\s\S]*white dial[\s\S]*Budget: \$30,000[\s\S]*qualifying seller/i);
+  assert.match(confirmed.messages.join("\n"), /Your WTB request is active:[\s\S]*Rolex Daytona 116500LN[\s\S]*white dial[\s\S]*Budget: \$30,000[\s\S]*qualifying seller/i);
   assert.doesNotMatch(confirmed.messages.join("\n"), /raw/i, "acknowledgment is rendered from the persisted structured fields");
   assert.match(confirmed.messages[0], /request is active/i);
 });

@@ -315,16 +315,20 @@ test("a dial color is never stored as the model", async () => {
   const draft = getState(phone).pendingBuyIntake!;
 
   assert.equal(draft.brand, "rolex");
-  assert.equal(draft.model, undefined, "the dial color must not become the model");
+  // The reference IS the model here: 116500 names a Daytona. What must never happen is the
+  // dial colour standing in for it — the live defect this test was written for.
+  assert.equal(draft.model, "Daytona", "the reference implies the model");
+  assert.notEqual(draft.model, "black", "the dial color must not become the model");
   assert.equal(draft.reference, "116500");
   assert.equal(draft.dialColor, "black", "and it must still be captured as the dial");
-  assert.match(reply.messages.join("\n"), /Model: Not provided/);
+  assert.match(reply.messages.join("\n"), /Model: Daytona/);
 });
 
 const MODEL_EXTRACTION_CASES: ReadonlyArray<readonly [string, string | undefined, string | undefined]> = [
   // message                                                    model              dial
-  ["WTB rolex 116500 black dial, usa, maximum $35,000",         undefined,         "black"],
-  ["WTB rolex 116500LN white dial pre-owned in the US for $28,000", undefined,     "white"],
+  // 116500/116500LN name a Daytona; the reference supplies the model the message left unsaid.
+  ["WTB rolex 116500 black dial, usa, maximum $35,000",         "Daytona",         "black"],
+  ["WTB rolex 116500LN white dial pre-owned in the US for $28,000", "Daytona",     "white"],
   ["WTB rolex daytona white dial, usa, maximum $35,000",        "daytona",         "white"],
   // The color leads here, so a catch-all "truncate from the word dial" would have eaten the
   // model along with it.
@@ -350,7 +354,7 @@ test("a descriptor-only model is not persisted to the posting row either", async
   await handleIncomingMessage(phone, "confirm");
   const shown = await handleIncomingMessage(phone, "my listings");
   const text = shown.messages.join("\n");
-  assert.match(text, /1\. WTB — Rolex 116500\n/, "identity is brand + reference, with no color in it");
+  assert.match(text, /1\. WTB — Rolex Daytona 116500\n/, "identity is brand + implied model + reference, with no color in it");
   assert.match(text, /black dial/, "the dial is still shown from its own field");
 });
 
