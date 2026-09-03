@@ -341,11 +341,18 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
       !valuesEqual(old.location, listing.location) ||
       !valuesEqual(old.condition, listing.condition);
 
+    // Every successful re-sync refreshes expires_at too, not just the changed fields — a
+    // WatchFacts listing's freshness is governed by whether WatchFacts still reports it (this
+    // sync happening at all), never by a fixed clock from when Fi first mirrored it. Without
+    // this, a listing still actively for sale on WatchFacts would silently drop out of
+    // matching/Market Pulse 15 days after its FIRST mirror, even though nothing about the real
+    // listing changed — see findPostingsNeedingReminder's own comment, which already assumes
+    // "its own sync cadence governs its freshness" for source_type='api' rows.
     const update = await pool.query<PostingRow>(
       `UPDATE postings SET original_text=$1, brand=$2, model=$3, reference=$4, dial=$5, year=$6, box_papers=$7,
-         condition=$8, price=$9, location=$10, contact_name=$11, contact_phone=$12, detail_url=$13, updated_at=now(), last_seen_at=now()
-       WHERE id=$14 RETURNING *`,
-      [originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
+         condition=$8, price=$9, location=$10, contact_name=$11, contact_phone=$12, detail_url=$13, expires_at=$14, updated_at=now(), last_seen_at=now()
+       WHERE id=$15 RETURNING *`,
+      [originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt, old.id]
     );
     return { posting: update.rows[0], created: false, materialChange };
   });

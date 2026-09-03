@@ -126,6 +126,30 @@ test("mirrorApiFsPosting reports materialChange: false on an unchanged re-sync (
   assert.equal(resynced.materialChange, false);
 });
 
+test("required regression: mirrorApiFsPosting refreshes expires_at on every re-sync, even an unchanged one, so a still-live WatchFacts listing never silently expires", async () => {
+  await db._resetDbForTests();
+  const listing = {
+    id: "ext-refresh",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "$29,000",
+    contactName: "WatchFacts Seller",
+    contactPhone: "10000000000",
+    description: "Rolex Daytona 116500LN",
+  };
+  const first = await mirrorApiFsPosting(listing);
+  // Simulate a listing that's been mirrored for a while and is about to expire.
+  await db.withSchema((pool) => pool.query(`UPDATE postings SET expires_at = now() + interval '1 hour' WHERE id=$1`, [first.posting.id]));
+
+  const resynced = await mirrorApiFsPosting({ ...listing }); // identical re-sync — materialChange: false
+  assert.equal(resynced.materialChange, false);
+  const row = await db.withSchema((pool) => pool.query(`SELECT expires_at FROM postings WHERE id=$1`, [first.posting.id]));
+  const daysUntilExpiry = (new Date(row.rows[0].expires_at).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+  assert.ok(daysUntilExpiry > 14, `an unchanged re-sync must still push expires_at back out to ~15 days, not leave the old near-term value (was ${daysUntilExpiry} days)`);
+});
+
 test("mirrorApiFsPosting captures WatchFacts' own listing image (frontImage)", async () => {
   await db._resetDbForTests();
   const result = await mirrorApiFsPosting({
