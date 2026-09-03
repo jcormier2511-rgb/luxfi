@@ -37,7 +37,7 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
   assert.deepEqual({ ...pulse, averageFsAsk: Math.round(pulse.averageFsAsk! * 100) / 100 },
     { reference:"126500LN", fsCount:4, wtbCount:2, averageFsAsk:29833.33 });
   assert.equal(formatMarketPulse(pulse),
-    "Market Pulse — 126500LN\n\nFS: 4 active listings\nWTB: 2 active requests\nImplied liquidity ratio: 1:2 (2 listings per buyer)\nAverage FS ask: $29,833\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.");
+    "Market Pulse — 126500LN\n\nFS: 4 active listings\nWTB: 2 active requests\nImplied liquidity ratio: 1:2 (2 listings per buyer)\nAverage FS ask: $29,833\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.\nBrowse live listings at watchfacts.com.");
 });
 
 test("pulse rejects a missing exact reference", async () => {

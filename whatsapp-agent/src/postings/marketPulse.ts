@@ -138,7 +138,7 @@ export function formatMarketPulse(pulse: MarketPulse): string {
           ? "Unavailable"
           : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pulse.averageFsAsk)
       }`;
-  return `Market Pulse — ${title}\n\nFS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests\n${formatLiquidityRatio(pulse.fsCount, pulse.wtbCount)}\n${averageLine}\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.`;
+  return `Market Pulse — ${title}\n\nFS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests\n${formatLiquidityRatio(pulse.fsCount, pulse.wtbCount)}\n${averageLine}\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.\nBrowse live listings at watchfacts.com.`;
 }
 
 
@@ -200,5 +200,5 @@ export function formatNetworkMarketSnapshot(snapshot: NetworkMarketSnapshot): st
   const average = snapshot.averageFsAsk === null
     ? "Unavailable"
     : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(snapshot.averageFsAsk);
-  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\n${formatLiquidityRatio(snapshot.fsCount, snapshot.wtbCount)}\nAverage FS ask: ${average}\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.`;
+  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\n${formatLiquidityRatio(snapshot.fsCount, snapshot.wtbCount)}\nAverage FS ask: ${average}\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.\nBrowse live listings at watchfacts.com.`;
 }
