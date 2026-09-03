@@ -112,20 +112,15 @@ export async function getScopedMarketPulse(scope: MarketScope): Promise<MarketPu
 }
 
 export function formatMarketPulse(pulse: MarketPulse): string {
-  const average = pulse.averageFsAsk === null
-    ? "Unavailable"
-    : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pulse.averageFsAsk);
   const title = pulse.label || pulse.reference;
-  if (!pulse.scope) {
-    return `Market Pulse — ${title}\n\nFS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests\nAverage FS ask: ${average}\n\nBased on current activity across the dealer groups and WatchFacts inventory Fi monitors.`;
-  }
-  const counts = pulse.scope === "brand"
-    ? `FS: ${pulse.fsCount} active ${title} listings\nWTB: ${pulse.wtbCount} active ${title} requests`
-    : `FS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests`;
   const averageLine = pulse.scope === "brand" || pulse.scope === "model"
-    ? "Reference-level average asking price unavailable because no reference is selected."
-    : `Average FS ask: ${average}`;
-  return `Market Pulse — ${title}\n\n${counts}\n${averageLine}\n\nBased on current active WatchFacts inventory and normalized listings.`;
+    ? "Average ask: unavailable (add a reference for pricing)"
+    : `Average FS ask: ${
+        pulse.averageFsAsk === null
+          ? "Unavailable"
+          : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pulse.averageFsAsk)
+      }`;
+  return `Market Pulse — ${title}\n\nFS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests\n${averageLine}\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.`;
 }
 
 
@@ -187,5 +182,5 @@ export function formatNetworkMarketSnapshot(snapshot: NetworkMarketSnapshot): st
   const average = snapshot.averageFsAsk === null
     ? "Unavailable"
     : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(snapshot.averageFsAsk);
-  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\nAverage FS ask: ${average}\n\nBased on current activity across the dealer groups and WatchFacts inventory Fi monitors.`;
+  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\nAverage FS ask: ${average}\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.`;
 }
