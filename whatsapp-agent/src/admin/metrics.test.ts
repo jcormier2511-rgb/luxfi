@@ -57,15 +57,52 @@ test("getAdminMetrics buckets users into paid/trial/nonPaying/canceledApprox cor
   );
 });
 
-test("a manual override counts as paid even with no plan assigned", async () => {
+/**
+ * This used to assert `paid: 1`. An admin override is unlimited ACCESS, not revenue — testers
+ * and comped partners were landing in the same number as real customers, where nothing could
+ * tell them apart afterwards. It is now its own bucket, and paid means someone is paying.
+ */
+test("an admin override is comped, not paid — nobody is paying for it", async () => {
   await postingsDb._resetDbForTests();
   await entitlements._resetDbForTests();
   await getOrCreateCanonicalUser("whatsapp", "15551110000");
   await entitlements.setManualOverride("15551110000", true);
 
   const metrics = await getAdminMetrics();
+  assert.equal(metrics.membership.paid, 0);
+  assert.equal(metrics.membership.comped, 1);
+  assert.equal(metrics.membership.trial, 0, "and it is not funnel state either — the account is not metered at all");
+  assert.equal(metrics.membership.nonPaying, 0);
+});
+
+test("an override on top of a real plan is still paid — that account IS paying", async () => {
+  await postingsDb._resetDbForTests();
+  await entitlements._resetDbForTests();
+  await getOrCreateCanonicalUser("whatsapp", "15551110000");
+  await entitlements.setPlan("15551110000", "tier2");
+  await entitlements.setManualOverride("15551110000", true);
+
+  const metrics = await getAdminMetrics();
   assert.equal(metrics.membership.paid, 1);
-  assert.equal(metrics.membership.trial, 0);
+  assert.equal(metrics.membership.comped, 0);
+});
+
+test("every account lands in exactly one membership bucket", async () => {
+  await postingsDb._resetDbForTests();
+  await entitlements._resetDbForTests();
+  await entitlements.setPlan("15551110000", "tier1");                       // paid
+  await getOrCreateCanonicalUser("whatsapp", "15551110000");
+  await getOrCreateCanonicalUser("whatsapp", "15552220000");
+  await entitlements.setManualOverride("15552220000", true);                // comped
+  await getOrCreateCanonicalUser("whatsapp", "15553330000");                // trial
+  const exhausted = await getOrCreateCanonicalUser("whatsapp", "15554440000");
+  await setApprovedCount(exhausted, 3);                                     // nonPaying
+
+  const m = (await getAdminMetrics()).membership;
+  assert.equal(m.paid + m.comped + m.trial + m.nonPaying, m.totalUsers,
+    "the buckets must partition the user base — a miscount here silently misstates the business");
+  assert.deepEqual({ paid: m.paid, comped: m.comped, trial: m.trial, nonPaying: m.nonPaying },
+    { paid: 1, comped: 1, trial: 1, nonPaying: 1 });
 });
 
 test("a currently-paying user is never counted toward canceledApprox, even with prior approvals", async () => {

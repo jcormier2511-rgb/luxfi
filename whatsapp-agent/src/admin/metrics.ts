@@ -7,7 +7,15 @@ import { initAdminSchema } from "./store";
 
 export interface MembershipCounts {
   totalUsers: number;
+  /** Accounts on an assigned plan — the ones that represent actual revenue. */
   paid: number;
+  /**
+   * Unlimited access granted by an admin override with NO plan behind it: testers, partners,
+   * support gestures. Counted separately because these used to land in `paid`, where a room
+   * full of testers reads as a room full of customers and there is nothing in the number to
+   * say otherwise. An account that has a plan AND an override is paid — it is paying.
+   */
+  comped: number;
   /** Still within the free-approval trial window, no plan assigned. */
   trial: number;
   /** Trial exhausted (used every complimentary approval), never upgraded to a plan. */
@@ -101,14 +109,20 @@ async function getMembershipCounts(): Promise<MembershipCounts> {
   ]);
 
   let paid = 0;
+  let comped = 0;
   let trial = 0;
   let nonPaying = 0;
   let canceledApprox = 0;
   for (const row of userRows.rows) {
     const entitlement = entitlements.get(row.phone);
-    const isPaid = Boolean(entitlement && (entitlement.plan !== null || entitlement.manualOverrideEnabled));
-    if (isPaid) {
+    if (entitlement?.plan != null) {
       paid++;
+      continue;
+    }
+    // Unlimited, but nobody is paying for it. Still not trial/non-paying either: the account is
+    // not metered at all, so counting it against the funnel would misreport that too.
+    if (entitlement?.manualOverrideEnabled) {
+      comped++;
       continue;
     }
     if (row.total_approved_count < config.trial.maxApprovedMatches) {
@@ -119,7 +133,7 @@ async function getMembershipCounts(): Promise<MembershipCounts> {
     if (row.total_approved_count > 0) canceledApprox++;
   }
 
-  return { totalUsers: userRows.rows.length, paid, trial, nonPaying, canceledApprox };
+  return { totalUsers: userRows.rows.length, paid, comped, trial, nonPaying, canceledApprox };
 }
 
 function emptyChannelReach(): ChannelReach {

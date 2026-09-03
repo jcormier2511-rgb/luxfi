@@ -290,6 +290,7 @@ function renderMembershipCard(metrics: AdminDashboardData["metrics"], metricsErr
     <dl>
       <dt>Total users</dt><dd>${m.totalUsers}</dd>
       <dt>Paid</dt><dd>${m.paid}</dd>
+      <dt>Comped (admin override, no plan)</dt><dd>${m.comped}</dd>
       <dt>Trial (active)</dt><dd>${m.trial}</dd>
       <dt>Non-paying (trial exhausted)</dt><dd>${m.nonPaying}</dd>
       <dt>Canceled (approx.)</dt><dd>${m.canceledApprox}</dd>
