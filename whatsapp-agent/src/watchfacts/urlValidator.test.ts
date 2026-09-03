@@ -24,15 +24,17 @@ test("isUrlReachable returns false for a 404", async (t) => {
   assert.equal(await isUrlReachable("https://watchfacts.com/flash-sales/gone"), false);
 });
 
-test("isUrlReachable retries with GET when HEAD returns 405, rather than concluding the URL is broken", async (t) => {
-  let calls = 0;
+test("a link is checked the way a browser opens it — GET — so a page that answers HEAD 200 but renders 500 is NOT approved", async (t) => {
+  // The live case: watchfacts.com/flash-sales/<id> passed a HEAD check, then opened to
+  // "500 | SERVER ERROR". A HEAD says nothing about whether the page will render.
+  const methods: string[] = [];
   t.mock.method(globalThis, "fetch", async (_url: string, init?: RequestInit) => {
-    calls++;
-    if (init?.method === "HEAD") return { ok: false, status: 405 } as Response;
-    return { ok: true, status: 200 } as Response;
+    methods.push(String(init?.method));
+    if (init?.method === "HEAD") return { ok: true, status: 200 } as Response;
+    return { ok: false, status: 500 } as Response;
   });
-  assert.equal(await isUrlReachable("https://watchfacts.com/flash-sales/head-unsupported"), true);
-  assert.equal(calls, 2);
+  assert.equal(await isUrlReachable("https://watchfacts.com/flash-sales/27e19db8-2db5-44b4-8e5d-71abb293131e"), false);
+  assert.deepEqual(methods, ["GET"], "exactly one request, and it is the one a visitor's browser would make");
 });
 
 test("isUrlReachable returns false (never throws) on a network error or timeout", async (t) => {

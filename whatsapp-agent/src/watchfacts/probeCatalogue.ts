@@ -93,13 +93,17 @@ function describe(sample: Record<string, unknown>): void {
  * endpoint reported is the one WatchFacts really uses, not one from a list of guesses.
  * Shared by the CLI below and by the admin endpoint, so the two can never disagree.
  */
-export async function probeWatchFactsFeeds(targets: string[]): Promise<{ captures: Capture[]; visited: string[]; errors: string[] }> {
+/** What the site answered when a target page itself was opened — the status a visitor gets. */
+export interface PageResult { url: string; status: number | null; title: string }
+
+export async function probeWatchFactsFeeds(targets: string[]): Promise<{ captures: Capture[]; visited: string[]; pages: PageResult[]; errors: string[] }> {
   const allowed = targets.filter(isProbableWatchFactsUrl);
   if (allowed.length === 0) throw new Error("no watchfacts.com URL to probe");
 
   const browser = await chromium.launch();
   const errors: string[] = [];
   const visited: string[] = [];
+  const pages: PageResult[] = [];
   try {
     const page = await browser.newPage();
     const captures: Capture[] = [];
@@ -130,7 +134,11 @@ export async function probeWatchFactsFeeds(targets: string[]): Promise<{ capture
     await login(page);
     for (const target of allowed) {
       try {
-        await page.goto(target, { waitUntil: "networkidle", timeout: 60_000 });
+        // The page's own status, as the logged-in visitor sees it — this is how a link Fi
+        // handed out that opened to "500 | SERVER ERROR" gets diagnosed from where the network
+        // and the credentials actually are, rather than guessed at from a sandbox.
+        const response = await page.goto(target, { waitUntil: "networkidle", timeout: 60_000 });
+        pages.push({ url: target, status: response?.status() ?? null, title: (await page.title().catch(() => "")).slice(0, 120) });
         // Client-rendered catalogues fetch on scroll; nudge a few times to trigger paging.
         for (let i = 0; i < 3; i++) {
           await page.mouse.wheel(0, 4000);
@@ -142,7 +150,7 @@ export async function probeWatchFactsFeeds(targets: string[]): Promise<{ capture
       }
     }
     captures.sort((a, b) => b.rows - a.rows);
-    return { captures, visited, errors };
+    return { captures, visited, pages, errors };
   } finally {
     await browser.close();
   }
@@ -150,8 +158,9 @@ export async function probeWatchFactsFeeds(targets: string[]): Promise<{ capture
 
 async function main(): Promise<void> {
   const targets = process.argv.slice(2).filter((a) => a.startsWith("http"));
-  const { captures, visited, errors } = await probeWatchFactsFeeds(targets.length > 0 ? targets : DEFAULT_PAGES);
+  const { captures, visited, pages, errors } = await probeWatchFactsFeeds(targets.length > 0 ? targets : DEFAULT_PAGES);
   console.log(`Browsed: ${visited.join(", ") || "nothing"}`);
+  for (const p of pages) console.log(`  [${p.status ?? "?"}] ${p.url}${p.title ? `  — ${p.title}` : ""}`);
   for (const error of errors) console.warn(`  could not load ${error}`);
 
   console.log(`\n${"=".repeat(78)}\nJSON feeds this site fetched, largest first\n${"=".repeat(78)}`);

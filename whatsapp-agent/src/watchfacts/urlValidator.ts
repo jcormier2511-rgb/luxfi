@@ -24,7 +24,7 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-async function fetchWithTimeout(url: string, method: "HEAD" | "GET", timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(url: string, method: "GET", timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -45,10 +45,12 @@ export async function isUrlReachable(url: string, timeoutMs = DEFAULT_TIMEOUT_MS
 
   let valid = false;
   try {
-    // Some servers reject HEAD (405) even though GET works — one retry before concluding the
-    // URL is actually broken, not just HEAD-unsupported.
-    let res = await fetchWithTimeout(url, "HEAD", timeoutMs);
-    if (res.status === 405) res = await fetchWithTimeout(url, "GET", timeoutMs);
+    // GET, not HEAD. This used to send a HEAD and only fall back to GET on a 405, and a live
+    // link it approved that way opened to "500 | SERVER ERROR": sites routinely answer HEAD
+    // with 200 from a cheap path (or a CDN) while the real render fails. The only check that
+    // means "this will open for the customer" is the request the customer's browser makes.
+    // The page is small HTML; the cache above keeps this to one fetch per URL per 10 minutes.
+    const res = await fetchWithTimeout(url, "GET", timeoutMs);
     valid = res.ok;
   } catch {
     valid = false;
