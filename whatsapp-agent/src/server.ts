@@ -13,6 +13,7 @@ import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { getActiveListings, getSyncStatus, searchListingsForDiagnostics } from "./watchfacts/inventoryDb";
+import { isProbableWatchFactsUrl, probeWatchFactsFeeds } from "./watchfacts/probeCatalogue";
 import {
   getEntitlement,
   setManualOverride,
@@ -721,6 +722,38 @@ export function createServer() {
       }
     }
     res.json({ ok: failed.length === 0, enabled, granted, failed });
+  });
+
+  /**
+   * Discover the catalogue feed from the deployed app, where the network and the WatchFacts
+   * credentials already are — a laptop would otherwise need the repo, Node, and a Playwright
+   * browser just to answer one question. GET so it can be opened in a browser.
+   *
+   * ?url= is restricted to watchfacts.com by isProbableWatchFactsUrl. An admin endpoint that
+   * browses to any URL it is handed is request forgery pointed at whatever this server can
+   * reach (cloud metadata included); the allowlist is the security boundary, not the token.
+   * Read-only: it browses and issues GETs, and writes nothing back to WatchFacts.
+   */
+  app.get("/admin/watchfacts/probe", async (req, res) => {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    if (!config.watchfacts.email || !config.watchfacts.password) {
+      return res.status(400).json({ error: "WATCHFACTS_EMAIL / WATCHFACTS_PASSWORD are not set on this deployment" });
+    }
+    const requested = ([] as string[]).concat(req.query.url as string | string[] ?? []).filter(Boolean);
+    const targets = requested.length > 0 ? requested : ["https://watchfacts.com/"];
+    const rejected = targets.filter((t) => !isProbableWatchFactsUrl(t));
+    if (rejected.length > 0) {
+      return res.status(400).json({ error: "only https watchfacts.com URLs can be probed", rejected });
+    }
+    try {
+      const result = await probeWatchFactsFeeds(targets);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error("[watchfacts/probe] failed:", err);
+      res.status(500).json({ error: (err as Error).message });
+    }
   });
 
   // Flat-fee, weekly-capped Fi membership tiers (billing/plans.ts) — the ONLY way to assign
