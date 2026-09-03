@@ -83,7 +83,31 @@ export async function saveAdministrator(actor:Administrator,input:any,id?:number
 export async function resetAdministratorPassword(actor:Administrator,id:number,password:string){if(actor.role!=="owner")throw new Error("owner role required");await db().query("UPDATE administrators SET password_hash=$1,updated_at=now() WHERE id=$2",[await hashPassword(password),id]);await audit(actor,"administrator.password_reset","administrator",String(id));}
 
 const allowedUserFields=["phone","name","company","email","tier","specialty","wf_profile_id","membership_status","subscription_status","access_status","trial_limit","complimentary_access","opt_in_status","opt_in_source","notes"];
-export async function listUsers(q="",status="",page=1,limit=25){const values:any[]=[];let where="WHERE 1=1";if(q){values.push(`%${q}%`);where+=` AND (phone ILIKE $${values.length} OR name ILIKE $${values.length} OR company ILIKE $${values.length})`;}if(status){values.push(status);where+=` AND access_status=$${values.length}`;}values.push(limit,(page-1)*limit);const rows=(await db().query(`SELECT * FROM approved_users ${where} ORDER BY created_at DESC LIMIT $${values.length-1} OFFSET $${values.length}`,values)).rows;const count=Number((await db().query(`SELECT count(*) n FROM approved_users ${where}`,values.slice(0,-2))).rows[0].n);return{rows,count,page,limit}}
+/**
+ * Distinct monitored groups each user has actually posted an FS/WTB listing into -- not full
+ * group membership (Fi has no participant roster for any group), same derivation as
+ * postings/groupActivity.ts's getActiveGroupCount, batched here for a whole page of users
+ * instead of one query per row. Best-effort: a failure here (e.g. the postings schema not
+ * having initialized yet) must never break the users list itself, it just omits the column.
+ */
+async function attachActiveGroupCounts(rows:{phone:string}[]):Promise<void>{
+  if(!rows.length)return;
+  try{
+    const phones=rows.map(r=>r.phone);
+    const counts=(await db().query<{phone:string;active_groups_count:number}>(
+      `SELECT li.identity AS phone, count(DISTINCT ag.id)::int AS active_groups_count
+       FROM linked_identities li
+       JOIN postings p ON p.canonical_user_id=li.canonical_user_id AND p.source_type='chat'
+       JOIN approved_groups ag ON ag.whatsapp_chat_id=p.source_chat_id AND ag.status='active'
+       WHERE li.identity = ANY($1::text[])
+       GROUP BY li.identity`,[phones])).rows;
+    const byPhone=new Map(counts.map(c=>[c.phone,Number(c.active_groups_count)]));
+    for(const r of rows as any[])r.active_groups_count=byPhone.get(r.phone)??0;
+  }catch(err){
+    console.error("[admin] active-group count lookup failed (omitting from user list):",err);
+  }
+}
+export async function listUsers(q="",status="",page=1,limit=25){const values:any[]=[];let where="WHERE 1=1";if(q){values.push(`%${q}%`);where+=` AND (phone ILIKE $${values.length} OR name ILIKE $${values.length} OR company ILIKE $${values.length})`;}if(status){values.push(status);where+=` AND access_status=$${values.length}`;}values.push(limit,(page-1)*limit);const rows=(await db().query(`SELECT * FROM approved_users ${where} ORDER BY created_at DESC LIMIT $${values.length-1} OFFSET $${values.length}`,values)).rows;const count=Number((await db().query(`SELECT count(*) n FROM approved_users ${where}`,values.slice(0,-2))).rows[0].n);await attachActiveGroupCounts(rows);return{rows,count,page,limit}}
 export async function saveUser(actor:Administrator,input:any,id?:number){const phone=normalizePhone(String(input.phone));if(!String(input.name??"").trim())throw new Error("name required");const values=allowedUserFields.map(f=>f==='phone'?phone:f==='trial_limit'?Number(input[f]??3):f==='complimentary_access'?input[f]===true||input[f]==='true':input[f]||null);let row;if(id){values.push(id);row=(await db().query(`UPDATE approved_users SET ${allowedUserFields.map((f,i)=>`${f}=$${i+1}`).join(',')},updated_at=now() WHERE id=$${values.length} RETURNING *`,values)).rows[0]}else row=(await db().query(`INSERT INTO approved_users(${allowedUserFields.join(',')}) VALUES(${values.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`,values)).rows[0];await audit(actor,id?"user.updated":"user.created","approved_user",String(row.id));return row}
 export async function deleteUser(actor:Administrator,id:number){await db().query("DELETE FROM approved_users WHERE id=$1",[id]);await audit(actor,"user.deleted","approved_user",String(id))}
 export async function importUsersCsv(actor:Administrator,csv:string){const rows=parse(csv,{columns:true,skip_empty_lines:true,trim:true}) as any[];let added=0,updated=0,skipped=0;const errors:any[]=[];for(let i=0;i<rows.length;i++){try{const raw=rows[i],phone=normalizePhone(raw.phone||"");if(!raw.name)throw new Error("name required");const existing=(await db().query("SELECT * FROM approved_users WHERE phone=$1",[phone])).rows[0];if(existing){const patch:any={...existing};for(const f of allowedUserFields)if(raw[f]!==undefined&&raw[f]!=="")patch[f]=raw[f];await saveUser(actor,patch,existing.id);updated++;}else{await saveUser(actor,{...raw,phone},undefined);added++;}}catch(e){errors.push({row:i+2,error:(e as Error).message});}}await audit(actor,"users.csv_import","approved_user",undefined,{added,updated,skipped,errorCount:errors.length});return{added,updated,skipped,errors}}

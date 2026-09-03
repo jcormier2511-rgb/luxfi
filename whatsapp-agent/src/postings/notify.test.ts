@@ -37,6 +37,8 @@ const telegramClient = require("../channels/telegram") as typeof import("../chan
 const identity = require("./identity") as typeof import("./identity");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const notificationPreferences = require("./notificationPreferences") as typeof import("./notificationPreferences");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const adminStore = require("../admin/store") as typeof import("../admin/store");
 
 const { ingestChatPosting, mirrorApiFsPosting } = store;
 const { runImmediateMatch } = matching;
@@ -86,7 +88,24 @@ async function createMatch(buyerPhone: string): Promise<{ matchId: number; selle
 async function resetAll(): Promise<void> {
   await db._resetDbForTests();
   await entitlements._resetDbForTests();
+  // Cleared on every reset, not just by the tests that use it: once any row exists in
+  // approved_groups, isPostingMonitoringEnabled switches from the V4_ALLOWED_CHAT_IDS="*"
+  // wildcard bypass to the per-group database allowlist (see admin/store.ts's
+  // hasDatabaseGroupAllowlist) — a row left behind by one test would silently break every
+  // other chat-posting test in this file that relies on the wildcard.
+  await adminStore.initAdminSchema();
+  await db.withSchema((pool) => pool.query("DELETE FROM approved_groups"));
   counter = 0;
+}
+
+async function addApprovedGroup(chatId: string, name: string): Promise<void> {
+  await db.withSchema((pool) =>
+    pool.query(
+      `INSERT INTO approved_groups(group_name,whatsapp_chat_id,status,monitoring_enabled,platform)
+       VALUES($1,$2,'active',true,'whatsapp')`,
+      [name, chatId]
+    )
+  );
 }
 
 test("approveMatch on an unknown match id is invalid", async () => {
@@ -321,6 +340,38 @@ async function createChatVsChatMatch(
   const matches = await db.withSchema((pool) => pool.query(`SELECT id FROM matches WHERE wtb_posting_id=$1`, [wtb.posting!.id]));
   return { matchId: matches.rows[0].id };
 }
+
+test("required: the match card includes 'Active in N monitored dealer groups' when the counterpart has posted in an approved+active group", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => {
+    sent.push({ phone, message });
+  });
+
+  await addApprovedGroup("g1", "Miami Watch Traders");
+  await createChatVsChatMatch("buyer-groupsig-1", "seller-groupsig-1");
+
+  const card = sent.find((m) => m.phone === "buyer-groupsig-1")?.message;
+  assert.ok(card);
+  assert.match(card!, /Active in 1 monitored dealer group\b/);
+  assert.doesNotMatch(card!, /Active in 1 monitored dealer groups\b/, "a count of exactly 1 must not pluralize \"group\"");
+});
+
+test("the match card omits the active-group line entirely when the counterpart has no approved-group posting history — never shown as a bad \"0\" signal", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => {
+    sent.push({ phone, message });
+  });
+
+  // "g1" is never added to approved_groups here — same chat id as other tests, but not an
+  // approved/monitored group, so the counterpart's post there contributes nothing to the count.
+  await createChatVsChatMatch("buyer-groupsig-2", "seller-groupsig-2");
+
+  const card = sent.find((m) => m.phone === "buyer-groupsig-2")?.message;
+  assert.ok(card);
+  assert.doesNotMatch(card!, /Active in \d+ monitored dealer group/, "no group signal exists yet, so the line must be omitted, not shown as zero");
+});
 
 test("the first side to approve a real chat-vs-chat match gets pending_confirmation, revealing nothing yet", async () => {
   await resetAll();

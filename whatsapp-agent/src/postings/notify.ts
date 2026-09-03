@@ -13,6 +13,7 @@ import { markPendingEscrowOffer } from "../conversation/stateStore";
 import { getListingLimits } from "./listingConfig";
 import { saveMoreContext } from "./moreContext";
 import { getNotificationPreference, resolveNotifyIdentity, resolveFallbackIdentity } from "./notificationPreferences";
+import { getActiveGroupCount } from "./groupActivity";
 
 /**
  * Sends `message` to a canonical user's preferred channel (see notificationPreferences.ts),
@@ -78,9 +79,13 @@ export interface MatchPresentation {
   sourceId?: string;
   sourceUrl?: string;
   photoUrl?: string;
+  /** Distinct monitored groups this identity has actually posted an FS/WTB listing in -- not
+   *  full membership, see groupActivity.ts's getActiveGroupCount. Undefined/0 is omitted from
+   *  the card entirely (honest omission, same as a missing photo), never shown as a bad signal. */
+  activeGroupCount?: number;
 }
 
-function presentationFor(posting: PostingRow, photoUrl?: string | null): MatchPresentation {
+function presentationFor(posting: PostingRow, photoUrl?: string | null, activeGroupCount?: number | null): MatchPresentation {
   return {
     identity: posting.contact_name || posting.source_identity || undefined,
     brand: posting.brand || undefined,
@@ -96,6 +101,7 @@ function presentationFor(posting: PostingRow, photoUrl?: string | null): MatchPr
     sourceId: posting.external_listing_id || undefined,
     sourceUrl: posting.detail_url || undefined,
     photoUrl: photoUrl || undefined,
+    activeGroupCount: activeGroupCount || undefined,
   };
 }
 
@@ -103,6 +109,7 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
   const lines = [`${heading} ${matchId}`];
   if (match.sourceId) lines.push(`Candidate ID: ${match.sourceId}`);
   if (match.identity) lines.push(`${roleLabel}: ${match.identity}`);
+  if (match.activeGroupCount) lines.push(`Active in ${match.activeGroupCount} monitored dealer group${match.activeGroupCount === 1 ? "" : "s"}`);
   const watch = [match.brand, match.model, match.reference].filter(Boolean).join(" ");
   if (watch) lines.push(watch);
   if (match.dial) lines.push(`Dial/Color: ${match.dial}`);
@@ -120,9 +127,11 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
 }
 
 /**
- * Spec §9.1's Potential Match format, minus the "Fi Intelligence" block (dealer
- * reputation/price trend/market range/authenticity) — no data source for any of that exists,
- * same honest omission the v3 flow's Match Card already makes. `matchId` is embedded in the
+ * Spec §9.1's Potential Match format, minus most of the "Fi Intelligence" block (price
+ * trend/market range/authenticity) — no data source for any of that exists, same honest
+ * omission the v3 flow's Match Card already makes. The one exception is the "Active in N
+ * monitored dealer groups" line (see groupActivity.ts): a real, if partial, dealer-reputation
+ * signal derived from posting history, not full group membership. `matchId` is embedded in the
  * reply instructions since notifications are server-pushed, not part of a synchronous
  * request/response turn the way the v3 flow's numbered list is — the recipient needs a way
  * to say which match they mean.
@@ -132,24 +141,25 @@ export function formatMatchMessage(
   self: PostingRow,
   counterpart: PostingRow,
   reasons: string[],
-  imageUrl: string | null
+  imageUrl: string | null,
+  activeGroupCount?: number | null
 ): string {
   const roleLabel = self.type === "FS" ? "Buyer" : "Seller";
   return (
     // Keep the established notification discriminator as well as the numeric ID. Besides being
     // useful to people scanning a chat, downstream channel consumers and the PR #20 regression
     // suite intentionally recognize automatic notifications by the "Potential Match" heading.
-    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl), "Potential Match") +
+    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl, activeGroupCount), "Potential Match") +
     (reasons.length ? `\n\nWhy it matched:\n${reasons.map((r) => `- ${r}`).join("\n")}` : "") +
     `\n\nReply "approve ${matchId}" to connect, or "pass ${matchId}" to skip.`
   );
 }
 
-function groupMatchMessage(matchId:number,self:PostingRow,counterpart:PostingRow,reasons:string[],imageUrl:string|null):string{
+function groupMatchMessage(matchId:number,self:PostingRow,counterpart:PostingRow,reasons:string[],imageUrl:string|null,activeGroupCount?:number|null):string{
   const watch=[self.brand,self.model,self.reference].filter(Boolean).join(" ")||self.original_text.slice(0,80);
   const intro=self.type==="WTB"?`Hi — I’m Fi from WatchFacts. I saw your request for ${watch} and found a potential match.`:`Hi — I’m Fi from WatchFacts. I saw you’re selling ${watch} and found a potential buyer.`;
   const more=self.type==="WTB"?`I can also show you other available ${watch} listings on WatchFacts. Reply MORE.`:`I can also show you other relevant buyer opportunities on WatchFacts. Reply MORE.`;
-  return `${intro}\n\n${formatMatchMessage(matchId,self,counterpart,reasons,imageUrl)}\n\n${more}`;
+  return `${intro}\n\n${formatMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount)}\n\n${more}`;
 }
 
 /**
@@ -215,9 +225,20 @@ async function notifyOneRecipient(
     console.error(`[postings] image lookup failed for posting ${counterpart.id} (falling back to text-only):`, err);
   }
 
+  // Best-effort, same isolation as the image lookup above -- a lookup failure must never break
+  // match delivery, it just omits the "Active in N groups" line from this one card.
+  let activeGroupCount: number | null = null;
+  try {
+    if (counterpart.canonical_user_id != null) {
+      activeGroupCount = await getActiveGroupCount(counterpart.canonical_user_id);
+    }
+  } catch (err) {
+    console.error(`[postings] active-group lookup failed for posting ${counterpart.id} (omitting from card):`, err);
+  }
+
   try {
     const fromGroup=self.source_type==="chat"&&Boolean(self.source_chat_id);
-    const message = fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl);
+    const message = fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl, activeGroupCount);
     const deliveredTo = await sendToCanonicalUser(recipientCanonicalUserId, phone, message);
     await withSchema(pool=>pool.query(`UPDATE match_recipients SET delivered_at=now() WHERE match_id=$1 AND recipient_canonical_user_id=$2 AND match_revision=$3`,[matchId,recipientCanonicalUserId,revision]));
     if(fromGroup)await saveMoreContext(recipientCanonicalUserId,platformForIdentity(deliveredTo),self,counterpart,matchId);
