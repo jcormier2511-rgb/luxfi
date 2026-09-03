@@ -26,42 +26,94 @@ function formatUptime(totalSeconds: number): string {
   return `${h}h ${m}m ${s}s`;
 }
 
+// A quiet nod to "luxury watch dealer" rather than a generic dev-tool look: a warm parchment
+// background instead of stark white/gray, a brass accent for headings/actions instead of the
+// usual all-blue admin palette, and a serif brand mark — while keeping data-dense sections
+// (tables, dl rows, badges) in a plain, highly legible sans so status information never suffers
+// for the sake of style.
 const PAGE_STYLES = `
-:root { color-scheme: light dark; }
-* { box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f5f6f8; color: #1a1a1a; }
-@media (prefers-color-scheme: dark) {
-  body { background: #14161a; color: #e6e6e6; }
-  .card, form.login { background: #1e2126 !important; border-color: #2c2f36 !important; }
-  input, button { background: #20242b !important; color: #e6e6e6 !important; border-color: #3a3f47 !important; }
+:root {
+  color-scheme: light dark;
+  --bg: #f7f3ec;
+  --surface: #ffffff;
+  --border: #e6ddcc;
+  --ink: #211d16;
+  --muted: #6f6656;
+  --brass: #96702f;
+  --brass-dark: #7a5a23;
+  --brass-tint: #f1e6d0;
+  --ok-bg: #dcfce7; --ok-fg: #166534;
+  --bad-bg: #fee2e2; --bad-fg: #991b1b;
+  --unknown-bg: #ece7db; --unknown-fg: #5b5343;
 }
-header { padding: 18px 28px; border-bottom: 1px solid #d8dade; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-header h1 { font-size: 17px; margin: 0; }
-header a { color: #4b5563; text-decoration: none; font-size: 13px; }
-header nav { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-main { max-width: 1000px; margin: 0 auto; padding: 22px 28px 50px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
-.card { background: #fff; border: 1px solid #e2e4e8; border-radius: 10px; padding: 16px 18px; }
-.card h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17140f; --surface: #221e16; --border: #3a3324; --ink: #f1ebdd; --muted: #b9ae95;
+    --brass: #d3a75c; --brass-dark: #e6bf7c; --brass-tint: #2c2517;
+    --ok-bg: #123324; --ok-fg: #4ade80; --bad-bg: #3a1414; --bad-fg: #f87171;
+    --unknown-bg: #2c2718; --unknown-fg: #cbbf9e;
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: var(--bg); color: var(--ink); }
+a { color: var(--brass-dark); }
+header { padding: 18px 28px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 16px; background: var(--surface); }
+header .brand { font-family: Georgia, "Times New Roman", serif; font-size: 19px; font-weight: 600; letter-spacing: .01em; margin: 0; }
+header .brand small { display: block; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 500; margin-top: 2px; }
+header a { color: var(--muted); text-decoration: none; font-size: 13px; }
+header nav { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+header nav a:hover, header nav a.active { color: var(--brass-dark); }
+main { max-width: 1080px; margin: 0 auto; padding: 22px 28px 60px; }
+.hero { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-bottom: 20px; }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; border-top: 3px solid var(--brass); }
+.stat-value { font-size: 30px; font-weight: 700; line-height: 1.1; font-family: Georgia, "Times New Roman", serif; }
+.stat-label { font-size: 12px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .04em; }
+h3.section-label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--brass-dark); margin: 26px 0 10px; font-weight: 700; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+.card h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 .card dl { margin: 8px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 13px; }
-.card dt { color: #6b7280; }
+.card dt { color: var(--muted); }
 .card dd { margin: 0; word-break: break-word; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; margin-right: 6px; }
-.badge.ok { background: #dcfce7; color: #166534; }
-.badge.bad { background: #fee2e2; color: #991b1b; }
-.badge.unknown { background: #e5e7eb; color: #374151; }
+.badge.ok { background: var(--ok-bg); color: var(--ok-fg); }
+.badge.bad { background: var(--bad-bg); color: var(--bad-fg); }
+.badge.unknown { background: var(--unknown-bg); color: var(--unknown-fg); }
 ul.plain, ol.plain { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
 .full { grid-column: 1 / -1; }
-.card table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
-.card th, .card td { text-align: left; padding: 5px 6px; border-bottom: 1px solid #e5e7eb; }
-form.login { max-width: 340px; margin: 90px auto; padding: 26px; border: 1px solid #e2e4e8; border-radius: 10px; background: #fff; }
-form.login h1 { font-size: 15px; margin: 0 0 16px; font-weight: 600; }
-form.login input { width: 100%; padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
-form.login button, .card button { padding: 8px 14px; border-radius: 6px; border: 1px solid #d1d5db; background: #111827; color: #fff; font-size: 13px; cursor: pointer; }
+.card table, main table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+.card th, .card td, main th, main td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+main th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; }
+details.system-status { margin-top: 26px; }
+details.system-status > summary { cursor: pointer; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; padding: 4px 0; }
+details.system-status[open] > summary { color: var(--brass-dark); }
+details.system-status .grid { margin-top: 14px; }
+form.login { max-width: 340px; margin: 90px auto; padding: 26px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+form.login h1 { font-family: Georgia, "Times New Roman", serif; font-size: 17px; margin: 0 0 16px; font-weight: 600; }
+input, select, textarea { background: var(--surface); color: var(--ink); border: 1px solid var(--border); }
+form.login input, .card input, .card select, .card textarea, main input, main select, main textarea { width: 100%; padding: 9px 10px; border-radius: 6px; margin-bottom: 12px; font-size: 14px; font-family: inherit; }
+form.login button, .card button, main button, .btn { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--brass-dark); background: var(--brass); color: #fff; font-size: 13px; cursor: pointer; font-weight: 600; }
+form.login button:hover, .card button:hover, main button:hover, .btn:hover { background: var(--brass-dark); }
+button.secondary, .btn.secondary { background: transparent; color: var(--brass-dark); }
+button.secondary:hover, .btn.secondary:hover { background: var(--brass-tint); }
+button.danger, .btn.danger { background: var(--bad-fg); border-color: var(--bad-fg); }
 form.login button { width: 100%; }
-.error { color: #991b1b; font-size: 13px; margin-bottom: 12px; }
-.muted { color: #6b7280; font-size: 12px; margin-top: 8px; }
-input[type=file] { font-size: 13px; margin-top: 8px; }
-footer { text-align: center; color: #9ca3af; font-size: 11px; padding: 10px 0 30px; }
+.error { color: var(--bad-fg); font-size: 13px; margin-bottom: 12px; }
+.muted { color: var(--muted); font-size: 12px; margin-top: 8px; }
+input[type=file] { font-size: 13px; margin-top: 8px; width: auto; }
+input[type=checkbox] { width: auto; margin: 0 6px 0 0; }
+label.checkbox { display: flex; align-items: center; font-size: 13px; margin-bottom: 12px; }
+footer { text-align: center; color: var(--muted); font-size: 11px; padding: 10px 0 30px; }
+dialog { border: none; border-radius: 12px; padding: 0; max-width: 480px; width: 92vw; background: var(--surface); color: var(--ink); }
+dialog::backdrop { background: rgba(20,17,10,.45); }
+dialog form { padding: 22px; }
+dialog h2 { margin: 0 0 16px; font-size: 15px; font-family: Georgia, "Times New Roman", serif; }
+dialog label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.toolbar { display: flex; gap: 8px; margin-bottom: 14px; align-items: center; flex-wrap: wrap; }
+.toolbar .spacer { flex: 1; }
+.row-actions { display: flex; gap: 6px; }
+.row-actions button { padding: 4px 9px; font-size: 12px; }
 `;
 
 /** Never repopulates credentials and always uses generic errors to avoid account discovery. */
@@ -76,7 +128,7 @@ export function renderLoginPage(error?: string): string {
 </head>
 <body>
   <form class="login" method="post" action="/admin/login" autocomplete="off">
-    <h1>LuxFi WhatsApp Agent — Admin</h1>
+    <h1>LuxFi — Admin</h1>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
     <input type="text" name="username" placeholder="Username" autocomplete="username" autofocus required>
     <input type="password" name="password" placeholder="Password" autocomplete="current-password" required>
@@ -86,15 +138,163 @@ export function renderLoginPage(error?: string): string {
 </html>`;
 }
 
-export function renderManagementPage(kind:"users"|"groups"|"administrators"|"coverage"):string {
-  const title=kind==="users"?"Approved Users":kind==="groups"?"GROUP MANAGEMENT":kind==="coverage"?"WTB Coverage / Dealer Specialists":"Administrators";
-  const empty=kind==="groups"?"No approved groups yet. Add the exact WhatsApp chat ID after the number is restored; wildcards are never accepted.":`No ${title.toLowerCase()} found.`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}.toolbar{display:flex;gap:8px;margin-bottom:14px}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/logout">Sign out</a></nav></header><main><section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to</p><h2>Push Groups</h2><p class="muted">Groups Fi may actively post into (configured independently under listing settings)</p>':''}<div class="toolbar"><input id="q" placeholder="Search"><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
-  const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='';
+type ManagementKind = "users" | "groups" | "administrators" | "coverage";
+
+/** Field schemas the client-side script below uses to render add/edit forms and table columns
+ *  for each entity — kept in one place so the shape sent to the existing POST/PUT routes always
+ *  matches what admin/store.ts's saveUser/saveGroup/saveAdministrator actually accept. */
+const FIELD_SCHEMAS: Record<string, unknown> = {
+  users: [
+    { name: "phone", label: "Phone", type: "text", required: true },
+    { name: "name", label: "Name", type: "text", required: true },
+    { name: "company", label: "Company", type: "text" },
+    { name: "email", label: "Email", type: "email" },
+    { name: "tier", label: "Tier", type: "select", options: ["", "A", "B", "C"] },
+    { name: "specialty", label: "Specialty", type: "text" },
+    { name: "wf_profile_id", label: "WatchFacts Profile ID", type: "text" },
+    { name: "membership_status", label: "Membership Status", type: "text" },
+    { name: "subscription_status", label: "Subscription Status", type: "text" },
+    { name: "access_status", label: "Access Status", type: "select", options: ["active", "inactive", "blocked"], default: "active" },
+    { name: "trial_limit", label: "Trial Limit", type: "number", default: 3 },
+    { name: "complimentary_access", label: "Complimentary Access", type: "checkbox" },
+    { name: "opt_in_status", label: "Opt-in Status", type: "text" },
+    { name: "opt_in_source", label: "Opt-in Source", type: "text" },
+    { name: "notes", label: "Notes", type: "textarea" },
+  ],
+  groups: [
+    { name: "group_name", label: "Group Name", type: "text", required: true },
+    { name: "whatsapp_chat_id", label: "Chat ID", type: "text", required: true },
+    { name: "platform", label: "Platform", type: "select", options: ["whatsapp", "telegram"], default: "whatsapp" },
+    { name: "status", label: "Status", type: "select", options: ["active", "inactive"], default: "active" },
+    { name: "monitoring_enabled", label: "Monitoring Enabled", type: "checkbox" },
+    { name: "concierge_enabled", label: "Concierge Enabled", type: "checkbox" },
+    { name: "monitor_fs", label: "Monitor FS", type: "checkbox", default: true },
+    { name: "monitor_wtb", label: "Monitor WTB", type: "checkbox", default: true },
+    { name: "categories", label: "Categories (comma-separated)", type: "text" },
+    { name: "country", label: "Country", type: "text" },
+    { name: "timezone", label: "Timezone", type: "text" },
+    { name: "member_count", label: "Member Count", type: "number" },
+    { name: "notes", label: "Notes", type: "textarea" },
+  ],
+  administrators: [
+    { name: "name", label: "Name", type: "text", required: true },
+    { name: "username", label: "Username", type: "text", required: true },
+    { name: "email", label: "Email", type: "email", required: true },
+    { name: "role", label: "Role", type: "select", options: ["owner", "administrator", "support", "read_only"], default: "administrator" },
+    { name: "status", label: "Status", type: "select", options: ["active", "inactive"], default: "active", editOnly: true },
+    { name: "password", label: "Password (min 12 characters)", type: "password", createOnly: true },
+  ],
+};
+
+export function renderManagementPage(kind: ManagementKind): string {
+  const title = kind === "users" ? "Approved Users" : kind === "groups" ? "Group Management" : kind === "coverage" ? "WTB Coverage / Dealer Specialists" : "Administrators";
+  const empty = kind === "groups" ? "No approved groups yet. Add the exact WhatsApp chat ID after the number is restored; wildcards are never accepted." : `No ${title.toLowerCase()} found.`;
+  const editable = kind === "users" || kind === "groups" || kind === "administrators";
+  const deletable = kind === "users" || kind === "groups";
+  const idKey = "id";
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{max-width:1200px}</style></head><body>
+<header>
+  <div class="brand">LuxFi<small>Admin</small></div>
+  <nav><a href="/admin#business">Dashboard</a><a href="/admin/users" class="${kind === "users" ? "active" : ""}">Users</a><a href="/admin/groups" class="${kind === "groups" ? "active" : ""}">Groups</a><a href="/admin/coverage" class="${kind === "coverage" ? "active" : ""}">WTB Coverage</a><a href="/admin/administrators" class="${kind === "administrators" ? "active" : ""}">Administrators</a><a href="/admin/logout">Sign out</a></nav>
+</header>
+<main>
+  <h1 style="font-family:Georgia,'Times New Roman',serif;font-size:20px;margin:22px 0 14px">${title}</h1>
+  <section class="card">
+    ${kind === "groups" ? '<p class="muted">Groups Fi listens to for passive monitoring, and/or actively posts into (push groups are configured independently under listing settings).</p>' : ""}
+    <div class="toolbar">
+      <input id="q" placeholder="Search" style="max-width:220px;margin-bottom:0">
+      <select id="status" style="max-width:160px;margin-bottom:0"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind === "users" ? "<option>blocked</option>" : ""}</select>
+      <button onclick="load()">Search</button>
+      ${kind === "users" ? '<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>' : ""}
+      <span class="spacer"></span>
+      ${editable ? '<button id="addBtn" class="btn">+ Add new</button>' : ""}
+    </div>
+    <div id="empty" class="muted">Loading…</div>
+    <table id="table" hidden><thead></thead><tbody></tbody></table>
+    <pre id="error" class="error"></pre>
+  </section>
+</main>
+${editable ? `<dialog id="formDialog"><form id="entityForm"><h2 id="formTitle">Add</h2><div id="formFields"></div><input type="hidden" id="formId"><div class="dialog-actions"><button type="button" class="secondary" onclick="document.getElementById('formDialog').close()">Cancel</button><button type="submit">Save</button></div><div id="formError" class="error"></div></form></dialog>` : ""}
+<script>
+  const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind, idKey=${JSON.stringify(idKey)};
+  const editable=${JSON.stringify(editable)}, deletable=${JSON.stringify(deletable)};
+  const schema=${JSON.stringify((FIELD_SCHEMAS as any)[kind] ?? [])};
+  let csrf='', myRole='';
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  async function load(){const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));table.querySelector('thead').innerHTML='<tr>'+keys.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+'</tr>').join('')}
+
+  async function session(){const s=await fetch('/admin/api/session').then(r=>r.json());csrf=s.csrfToken||'';myRole=(s.administrator&&s.administrator.role)||'';return s}
+
+  async function load(){
+    await session();
+    const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);
+    const response=await fetch(u);if(response.status===403){document.querySelector('#empty').textContent='Owner role required.';document.querySelector('#empty').hidden=false;document.querySelector('#table').hidden=true;return}
+    const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];
+    document.querySelector('#empty').hidden=Boolean(rows.length);document.querySelector('#empty').textContent=${JSON.stringify(empty)};
+    const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;
+    const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));
+    const canModify=editable&&myRole!=='read_only'&&(kind!=='administrators'||myRole==='owner');
+    table.querySelector('thead').innerHTML='<tr>'+keys.map(k=>'<th>'+esc(k)+'</th>').join('')+(canModify?'<th></th>':'')+'</tr>';
+    table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+(canModify?'<td class="row-actions">'+
+      '<button type="button" class="secondary" onclick="openEdit('+JSON.stringify(JSON.stringify(r)).replace(/"/g,'&quot;')+')">Edit</button>'+
+      (kind==='administrators'?'<button type="button" class="secondary" onclick="resetPassword('+r[idKey]+')">Reset PW</button>':'')+
+      (deletable?'<button type="button" class="danger" onclick="removeRow('+r[idKey]+')">Delete</button>':'')+
+      '</td>':'')+'</tr>').join('')
+  }
   load().catch(e=>document.querySelector('#error').textContent=e.message);
-  </script></body></html>`;
+
+  if(editable){
+    const dialog=document.getElementById('formDialog'), form=document.getElementById('entityForm'), fieldsEl=document.getElementById('formFields');
+    function fieldHtml(f,value){
+      const v=value===undefined?(f.default!==undefined?f.default:''):value;
+      if(f.type==='checkbox')return '<label class="checkbox"><input type="checkbox" name="'+f.name+'"'+(v?' checked':'')+'> '+esc(f.label)+'</label>';
+      if(f.type==='select')return '<label>'+esc(f.label)+'</label><select name="'+f.name+'">'+f.options.map(o=>'<option value="'+esc(o)+'"'+(o===v?' selected':'')+'>'+esc(o||'—')+'</option>').join('')+'</select>';
+      if(f.type==='textarea')return '<label>'+esc(f.label)+'</label><textarea name="'+f.name+'" rows="3">'+esc(v)+'</textarea>';
+      return '<label>'+esc(f.label)+(f.required?' *':'')+'</label><input type="'+f.type+'" name="'+f.name+'" value="'+esc(f.type==='password'?'':v)+'"'+(f.required&&!value?' required':'')+'>';
+    }
+    function openForm(title,row){
+      document.getElementById('formTitle').textContent=title;
+      document.getElementById('formId').value=row&&row[idKey]?row[idKey]:'';
+      document.getElementById('formError').textContent='';
+      fieldsEl.innerHTML=schema.filter(f=>!(row&&f.createOnly)).map(f=>fieldHtml(f,row?row[f.name]:undefined)).join('');
+      dialog.showModal();
+    }
+    document.getElementById('addBtn')?.addEventListener('click',()=>openForm('Add',null));
+    window.openEdit=function(json){openForm('Edit',JSON.parse(json))};
+    form.addEventListener('submit',async function(e){
+      e.preventDefault();
+      const id=document.getElementById('formId').value;
+      const payload={};
+      for(const f of schema){
+        if(row_skip(f,id))continue;
+        const el=form.elements[f.name];if(!el)continue;
+        payload[f.name]=f.type==='checkbox'?el.checked:(f.type==='number'?(el.value===''?null:Number(el.value)):el.value);
+      }
+      function row_skip(f,id){return id&&f.createOnly}
+      try{
+        await session();
+        const res=await fetch(id?endpoint+'/'+id:endpoint,{method:id?'PUT':'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(payload)});
+        const body=await res.json();
+        if(!res.ok){document.getElementById('formError').textContent=body.error||'Save failed';return}
+        dialog.close();load();
+      }catch(err){document.getElementById('formError').textContent=String(err)}
+    });
+  }
+  window.removeRow=async function(id){
+    if(!confirm('Delete this '+kind.replace(/s$/,'')+'? This cannot be undone.'))return;
+    await session();
+    const res=await fetch(endpoint+'/'+id,{method:'DELETE',headers:{'X-CSRF-Token':csrf}});
+    if(!res.ok){alert('Delete failed: '+(await res.json().catch(()=>({}))).error);return}
+    load();
+  };
+  window.resetPassword=async function(id){
+    const pw=prompt('New password (min 12 characters):');if(!pw)return;
+    await session();
+    const res=await fetch(endpoint+'/'+id+'/reset-password',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify({password:pw})});
+    if(!res.ok){alert('Reset failed: '+(await res.json().catch(()=>({}))).error);return}
+    alert('Password reset.');
+  };
+</script>
+</body></html>`;
 }
 
 function renderWhapiCard(w: AdminDashboardData["whapi"]): string {
@@ -365,6 +565,25 @@ function renderActivityCard(metrics: AdminDashboardData["metrics"]): string {
   </section>`;
 }
 
+/** The three things that actually make Fi valuable, at a glance: the matching engine working
+ *  (active matches), the multi-channel concierge's real reach (network-wide known users), and
+ *  market intelligence in motion (live FS/WTB requests currently being monitored). Falls back to
+ *  "—" per-tile rather than hiding the row, since a partial-data page is still more useful than
+ *  losing the whole hero when only one dependency (e.g. Postgres) is having a bad day. */
+function renderHeroStats(data: AdminDashboardData): string {
+  const fmt = (n: number | null) => (n === null ? "—" : n.toLocaleString());
+  const activeMatches = data.postingsV4.operational ? data.postingsV4.operational.activeMatches : null;
+  const liveListings = data.postingsV4.operational
+    ? data.postingsV4.operational.activeFsMonitors + data.postingsV4.operational.activeWtbMonitors
+    : null;
+  const networkUsers = data.metrics ? data.metrics.networkReach.total.knownUniqueUsers : null;
+  return `<section class="hero">
+    <div class="stat"><div class="stat-value">${fmt(activeMatches)}</div><div class="stat-label">Active matches</div></div>
+    <div class="stat"><div class="stat-value">${fmt(liveListings)}</div><div class="stat-label">Live FS/WTB requests monitored</div></div>
+    <div class="stat"><div class="stat-value">${fmt(networkUsers)}</div><div class="stat-label">Network reach (unique users)</div></div>
+  </section>`;
+}
+
 export function renderDashboard(data: AdminDashboardData): string {
   return `<!doctype html>
 <html>
@@ -376,25 +595,34 @@ export function renderDashboard(data: AdminDashboardData): string {
 </head>
 <body>
   <header>
-    <h1>LuxFi Admin</h1>
-    <nav><a href="#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/logout">Sign out</a></nav>
+    <div class="brand">LuxFi<small>Admin</small></div>
+    <nav><a href="#business">Dashboard</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/logout">Sign out</a></nav>
   </header>
   <main>
-    ${renderWhapiCard(data.whapi)}
-    ${renderDatabaseCard(data.database)}
-    ${renderMembershipCard(data.metrics, data.metricsError)}
-    ${renderNetworkReachCard(data.metrics)}
-    ${renderPaymentsCard(data.metrics)}
-    ${renderTopRequestsCard(data.metrics)}
-    ${renderMarketUpdatesCard(data.marketUpdates)}
-    ${renderPostingsV4Card(data.postingsV4)}
-    ${renderWatchfactsCard(data.watchfacts)}
-    ${renderAiMatchingCard(data.aiMatching)}
-    ${renderDeploymentCard(data.deployment)}
-    ${renderContactsCard(data.contacts)}
-    ${renderActivityCard(data.metrics)}
+    ${renderHeroStats(data)}
+    <div id="business"></div>
+    <div class="grid">
+      ${renderMembershipCard(data.metrics, data.metricsError)}
+      ${renderPaymentsCard(data.metrics)}
+      ${renderTopRequestsCard(data.metrics)}
+      ${renderMarketUpdatesCard(data.marketUpdates)}
+      ${renderPostingsV4Card(data.postingsV4)}
+      ${renderNetworkReachCard(data.metrics)}
+      ${renderContactsCard(data.contacts)}
+      ${renderActivityCard(data.metrics)}
+    </div>
+    <details class="system-status">
+      <summary>System status (Whapi, database, WatchFacts sync, AI matching, deployment)</summary>
+      <div class="grid">
+        ${renderWhapiCard(data.whapi)}
+        ${renderDatabaseCard(data.database)}
+        ${renderWatchfactsCard(data.watchfacts)}
+        ${renderAiMatchingCard(data.aiMatching)}
+        ${renderDeploymentCard(data.deployment)}
+      </div>
+    </details>
   </main>
-  <footer>Read-only status — generated at ${escapeHtml(data.generatedAt)}. Only the contacts upload above changes anything.</footer>
+  <footer>Read-only status — generated at ${escapeHtml(data.generatedAt)}. Only the contacts upload and the Users/Groups/Administrators pages change anything.</footer>
 </body>
 </html>`;
 }
