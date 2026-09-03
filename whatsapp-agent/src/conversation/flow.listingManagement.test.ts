@@ -229,6 +229,19 @@ test('"pause all my listings" accepts the "my" variant, and reports gracefully w
   assert.match(reply.messages.join("\n"), /no listings to manage/i);
 });
 
+test('"clear all my listings" closes every listing', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "FS", "116500LN", 30000);
+  const two = await makeListing(phone, "WTB", "5711", 90000, { brand: "Patek Philippe" });
+
+  const reply = await handleIncomingMessage(phone, "clear ALL my listings");
+
+  assert.match(reply.messages.join("\n"), /listing 1 closed/i);
+  assert.match(reply.messages.join("\n"), /listing 2 closed/i);
+  assert.equal(await statusOf(one.id), "stopped");
+  assert.equal(await statusOf(two.id), "stopped");
+});
+
 test("an intake answer that names no listing number still reaches the draft", async () => {
   const phone = freshPhone();
   const one = await makeListing(phone, "FS", "116500LN", 30000);
