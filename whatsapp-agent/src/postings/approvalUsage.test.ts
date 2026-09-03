@@ -96,6 +96,7 @@ test("evaluateApprovalGate: pure decision logic for each usage shape", () => {
       authnetCustomerProfileId: null,
       authnetPaymentProfileId: null,
       authnetSubscriptionId: null,
+      supersededSubscriptionId: null,
       canceledAt: null,
     },
   };

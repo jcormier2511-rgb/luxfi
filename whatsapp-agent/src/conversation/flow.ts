@@ -1822,8 +1822,12 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     if (!requestedPlan) {
       // Bare "upgrade" — show the tiers roomier than whatever the account currently has.
       const entitlement = await getEntitlement(state.phone);
+      // Roomier tiers ONLY. This used to list every other tier, so a tier2 member asking to
+      // upgrade was offered tier1 — a downgrade, presented as an upgrade. Matches the same
+      // filter config.fiFlow.weeklyCapMessage already applies when it says the same thing.
+      const currentLimit = entitlement.plan ? MEMBERSHIP_PLANS[entitlement.plan].weeklyLimit : 0;
       const options = (Object.values(MEMBERSHIP_PLANS) as (typeof MEMBERSHIP_PLANS)[PlanKey][])
-        .filter((p) => p.key !== entitlement.plan)
+        .filter((p) => p.key !== entitlement.plan && (currentLimit === null ? false : p.weeklyLimit === null || p.weeklyLimit > currentLimit))
         .map((p) => `Reply "upgrade ${p.key}" for ${p.label} (${p.priceLabel}${p.weeklyLimit === null ? ", unlimited" : `, ${p.weeklyLimit}/week`})`)
         .join("\n");
       return { state, messages: [options || "You're already on our top tier."] };

@@ -44,6 +44,13 @@ async function ensureSchema(): Promise<void> {
         );
 
         ALTER TABLE account_entitlements ADD COLUMN IF NOT EXISTS plan TEXT;
+        -- An Authorize.net ARB subscription this account has REPLACED but which may still be
+        -- billing at the processor. Upgrading used to overwrite authnet_subscription_id in
+        -- place, so the old subscription kept charging and the id needed to stop it was gone in
+        -- the same instant. Written atomically when a new subscription supersedes a different
+        -- one, and cleared once the cancel is confirmed -- so a non-null value here is a
+        -- to-do list of subscriptions someone is still being charged for.
+        ALTER TABLE account_entitlements ADD COLUMN IF NOT EXISTS superseded_subscription_id TEXT;
         ALTER TABLE account_entitlements DROP CONSTRAINT IF EXISTS account_entitlements_plan_check;
         ALTER TABLE account_entitlements ADD CONSTRAINT account_entitlements_plan_check
           CHECK (plan IS NULL OR plan IN ('tier1', 'tier2', 'tier3'));
@@ -102,6 +109,8 @@ export interface Entitlement {
   authnetCustomerProfileId: string | null;
   authnetPaymentProfileId: string | null;
   authnetSubscriptionId: string | null;
+  /** A replaced subscription that may still be billing — see the column comment. */
+  supersededSubscriptionId: string | null;
   canceledAt: string | null;
 }
 
@@ -115,6 +124,7 @@ interface EntitlementRow {
   authnet_customer_profile_id: string | null;
   authnet_payment_profile_id: string | null;
   authnet_subscription_id: string | null;
+  superseded_subscription_id: string | null;
   canceled_at: string | null;
 }
 
@@ -129,6 +139,7 @@ function rowToEntitlement(row: EntitlementRow): Entitlement {
     authnetCustomerProfileId: row.authnet_customer_profile_id,
     authnetPaymentProfileId: row.authnet_payment_profile_id,
     authnetSubscriptionId: row.authnet_subscription_id,
+    supersededSubscriptionId: row.superseded_subscription_id ?? null,
     canceledAt: row.canceled_at,
   };
 }
@@ -192,11 +203,37 @@ export async function activateMembership(
      ON CONFLICT (phone) DO UPDATE SET
        plan = $2, payment_authorized = TRUE, payment_status = 'active',
        authnet_customer_profile_id = $3, authnet_payment_profile_id = $4, authnet_subscription_id = $5,
+       -- Capture the subscription being replaced in the SAME statement that replaces it, so
+       -- there is no instant where the id needed to stop the old billing has been lost.
+       superseded_subscription_id = CASE
+         WHEN account_entitlements.authnet_subscription_id IS NOT NULL
+          AND account_entitlements.authnet_subscription_id <> $5
+         THEN account_entitlements.authnet_subscription_id
+         ELSE account_entitlements.superseded_subscription_id
+       END,
        canceled_at = NULL, updated_at = now()
      RETURNING *`,
     [phone, plan, authnet.customerProfileId, authnet.paymentProfileId, authnet.subscriptionId]
   );
   return rowToEntitlement(result.rows[0] as EntitlementRow);
+}
+
+/** Called once a superseded subscription is confirmed cancelled at Authorize.net. */
+export async function clearSupersededSubscription(phone: string): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `UPDATE account_entitlements SET superseded_subscription_id = NULL, updated_at = now() WHERE phone = $1`,
+    [phone]
+  );
+}
+
+/** Accounts whose previous subscription may still be billing — an operator's to-do list. */
+export async function findUncancelledSupersededSubscriptions(): Promise<{ phone: string; subscriptionId: string }[]> {
+  await ensureSchema();
+  const result = await getPool().query(
+    `SELECT phone, superseded_subscription_id FROM account_entitlements WHERE superseded_subscription_id IS NOT NULL`
+  );
+  return result.rows.map((row) => ({ phone: row.phone as string, subscriptionId: row.superseded_subscription_id as string }));
 }
 
 /**

@@ -2,12 +2,14 @@ import {
   CheckoutSession,
   activateMembership,
   claimCheckoutSessionForActivation,
+  clearSupersededSubscription,
   findStalePendingCheckouts,
   getEntitlement,
   markCheckoutSessionStatus,
   releaseCheckoutSessionClaim,
 } from "./entitlementStore";
 import {
+  cancelArbSubscription,
   createArbSubscription,
   createProfileTransaction,
   getCustomerPaymentProfileIds,
@@ -49,11 +51,44 @@ export async function activateClaimedCheckout(
     return "declined";
   }
   const subscriptionId = await createArbSubscription({ plan: session.plan, customerProfileId, customerPaymentProfileId });
-  await activateMembership(session.phone, session.plan, { customerProfileId, paymentProfileId: customerPaymentProfileId, subscriptionId });
+  const entitlement = await activateMembership(session.phone, session.plan, { customerProfileId, paymentProfileId: customerPaymentProfileId, subscriptionId });
   await recordMembershipPayment(session.phone, charge.settleAmountCents, "membership_payment");
   await markCheckoutSessionStatus(session.id, "completed", charge.transId);
   console.log(`[billing/${source}] activated ${session.plan} for phone=${session.phone} (subscriptionId=${subscriptionId})`);
+  await retireSupersededSubscription(session.phone, entitlement.supersededSubscriptionId, source);
   return "activated";
+}
+
+/**
+ * Stop the recurring charge an upgrade replaced.
+ *
+ * Changing tier creates a NEW ARB subscription; the previous one keeps billing at
+ * Authorize.net until something cancels it. Nothing did — so a member moving from tier1 to
+ * tier2 paid $50 AND $150 every month, indefinitely, and the id needed to stop it was
+ * overwritten at the same moment (see superseded_subscription_id in entitlementStore).
+ *
+ * Deliberately runs AFTER the new membership is active, and never throws:
+ *  - cancel succeeds -> the flag clears and billing is correct.
+ *  - cancel fails    -> the customer keeps the access they just paid for, the id stays on the
+ *                       row, and the failure is logged loudly. That is exactly today's
+ *                       behavior, except now it is recorded and recoverable instead of lost.
+ * Doing it in the other order would risk cancelling someone's billing and then failing to
+ * activate what they paid for, which is the one outcome worse than double billing.
+ */
+async function retireSupersededSubscription(phone: string, supersededSubscriptionId: string | null, source: string): Promise<void> {
+  if (!supersededSubscriptionId) return;
+  try {
+    await cancelArbSubscription(supersededSubscriptionId);
+    await clearSupersededSubscription(phone);
+    console.log(`[billing/${source}] cancelled superseded subscription ${supersededSubscriptionId} for phone=${phone}`);
+  } catch (err) {
+    console.error(
+      `[billing/${source}] FAILED to cancel superseded subscription ${supersededSubscriptionId} for phone=${phone} — ` +
+        `this account is being billed TWICE until it is cancelled by hand. It stays on ` +
+        `account_entitlements.superseded_subscription_id (see findUncancelledSupersededSubscriptions):`,
+      err
+    );
+  }
 }
 
 export interface CheckoutReconciliationResult {

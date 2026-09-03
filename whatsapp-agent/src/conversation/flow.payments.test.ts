@@ -49,6 +49,28 @@ test("\"upgrade\" with no tier lists the available tiers instead of assuming one
   assert.match(message, /upgrade tier3/);
 });
 
+/** It offered every OTHER tier, so a tier2 member asking to upgrade was offered tier1 — a
+ *  downgrade, labelled an upgrade — despite the code's own comment saying "roomier". */
+test("\"upgrade\" offers only roomier tiers, never a downgrade", async () => {
+  await entitlements._resetDbForTests();
+  const phone = "19990001009";
+  await entitlements.setPlan(phone, "tier2"); // 20/week
+
+  const message = (await handleIncomingMessage(phone, "upgrade")).messages.join("\n");
+  assert.match(message, /upgrade tier3/, "unlimited is roomier than 20/week");
+  assert.doesNotMatch(message, /upgrade tier1/, "5/week is a downgrade from 20/week");
+  assert.doesNotMatch(message, /upgrade tier2/, "already on it");
+});
+
+test("a member on the top tier is told so rather than offered anything", async () => {
+  await entitlements._resetDbForTests();
+  const phone = "19990001010";
+  await entitlements.setPlan(phone, "tier3"); // unlimited
+
+  const message = (await handleIncomingMessage(phone, "upgrade")).messages.join("\n");
+  assert.match(message, /already on our top tier/i);
+});
+
 test("\"upgrade tier3\" sends a checkout link for that specific tier", async () => {
   await entitlements._resetDbForTests();
   const phone = "19990001003";
