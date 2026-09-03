@@ -138,16 +138,18 @@ function displayName(watch: DigestWatch): string {
   return [watch.brand, watch.model, watch.reference].filter(Boolean).join(" ") || `request #${watch.postingId}`;
 }
 
+const plural = (n: number, singular: string) => `${n} ${singular}${n === 1 ? "" : "s"}`;
+
 export function formatDigest(watches: DigestWatch[], minimumObservations: number): string {
   const sections = watches.map((watch) => {
     const action = watch.type === "WTB" ? "search" : "listing";
     const matchLine = watch.newMatches === 0 ? "No new matches since your last update." : `${watch.newMatches} new match${watch.newMatches === 1 ? "" : "es"} since your last update.`;
     return (
-      `Market update for your ${displayName(watch)} ${action}: We've seen ${watch.buyers} active buyers and ` +
-      `${watch.sellers} active sellers/listings in the past 15 days. ${marketSentiment(watch.buyers, watch.sellers, minimumObservations)} ${matchLine}`
+      `${displayName(watch)} ${action}: ${plural(watch.buyers, "active buyer")}, ${plural(watch.sellers, "active seller")} in the past 15 days. ` +
+      `${marketSentiment(watch.buyers, watch.sellers, minimumObservations)} ${matchLine}`
     );
   });
-  return `Your LuxFi market update\n\n${sections.join("\n\n")}`;
+  return `Your LuxFi market update\n\n${sections.join("\n\n")}\n\nLive listings can be seen at watchfacts.com.`;
 }
 
 function signature(watches: DigestWatch[]): string {

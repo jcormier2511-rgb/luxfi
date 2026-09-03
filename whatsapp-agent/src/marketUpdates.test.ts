@@ -91,6 +91,23 @@ test("multiple watches are combined with aggregate-only, 15-day-safe copy", () =
   assert.doesNotMatch(text, /private|phone|group|budget|photo|100/);
 });
 
+test("required regression: buyer/seller counts of exactly 1 are singular, not \"1 active buyers\"", () => {
+  const text = formatDigest([
+    { postingId: 1, type: "WTB", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 1, sellers: 1, newMatches: 0 },
+  ], 3);
+  assert.match(text, /1 active buyer\b/);
+  assert.match(text, /1 active seller\b/);
+  assert.doesNotMatch(text, /1 active buyers/);
+  assert.doesNotMatch(text, /1 active sellers/);
+});
+
+test("the digest points readers to watchfacts.com for live listings", () => {
+  const text = formatDigest([
+    { postingId: 1, type: "WTB", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 1, sellers: 1, newMatches: 0 },
+  ], 3);
+  assert.match(text, /Live listings can be seen at watchfacts\.com\.$/);
+});
+
 test("no-activity and unchanged digests are suppressed unless explicitly allowed", () => {
   const quiet = [{ postingId: 1, type: "WTB" as const, brand: "Rolex", model: "Daytona", reference: "126500LN", buyers: 0, sellers: 0, newMatches: 0 }];
   assert.equal(shouldSendDigest(quiet, null, false), false);
