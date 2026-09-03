@@ -769,7 +769,7 @@ function parseListingEditCommand(text: string): ListingEditCommand | null {
   // "close all listings"/"pause all my listings" — every manageable listing at once, with no
   // number said at all. Checked before the numbered form below since it shares the same verbs
   // but never a digit.
-  const lifecycleAll = t.match(/^(?:please\s+)?(pause|pausing|hold|resume|reactivate|restart|unpause|close|closing|delete|deleting|remove|cancel|stop|end)\s+(?:my\s+)?all\s+(?:my\s+)?listings?$/i);
+  const lifecycleAll = t.match(/^(?:please\s+)?(pause|pausing|hold|resume|reactivate|restart|unpause|close|closing|clear|clearing|delete|deleting|remove|cancel|stop|end)\s+(?:my\s+)?all\s+(?:my\s+)?listings?$/i);
   if (lifecycleAll) {
     const verb = lifecycleAll[1].toLowerCase();
     const action: ListingEditCommand["action"] = /^(pause|pausing|hold|stop)$/.test(verb) ? "pause"
@@ -786,7 +786,7 @@ function parseListingEditCommand(text: string): ListingEditCommand | null {
   // showed "close 1 and 2" (verb directly on the numbers, no "listing" said at all) failing the
   // same way, and there's nothing else in this bot a bare "<lifecycle verb> <number(s)>" could
   // mean.
-  const lifecycle = t.match(/^(?:please\s+)?(pause|pausing|hold|resume|reactivate|restart|unpause|close|closing|delete|deleting|remove|cancel|stop|end)\s+(?:my\s+)?(?:listings?\s*)?#?\s*(\d+(?:\s*(?:,|&|and)\s*#?\s*\d+)*)$/i);
+  const lifecycle = t.match(/^(?:please\s+)?(pause|pausing|hold|resume|reactivate|restart|unpause|close|closing|clear|clearing|delete|deleting|remove|cancel|stop|end)\s+(?:my\s+)?(?:listings?\s*)?#?\s*(\d+(?:\s*(?:,|&|and)\s*#?\s*\d+)*)$/i);
   if (lifecycle) {
     const verb = lifecycle[1].toLowerCase();
     const action: ListingEditCommand["action"] = /^(pause|pausing|hold|stop)$/.test(verb) ? "pause"
