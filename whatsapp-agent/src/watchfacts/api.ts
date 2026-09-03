@@ -2,6 +2,7 @@ import type { Page } from "playwright";
 import { InventoryListing, ListingType } from "../types";
 import { extractReference, extractUnambiguousPrice } from "../postings/normalize";
 import { extractNativePrice } from "../fx/currency";
+import { config } from "../config";
 
 /**
  * Real WatchFacts Trading Floor API, found by capturing network traffic from a logged-in
@@ -44,9 +45,6 @@ export interface RawFlashSale {
 
 const CATEGORY_ID_WATCHES = 19;
 const PAGE_SIZE = 25;
-// Safety valve, not an expected ceiling — stops a pagination bug (or a field-name change in
-// WatchFacts' response envelope that breaks the "last page" check) from looping forever.
-const MAX_PAGES = 50;
 
 const WTB_AUCTION_TYPE_CANDIDATES = [
   "wtb",
@@ -184,15 +182,27 @@ async function fetchFlashSalesPage(page: Page, auctionType: string, pageNum: num
   }, url);
 }
 
-/** Pages through `available-flash-sales` until a short page (or empty page) signals the end. */
+/**
+ * Pages until a short (or empty) page signals the end.
+ *
+ * The page ceiling is a safety valve against a paging bug or a response-envelope change that
+ * breaks the last-page check — never an expected stopping point, so it is sized for a full
+ * catalogue (config.watchfacts.maxSyncPages) rather than the flash-sale pool. It used to be 50,
+ * which at 25 rows a page silently truncated anything past 1,250 listings; hitting it now logs
+ * loudly, because a sync that stops early is worse than one that fails.
+ */
 export async function fetchAllFlashSales(page: Page, auctionType: string): Promise<RawFlashSale[]> {
   const all: RawFlashSale[] = [];
-  for (let p = 1; p <= MAX_PAGES; p++) {
+  const maxPages = config.watchfacts.maxSyncPages;
+  for (let p = 1; p <= maxPages; p++) {
     const batch = await fetchFlashSalesPage(page, auctionType, p);
     if (batch.length === 0) break;
     all.push(...batch);
-    if (batch.length < PAGE_SIZE) break; // last page
+    if (batch.length < PAGE_SIZE) return all; // last page
+    // Long syncs are otherwise silent for however many minutes they take.
+    if (p % 100 === 0) console.log(`[watchfacts] ${auctionType}: fetched ${all.length} listings (page ${p})`);
   }
+  console.warn(`[watchfacts] ${auctionType}: stopped at the ${maxPages}-page ceiling with ${all.length} listings — the catalogue is probably TRUNCATED. Raise WATCHFACTS_MAX_SYNC_PAGES.`);
   return all;
 }
 

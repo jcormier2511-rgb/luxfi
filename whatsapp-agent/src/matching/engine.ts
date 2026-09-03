@@ -1,4 +1,4 @@
-import { getActiveListings } from "../watchfacts/inventoryDb";
+import { findCandidateListings, getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
 import { normalizeReference, extractReference, referencesMatch, hasMultipleDistinctPrices } from "../postings/normalize";
 import { config, isAiMatchingEnabledForPhone } from "../config";
@@ -227,16 +227,21 @@ function softPreferenceScore(listing: InventoryListing, preferences?: SearchPref
  */
 export async function findMatches(request: ItemRequest, limit: number, preferences?: SearchPreferences): Promise<InventoryListing[]> {
   const wantType = request.action === "buy" ? "FS" : "WTB";
+  // Read the reference BEFORE the pool, so the pool can be narrowed by it in SQL rather than
+  // loaded whole and filtered here. The reference branch below can only ever return listings
+  // satisfying referencesMatch, so this narrowing is loss-free, not an approximation; when no
+  // reference is named the query falls back to a capped, newest-first pool.
+  const requestedRef = extractRequestedReference(request.query);
   // Excludes multi-item price-list dumps and standalone part/accessory listings before they
   // ever reach the reference/token branches below — see isUnambiguousListing/isCompleteWatchListing.
-  const rawCandidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
+  const rawCandidates = (await findCandidateListings({ type: wantType, reference: requestedRef }))
+    .filter(isUnambiguousListing).filter(isCompleteWatchListing);
   const normalized = await normalizePrices(rawCandidates, preferences);
   if (!normalized.conversionAvailable) return [];
   const candidates = normalized.listings;
   preferences = normalized.preferences;
   // Currency-aware, precomputed once for the whole candidate pool — see buildComparablePriceMap.
   const priceMap = await buildComparablePriceMap(candidates);
-  const requestedRef = extractRequestedReference(request.query);
 
   if (requestedRef) {
     const exact = candidates.filter((l) => l.ref && referencesMatch(l.ref, requestedRef));
@@ -314,7 +319,12 @@ export interface MatchResult {
  */
 export async function attachPriceSignals(results: MatchResult[]): Promise<MatchResult[]> {
   if (!results.some((r) => r.listing.type === "FS")) return results;
-  const comparablePool = await getActiveListings("FS");
+  // computePriceSignal only ever uses comps whose reference matches the listing's own, so the
+  // comp pool is fetched per distinct reference rather than as the entire FS inventory —
+  // identical comps, and it does not grow with the size of the catalogue.
+  const references = [...new Set(results.filter((r) => r.listing.type === "FS" && r.listing.ref).map((r) => r.listing.ref))];
+  const pools = await Promise.all(references.map((reference) => findCandidateListings({ type: "FS", reference })));
+  const comparablePool = [...new Map(pools.flat().map((l) => [l.id, l])).values()];
   return results.map((r) =>
     r.listing.type === "FS" ? { ...r, priceSignal: computePriceSignal(r.listing, comparablePool) ?? undefined } : r
   );
@@ -375,9 +385,17 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   }
 
   const wantType = interpreted.action === "buy" ? "FS" : "WTB";
+  // Resolved before the pool is read so the pool can be narrowed by it in SQL — see the same
+  // move in findMatches. `includeUnreferenced` keeps this path's own eligibility rule intact:
+  // here a listing with NO reference of its own stays eligible, and only an explicitly
+  // conflicting one is dropped.
+  const requestedFamily = interpreted.referenceFamily
+    ? normalizeReference(interpreted.referenceFamily)
+    : extractRequestedReference(request.query);
   // Excludes multi-item price-list dumps and standalone part/accessory listings before AI ever
   // sees the pool — see isUnambiguousListing/isCompleteWatchListing.
-  const rawCandidates = (await getActiveListings(wantType)).filter(isUnambiguousListing).filter(isCompleteWatchListing);
+  const rawCandidates = (await findCandidateListings({ type: wantType, reference: requestedFamily, includeUnreferenced: true }))
+    .filter(isUnambiguousListing).filter(isCompleteWatchListing);
   // The reference safety gate below must never depend solely on the AI correctly parsing the
   // reference out of the message — if interpretQuery's own extraction misses/garbles it (a real
   // model failure mode, not hypothetical), falling back to null here would let EVERY listing
@@ -393,10 +411,6 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   if (!normalized.conversionAvailable) return [];
   const candidates = normalized.listings;
   const normalizedPreferences = normalized.preferences;
-  const requestedFamily = interpreted.referenceFamily
-    ? normalizeReference(interpreted.referenceFamily)
-    : extractRequestedReference(request.query);
-
   // Deterministic exclusion, same rule findMatches uses: a candidate WITH its own reference
   // that explicitly conflicts with the requested one is never eligible, regardless of what an
   // AI reranker might otherwise say about it.

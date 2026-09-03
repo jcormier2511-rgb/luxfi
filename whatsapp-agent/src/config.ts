@@ -217,6 +217,19 @@ export const config = {
     // On a freshly-populated mirror every row is therefore 0 days old and this filter does
     // nothing until the mirror itself is older than the window. 0 disables it entirely.
     maxListingAgeDays: Math.max(0, Math.floor(Number(process.env.WATCHFACTS_MAX_LISTING_AGE_DAYS ?? 15)) || 0),
+    // Ceiling on how many inventory rows a single search may pull into memory when the request
+    // names no reference to narrow by. Matching used to load EVERY active listing per message
+    // and filter in JS, which is fine against a few hundred flash sales and fatal against a
+    // full catalogue. Well above the flash-sale pool on purpose: below this ceiling the
+    // candidate set is exactly what it always was, so nothing about current behavior changes.
+    // A request that DOES name a reference is narrowed in SQL instead and never hits this.
+    maxCandidateListings: Math.max(1, Math.floor(Number(process.env.WATCHFACTS_MAX_CANDIDATE_LISTINGS ?? 5000)) || 5000),
+    // Rows per multi-row INSERT during a sync. One statement per listing is ~1.5M round trips
+    // on a full catalogue; batching turns that into a few thousand.
+    syncBatchSize: Math.max(1, Math.floor(Number(process.env.WATCHFACTS_SYNC_BATCH_SIZE ?? 500)) || 500),
+    // Safety valve on pagination, not an expected ceiling -- it exists so a paging bug can't
+    // loop forever. Sized for a full catalogue rather than the flash-sale pool.
+    maxSyncPages: Math.max(1, Math.floor(Number(process.env.WATCHFACTS_MAX_SYNC_PAGES ?? 40000)) || 40000),
   },
   storageDir: path.join(persistDir, "storage"),
   // Fi Build Spec v4 automatic monitoring/matching system (src/postings/) — reuses the same

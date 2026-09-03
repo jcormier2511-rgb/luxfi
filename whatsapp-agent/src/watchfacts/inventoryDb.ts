@@ -119,6 +119,16 @@ async function ensureSchema(): Promise<void> {
         CREATE INDEX IF NOT EXISTS inventory_listings_market_pulse
           ON inventory_listings (upper(ref), type, is_active, last_seen_at)
           INCLUDE (price, native_price_amount, native_currency);
+        -- Full-catalogue scale. Every customer-facing read now narrows on
+        -- (is_active, type, first_seen_at) -- the freshness window is measured on first_seen_at,
+        -- which the market-pulse index above does not cover -- and, when the request names a
+        -- reference, on the SAME normalized-reference expression that market pulse and
+        -- findCandidateListings both compare with. text_pattern_ops so the prefix half of
+        -- referencesMatch ("116500" finding "116500LN") can use the index rather than scanning.
+        CREATE INDEX IF NOT EXISTS inventory_listings_active_recent
+          ON inventory_listings (is_active, type, first_seen_at DESC);
+        CREATE INDEX IF NOT EXISTS inventory_listings_normalized_ref
+          ON inventory_listings (upper(regexp_replace(COALESCE(ref,''), '[^A-Za-z0-9]', '', 'g')) text_pattern_ops, is_active, type);
         `
       )
       .then(() => undefined);
@@ -182,14 +192,47 @@ export interface UpsertRow {
   originalPriceText?: string;
 }
 
-/** Insert new listings, update existing ones (matched by source+type+external_id). */
+/** The 19 per-listing values, in the column order upsertListings inserts them. */
+function upsertValues(r: UpsertRow, syncedAt: string, source: string): unknown[] {
+  return [
+    source, r.type, r.id, r.category, r.item, r.brand, r.ref, r.condition, r.price, r.location,
+    r.contactName, r.contactPhone, r.rating, r.description, r.detailUrl ?? "", r.imageUrl ?? "",
+    r.nativePriceAmount ?? null, r.nativeCurrency ?? null, r.originalPriceText ?? null, syncedAt,
+  ];
+}
+const UPSERT_COLUMNS = 20; // the 19 listing values plus syncedAt, which fills both timestamps
+
+/**
+ * Insert new listings, update existing ones (matched by source+type+external_id).
+ *
+ * Written as multi-row INSERTs rather than one statement per listing: a full catalogue is on
+ * the order of a million rows, and a statement each means a million round trips inside one
+ * transaction. Still one transaction for the whole call, so a sync that fails partway leaves
+ * the previous inventory intact rather than half-replaced.
+ *
+ * first_seen_at is deliberately NOT updated on conflict — a listing that keeps re-appearing in
+ * syncs keeps its original age, which is what the freshness window measures.
+ */
 export async function upsertListings(rows: UpsertRow[], syncedAt: string, source = "WF"): Promise<void> {
   if (rows.length === 0) return;
   await ensureSchema();
+  // Postgres refuses an ON CONFLICT DO UPDATE that would touch the same row twice in ONE
+  // statement, so a key repeated inside a batch is an error rather than the harmless overwrite
+  // it was when this ran a statement per listing. Paging a live, date-sorted catalogue really
+  // does re-serve a listing across page boundaries, so dedupe first, keeping the LAST
+  // occurrence — the same row the old loop would have left behind.
+  const deduped = [...new Map(rows.map((r) => [`${source}\u0000${r.type}\u0000${r.id}`, r])).values()];
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
-    for (const r of rows) {
+    for (let offset = 0; offset < deduped.length; offset += config.watchfacts.syncBatchSize) {
+      const batch = deduped.slice(offset, offset + config.watchfacts.syncBatchSize);
+      const tuples = batch.map((_, i) => {
+        const base = i * UPSERT_COLUMNS;
+        const p = (n: number) => `$${base + n}`;
+        // $20 is syncedAt, used for BOTH first_seen_at and last_seen_at on a fresh insert.
+        return `(${Array.from({ length: 19 }, (_, c) => p(c + 1)).join(", ")}, TRUE, ${p(20)}, ${p(20)})`;
+      });
       await client.query(
         `
         INSERT INTO inventory_listings
@@ -197,7 +240,7 @@ export async function upsertListings(rows: UpsertRow[], syncedAt: string, source
            contact_name, contact_phone, rating, description, detail_url, image_url,
            native_price_amount, native_currency, original_price_text, is_active, first_seen_at, last_seen_at)
         VALUES
-          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, TRUE, $20, $20)
+          ${tuples.join(",\n          ")}
         ON CONFLICT (source, type, external_id) DO UPDATE SET
           category = excluded.category, item = excluded.item, brand = excluded.brand, ref = excluded.ref,
           condition = excluded.condition, price = excluded.price, location = excluded.location,
@@ -207,28 +250,7 @@ export async function upsertListings(rows: UpsertRow[], syncedAt: string, source
           native_currency = excluded.native_currency, original_price_text = excluded.original_price_text,
           is_active = TRUE, last_seen_at = excluded.last_seen_at
         `,
-        [
-          source,
-          r.type,
-          r.id,
-          r.category,
-          r.item,
-          r.brand,
-          r.ref,
-          r.condition,
-          r.price,
-          r.location,
-          r.contactName,
-          r.contactPhone,
-          r.rating,
-          r.description,
-          r.detailUrl ?? "",
-          r.imageUrl ?? "",
-          r.nativePriceAmount ?? null,
-          r.nativeCurrency ?? null,
-          r.originalPriceText ?? null,
-          syncedAt,
-        ]
+        batch.flatMap((r) => upsertValues(r, syncedAt, source))
       );
     }
     await client.query("COMMIT");
@@ -242,8 +264,14 @@ export async function upsertListings(rows: UpsertRow[], syncedAt: string, source
 
 /**
  * Only called after a sync for `type` returned at least one row (see syncInventory.ts) —
- * marks anything of that source+type NOT in `seenExternalIds` inactive, so a transient 0-row
- * fetch can never wipe out inventory, only a real "this listing is gone" result can.
+ * marks anything of that source+type the sync did NOT see inactive, so a transient 0-row fetch
+ * can never wipe out inventory, only a real "this listing is gone" result can.
+ *
+ * "Did not see" is decided by last_seen_at, not by shipping the seen ids back to Postgres.
+ * upsertListings has just stamped every seen row's last_seen_at with this run's `syncedAt`, so
+ * anything still carrying an older timestamp is exactly what the sync didn't return — and a
+ * full catalogue's worth of ids is not something to send as a query parameter. `seenExternalIds`
+ * is kept in the signature as the caller's own "the fetch was non-empty" guard.
  */
 export async function markMissingInactive(
   source: string,
@@ -253,11 +281,10 @@ export async function markMissingInactive(
 ): Promise<void> {
   if (seenExternalIds.length === 0) return;
   await ensureSchema();
-  void syncedAt; // kept in the signature for symmetry with upsertListings / future auditing
   await getPool().query(
     `UPDATE inventory_listings SET is_active = FALSE
-     WHERE source = $1 AND type = $2 AND is_active = TRUE AND external_id <> ALL($3::text[])`,
-    [source, type, seenExternalIds]
+     WHERE source = $1 AND type = $2 AND is_active = TRUE AND last_seen_at < $3`,
+    [source, type, syncedAt]
   );
 }
 
@@ -346,6 +373,79 @@ function loadGroupListings(type?: ListingType): InventoryListing[] {
 export function freshInventorySql(alias: string): string {
   const days = config.watchfacts.maxListingAgeDays;
   return days > 0 ? `${alias}.first_seen_at > now() - interval '${days} days'` : "TRUE";
+}
+
+/** The normalized-reference expression, written once. Must stay identical to
+ *  postings/normalize.ts's normalizeReference (strip non-alphanumerics, uppercase) and to the
+ *  expression the inventory_listings_normalized_ref index is built on. */
+const NORMALIZED_REF_SQL = "upper(regexp_replace(COALESCE(ref,''), '[^A-Za-z0-9]', '', 'g'))";
+
+/** Every non-empty prefix of `ref`, longest first — the finite set of stored references that
+ *  `ref` itself is a prefix-extension of. See referenceClauseFor. */
+function referencePrefixes(ref: string): string[] {
+  return Array.from({ length: ref.length }, (_, i) => ref.slice(0, i + 1));
+}
+
+export interface CandidateQuery {
+  type?: ListingType;
+  /** The reference the request named, if any. Narrows in SQL by the SAME rule the caller's own
+   *  referencesMatch applies, so narrowing can never drop a listing the caller would have kept. */
+  reference?: string | null;
+  /** Keep listings that state NO reference of their own, even when `reference` is set. The
+   *  hybrid/AI path treats an unreferenced listing as still eligible (only an explicitly
+   *  CONFLICTING reference disqualifies one); plain findMatches requires a reference match. */
+  includeUnreferenced?: boolean;
+  /** Ceiling on rows read. Defaults to config.watchfacts.maxCandidateListings. */
+  limit?: number;
+}
+
+/**
+ * Candidate inventory for one search, narrowed IN SQL rather than in Node.
+ *
+ * getActiveListings below loads every active listing and leaves all selection to the caller.
+ * That is exactly right for a few hundred flash sales and impossible for a full catalogue: it
+ * would pull the whole table over the wire, and run FX normalization across it, on every single
+ * inbound message. This does the narrowing the database is good at and leaves the caller's
+ * ranking semantics untouched.
+ *
+ * Two cases, and the distinction matters:
+ *
+ *  - The request NAMES a reference. matching/engine.ts can only ever return listings satisfying
+ *    referencesMatch(listing.ref, requested) — prefix-equal in either direction — so applying
+ *    that same rule here is loss-free at any scale, not an approximation.
+ *  - The request names no reference. Ranking is over the whole pool with a fallback that keeps
+ *    the pool even when nothing scores, so there is nothing safe to narrow ON; the only lever
+ *    is a ceiling, newest first. Below the ceiling the pool is exactly what it always was.
+ *
+ * Group-monitor CSV captures are merged in whole, as getActiveListings does: they are few, they
+ * never live in Postgres, and the caller's own filters still apply to them.
+ */
+export async function findCandidateListings(query: CandidateQuery = {}): Promise<InventoryListing[]> {
+  await ensureSchema();
+  const limit = query.limit ?? config.watchfacts.maxCandidateListings;
+  const where = [`is_active = TRUE`, freshInventorySql("inventory_listings")];
+  const params: unknown[] = [];
+
+  if (query.type) { params.push(query.type); where.push(`type = $${params.length}`); }
+
+  const normalizedRef = (query.reference ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (normalizedRef) {
+    // referencesMatch(a, b) is `na === nb || na.startsWith(nb) || nb.startsWith(na)`. The first
+    // two collapse to "the stored reference starts with the requested one"; the third says the
+    // stored reference is one of the requested one's own prefixes, which is a finite list.
+    params.push(`${normalizedRef}%`);
+    const likeParam = params.length;
+    params.push(referencePrefixes(normalizedRef));
+    const matches = `${NORMALIZED_REF_SQL} <> '' AND (${NORMALIZED_REF_SQL} LIKE $${likeParam} OR ${NORMALIZED_REF_SQL} = ANY($${params.length}::text[]))`;
+    where.push(query.includeUnreferenced ? `(${NORMALIZED_REF_SQL} = '' OR (${matches}))` : matches);
+  }
+
+  params.push(limit);
+  const result = await getPool().query(
+    `SELECT * FROM inventory_listings WHERE ${where.join(" AND ")} ORDER BY first_seen_at DESC LIMIT $${params.length}`,
+    params
+  );
+  return [...(result.rows as ListingRow[]).map(rowToListing), ...loadGroupListings(query.type)];
 }
 
 /** Active, non-stale WatchFacts listings from Postgres, merged with group-monitor CSV captures. */

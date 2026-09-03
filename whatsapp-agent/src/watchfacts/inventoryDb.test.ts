@@ -21,6 +21,7 @@ const {
   recordTypeSyncSuccess,
   recordTypeSyncError,
   searchListingsForDiagnostics,
+  findCandidateListings,
   _forceSchemaRecheckForTests,
   _resetDbForTests,
   _closePoolForTests,
@@ -64,11 +65,15 @@ test("upsert updates an existing row instead of duplicating it", async () => {
 
 test("searchListingsForDiagnostics finds a match by ref, item, or description, including inactive rows", async () => {
   await _resetDbForTests();
+  // "a" is last seen by an EARLIER sync than b/c, which is how a real sync produces an inactive
+  // row: everything it saw is stamped with that run's timestamp, and the sweep retires whatever
+  // still carries an older one.
+  const t0 = new Date(Date.now() - 60000).toISOString();
   const t1 = new Date().toISOString();
-  await upsertListings([row("a", "FS", { ref: "116500LN" })], t1);
+  await upsertListings([row("a", "FS", { ref: "116500LN" })], t0);
   await upsertListings([row("b", "FS", { ref: "", item: "mentions 116500LN in title" })], t1);
   await upsertListings([row("c", "FS", { ref: "999999" })], t1);
-  await markMissingInactive("WF", "FS", ["b", "c"], t1); // marks "a" inactive
+  await markMissingInactive("WF", "FS", ["b", "c"], t1); // retires "a"
 
   const results = await searchListingsForDiagnostics("116500");
   const ids = results.map((r) => r.externalId).sort();
@@ -260,4 +265,82 @@ test("age is measured from first sight, so a listing that keeps re-appearing in 
   await upsertListings([row("long-runner", "FS", { price: "2000" })], daysAgo(0));
 
   assert.deepEqual(await getActiveListings("FS"), [], "re-sighting must not reset a listing's age");
+});
+
+/**
+ * Matching used to load every active listing and filter in Node. findCandidateListings pushes
+ * that narrowing into SQL so a full catalogue never crosses the wire — which is only safe if it
+ * applies EXACTLY the rule the caller's own referencesMatch applies: prefix-equal in either
+ * direction. Anything stricter silently drops matches; anything looser is just slower.
+ */
+test("findCandidateListings narrows by reference the same way referencesMatch does", async () => {
+  await _resetDbForTests();
+  const t = new Date().toISOString();
+  await upsertListings([
+    row("exact", "FS", { ref: "116500LN" }),
+    row("punctuated", "FS", { ref: "116500-ln" }),   // same reference, formatted differently
+    row("extension", "FS", { ref: "116500LNX" }),    // stored ref extends the requested one
+    row("shorter", "FS", { ref: "116500" }),         // requested ref extends the stored one
+    row("different", "FS", { ref: "126500LN" }),
+    row("unreferenced", "FS", { ref: "" }),
+  ], t);
+
+  const ids = (await findCandidateListings({ type: "FS", reference: "116500LN" })).map((l) => l.id).sort();
+  assert.deepEqual(ids, ["exact", "extension", "punctuated", "shorter"]);
+
+  const { referencesMatch } = require("../postings/normalize") as typeof import("../postings/normalize");
+  for (const [ref, expected] of [["116500LN", true], ["116500-ln", true], ["116500LNX", true], ["116500", true], ["126500LN", false]] as const) {
+    assert.equal(referencesMatch(ref, "116500LN"), expected, `referencesMatch disagrees about ${ref}`);
+  }
+});
+
+test("findCandidateListings keeps unreferenced listings only when the caller's rule does", async () => {
+  await _resetDbForTests();
+  const t = new Date().toISOString();
+  await upsertListings([row("has-ref", "FS", { ref: "116500LN" }), row("no-ref", "FS", { ref: "" })], t);
+
+  const strict = (await findCandidateListings({ type: "FS", reference: "116500LN" })).map((l) => l.id);
+  assert.deepEqual(strict, ["has-ref"], "findMatches requires a reference match");
+
+  const lenient = (await findCandidateListings({ type: "FS", reference: "116500LN", includeUnreferenced: true })).map((l) => l.id).sort();
+  assert.deepEqual(lenient, ["has-ref", "no-ref"], "the hybrid path disqualifies only a CONFLICTING reference");
+});
+
+test("findCandidateListings honours the freshness window and the row ceiling, newest first", async () => {
+  await _resetDbForTests();
+  await upsertListings([row("stale", "FS", { ref: "116500LN" })], daysAgo(30));
+  await upsertListings([row("older", "FS", { ref: "116500LN" })], daysAgo(5));
+  await upsertListings([row("newer", "FS", { ref: "116500LN" })], daysAgo(1));
+
+  const all = (await findCandidateListings({ type: "FS" })).map((l) => l.id);
+  assert.deepEqual(all, ["newer", "older"], "stale rows are excluded and the rest come newest first");
+  assert.deepEqual((await findCandidateListings({ type: "FS", limit: 1 })).map((l) => l.id), ["newer"],
+    "the ceiling keeps the freshest, so a capped pool is the most useful one");
+});
+
+test("findCandidateListings separates the two types", async () => {
+  await _resetDbForTests();
+  const t = new Date().toISOString();
+  await upsertListings([row("fs", "FS", { ref: "116500LN" }), row("wtb", "WTB", { ref: "116500LN" })], t);
+  assert.deepEqual((await findCandidateListings({ type: "WTB", reference: "116500LN" })).map((l) => l.id), ["wtb"]);
+});
+
+test("a listing repeated inside one upsert call is written once, not rejected by ON CONFLICT", async () => {
+  await _resetDbForTests();
+  const t = new Date().toISOString();
+  // Paging a live, date-sorted catalogue really does re-serve a row across a page boundary.
+  await upsertListings([row("dup", "FS", { price: "1000" }), row("dup", "FS", { price: "2000" })], t);
+
+  const active = await getActiveListings("FS");
+  assert.equal(active.length, 1);
+  assert.equal(active[0].price, "2000", "the last occurrence wins, as it did one statement at a time");
+});
+
+test("a multi-batch upsert writes every row", async () => {
+  await _resetDbForTests();
+  const t = new Date().toISOString();
+  const many = Array.from({ length: 1200 }, (_, i) => row(`bulk-${i}`, "FS", { ref: "116500LN" }));
+  await upsertListings(many, t);
+
+  assert.equal((await getActiveListings("FS")).length, 1200, "batching must not lose rows at a batch boundary");
 });

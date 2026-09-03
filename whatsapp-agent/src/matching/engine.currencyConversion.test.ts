@@ -10,7 +10,9 @@ let active: InventoryListing[] = [];
 const inventoryPath = require.resolve("../watchfacts/inventoryDb");
 require.cache[inventoryPath] = {
   id: inventoryPath, filename: inventoryPath, loaded: true,
-  exports: { getActiveListings: async () => active },
+  // Both readers the engine uses. findCandidateListings narrows in SQL against a real database;
+  // these fixtures are already one reference, so the double returns the same pool for either.
+  exports: { getActiveListings: async () => active, findCandidateListings: async () => active },
   children: [], paths: [], parent: null,
 } as unknown as NodeModule;
 const { findMatches, formatMatchCard } = require("./engine") as typeof import("./engine");
