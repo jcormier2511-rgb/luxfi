@@ -688,6 +688,41 @@ export function createServer() {
     res.json({ ok: true, entitlement });
   });
 
+  /**
+   * Grant (or revoke) the unlimited-approvals override for EVERY tester at once.
+   *
+   * RESTRICT_OUTBOUND_TO is already the list of people who are allowed to receive Fi's messages
+   * — which is to say, it is already the tester list. Deriving from it means adding a tester is
+   * one variable edit plus one call, instead of remembering a second per-person step that only
+   * shows up as a confusing paywall three approvals later.
+   *
+   * Refuses when outbound is unrestricted: with no allowlist there are no testers to grant to,
+   * and the only readings of the request would be "grant to nobody" or "grant to everyone".
+   * ?enabled=false revokes the same set, for putting testers back on the normal trial.
+   */
+  app.post("/admin/entitlement/override-testers", async (req, res) => {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const testers = config.channels.restrictOutboundTo;
+    if (testers.length === 0) {
+      return res.status(400).json({ error: "RESTRICT_OUTBOUND_TO is empty — there is no tester list to grant to" });
+    }
+    const enabled = req.query.enabled !== "false";
+    const granted: string[] = [];
+    const failed: { identity: string; error: string }[] = [];
+    for (const identity of testers) {
+      try {
+        await setManualOverride(identity, enabled);
+        granted.push(identity);
+      } catch (err) {
+        // One bad identity must not silently drop the rest.
+        failed.push({ identity, error: (err as Error).message });
+      }
+    }
+    res.json({ ok: failed.length === 0, enabled, granted, failed });
+  });
+
   // Flat-fee, weekly-capped Fi membership tiers (billing/plans.ts) — the ONLY way to assign
   // one is this admin action; no payment processor exists, so this is never self-service and
   // never a live charge. ?plan=none clears an assigned plan back to locked.
