@@ -191,10 +191,22 @@ function averageLineFor(label: string, value: number | null, basis?: AverageBasi
   return `${line}\n(from ${basis.converted} of ${basis.converted + basis.skipped} FS listings, converted to USD — ${basis.skipped} had no usable price or FX rate)`;
 }
 
+/**
+ * Listings per active buyer — the one number that says whether this is a buyer's or a seller's
+ * market at a glance, which two raw counts do not. Undefined at either zero, and said so,
+ * rather than "1:0" or "Infinity".
+ */
+export function liquidityLine(fsCount: number, wtbCount: number): string {
+  if (wtbCount === 0) return "Implied liquidity ratio: n/a (no active buyers)";
+  if (fsCount === 0) return "Implied liquidity ratio: n/a (no active listings)";
+  const perBuyer = Math.round((fsCount / wtbCount) * 10) / 10;
+  return `Implied liquidity ratio: 1:${perBuyer} (${perBuyer} listing${perBuyer === 1 ? "" : "s"} per buyer)`;
+}
+
 export function formatMarketPulse(pulse: MarketPulse): string {
   const title = pulse.label || pulse.reference;
   const plural = (n: number, one: string, many: string) => `${n} active ${n === 1 ? one : many}`;
-  const counts = `FS: ${plural(pulse.fsCount, "listing", "listings")}\nWTB: ${plural(pulse.wtbCount, "request", "requests")}`;
+  const counts = `FS: ${plural(pulse.fsCount, "listing", "listings")}\nWTB: ${plural(pulse.wtbCount, "request", "requests")}\n${liquidityLine(pulse.fsCount, pulse.wtbCount)}`;
 
   // Every pulse says what it counted. Three different questions ("this exact watch", "this
   // model", "this brand") return the same shape of numbers, and without the scope line a
@@ -281,5 +293,5 @@ export async function getNetworkMarketSnapshot(): Promise<NetworkMarketSnapshot>
 }
 
 export function formatNetworkMarketSnapshot(snapshot: NetworkMarketSnapshot): string {
-  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\n${averageLineFor("Average FS ask", snapshot.averageFsAsk, snapshot.averageBasis)}\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.`;
+  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\n${liquidityLine(snapshot.fsCount, snapshot.wtbCount)}\n${averageLineFor("Average FS ask", snapshot.averageFsAsk, snapshot.averageBasis)}\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.`;
 }

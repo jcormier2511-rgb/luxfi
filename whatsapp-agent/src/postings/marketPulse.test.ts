@@ -46,7 +46,7 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
   // Every pulse states the scope it counted, so a brand-wide number can't be mistaken for one
   // about a single reference.
   assert.equal(formatMarketPulse(pulse),
-    "Market Pulse — 126500LN\n\nScope: this exact reference\nFS: 4 active listings\nWTB: 2 active requests\nAverage FS ask: $29,833\n(from 3 of 4 FS listings, converted to USD — 1 had no usable price or FX rate)\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.");
+    "Market Pulse — 126500LN\n\nScope: this exact reference\nFS: 4 active listings\nWTB: 2 active requests\nImplied liquidity ratio: 1:2 (2 listings per buyer)\nAverage FS ask: $29,833\n(from 3 of 4 FS listings, converted to USD — 1 had no usable price or FX rate)\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.");
 });
 
 test("pulse rejects a missing exact reference", async () => {

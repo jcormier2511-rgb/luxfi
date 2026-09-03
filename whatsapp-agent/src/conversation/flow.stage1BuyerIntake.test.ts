@@ -72,8 +72,9 @@ test("REQUIRED: the exact live sentence becomes ONE complete WTB draft and goes 
   assert.doesNotMatch(text, /location preference/i, "Fi must not ask for the location it was given");
   assert.doesNotMatch(text, /what condition|maximum budget|which model|black dial, white dial/i, "no follow-up for a supplied field");
   assert.match(text, /Should I start monitoring\?/);
-  assert.match(text, /Brand: Rolex\nModel: Daytona\nReference: 116500LN\nDial: black\nCondition: pre-owned\nBudget: \$25,000\nLocation: Miami/);
-  assert.match(text, /^I have: WTB Rolex Daytona 116500LN, black dial, pre-owned, Miami, maximum \$25,000\./m, "the one-line summary names the watch, not the sentence");
+  assert.match(text, /^I have:\nWTB — Rolex Daytona 116500LN\nBlack dial\nPre-owned\nMaximum: \$25,000\nLocation: Miami\nPhoto: none\n\nShould I start monitoring\?\nReply CONFIRM to start monitoring, or send a correction\.$/m,
+    "the review states each fact once, names the watch rather than echoing the sentence, and asks once");
+  assert.doesNotMatch(text, /listing review|Not provided/);
 
   // 13. Nothing is live until the customer confirms.
   const userId = await getOrCreateCanonicalUser(platformForIdentity(identity), identity);

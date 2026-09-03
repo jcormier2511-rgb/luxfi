@@ -85,10 +85,20 @@ test("multiple watches are combined with aggregate-only, 15-day-safe copy", () =
     { postingId: 1, type: "FS", brand: "Patek Philippe", model: "", reference: "5712G", buyers: 8, sellers: 3, newMatches: 2 },
     { postingId: 2, type: "WTB", brand: "Rolex", model: "", reference: "126500LN", buyers: 12, sellers: 5, newMatches: 0 },
   ], 3);
-  assert.match(text, /Patek Philippe 5712G listing/);
-  assert.match(text, /Rolex 126500LN search/);
+  assert.match(text, /Patek Philippe 5712G — your listing\nActive buyers: 8\nActive sellers\/listings: 3/);
+  assert.match(text, /Rolex 126500LN — your search\nActive buyers: 12\nActive sellers\/listings: 5/);
   assert.equal((text.match(/past 15 days/g) ?? []).length, 2);
+  assert.match(text, /New matches since your last update: 2/);
+  assert.match(text, /New matches since your last update: none/);
+  assert.match(text, /\n\nLive listings can be seen at watchfacts\.com$/, "every digest ends by pointing at the live inventory");
   assert.doesNotMatch(text, /private|phone|group|budget|photo|100/);
+});
+
+test("a count of one never reads as a plural — the prose it replaced said \"1 active buyers\"", () => {
+  const text = formatDigest([{ postingId: 3, type: "WTB", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 1, sellers: 1, newMatches: 1 }], 3);
+  assert.match(text, /Active buyers: 1\nActive sellers\/listings: 1/);
+  assert.match(text, /New matches since your last update: 1/);
+  assert.doesNotMatch(text, /1 active buyers|1 active sellers|1 new matches/);
 });
 
 test("no-activity and unchanged digests are suppressed unless explicitly allowed", () => {

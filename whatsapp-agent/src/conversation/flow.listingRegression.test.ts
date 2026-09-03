@@ -15,9 +15,9 @@ test("WTB fills fields in any order, accepts multiple slots and corrections, the
  assert.match(first.messages[0],/Fi/); assert.match(first.messages[1],/black dial, white dial, or either/);
  assert.equal(first.state.pendingBuyIntake?.budget,28000); assert.equal(first.state.pendingBuyIntake?.location,"US");
  const multi=await handleIncomingMessage(p,"white dial, pre-owned");
- assert.match(multi.messages[0],/I have: WTB/); assert.match(multi.messages[0],/white dial.*pre-owned.*US.*\$28,000/);
+ assert.match(multi.messages[0],/^I have:\nWTB — /m); assert.match(multi.messages[0],/White dial[\s\S]*Pre-owned[\s\S]*Maximum: \$28,000[\s\S]*Location: US/);
  const corrected=await handleIncomingMessage(p,"Actually my budget is 30k and I'm in Canada, new, black dial");
- assert.match(corrected.messages[0],/black dial.*new.*Canada.*\$30,000/);
+ assert.match(corrected.messages[0],/Black dial[\s\S]*New[\s\S]*Maximum: \$30,000[\s\S]*Location: Canada/);
  assert.equal(corrected.state.pendingBuyIntake?.reference,"116500LN");
 });
 
@@ -119,7 +119,7 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
 
   const correction = await handleIncomingMessage(phone, "Actually make the budget $30,000 and condition new");
   assert.equal(saved.length, 0, "a correction at confirmation must not activate the request");
-  assert.match(correction.messages.at(-1)!, /new.*maximum \$30,000.*Should I start monitoring\?/);
+  assert.match(correction.messages.at(-1)!, /New[\s\S]*Maximum: \$30,000[\s\S]*Should I start monitoring\?/);
   assert.equal(correction.state.pendingBuyIntake?.budget, 30000);
   assert.equal(correction.state.pendingBuyIntake?.condition, "new");
 
@@ -160,14 +160,14 @@ test("FS confirmation boundary persists and activates every parsed field exactly
   const photoPrompt = await handleIncomingMessage(phone, "FS Rolex 116500LN black dial unworn in Canada for 28500");
   assert.match(photoPrompt.messages.at(-1)!, /attach a photo/i);
   const summary = await handleIncomingMessage(phone, "skip");
-  assert.match(summary.messages.at(-1)!, /Photo: none.*Should I start monitoring\?/);
+  assert.match(summary.messages.at(-1)!, /Photo: none[\s\S]*Should I start monitoring\?/);
   assert.equal(inventoryWrites.length, 0, "summary must not persist inventory");
   assert.equal(activations.length, 0, "summary must not activate or match the listing");
 
   const correction = await handleIncomingMessage(phone, "Actually condition pre-owned and price $29,000");
   assert.equal(inventoryWrites.length, 0);
   assert.equal(activations.length, 0, "correction requires a fresh confirmation");
-  assert.match(correction.messages.at(-1)!, /pre-owned.*asking \$29,000.*Should I start monitoring\?/);
+  assert.match(correction.messages.at(-1)!, /Pre-owned[\s\S]*Asking: \$29,000[\s\S]*Should I start monitoring\?/);
 
   await handleIncomingMessage(phone, "yes");
   assert.equal(inventoryWrites.length, 1, "confirmed seller inventory is persisted once");
@@ -199,7 +199,7 @@ test("an original-message FS photo stays in the draft and appears in the confirm
     undefined,
     "https://cdn.example/original.jpg"
   );
-  assert.match(summary.messages.at(-1)!, /Photo: attached.*Should I start monitoring\?/);
+  assert.match(summary.messages.at(-1)!, /Photo: attached[\s\S]*Should I start monitoring\?/);
   assert.equal(summary.state.pendingSellIntake?.imageUrl, "https://cdn.example/original.jpg");
   assert.equal(summary.state.pendingSellIntake?.currency, "EUR");
   assert.equal(inventoryWrites, 0);
@@ -216,7 +216,7 @@ test("reference and price remain independent through price and reference correct
   const priceEdit = await handleIncomingMessage(phone, "change price to 36500");
   assert.equal(priceEdit.state.pendingSellIntake?.reference, "126500LN");
   assert.equal(priceEdit.state.pendingSellIntake?.price, 36500);
-  assert.match(priceEdit.messages.at(-1)!, /Reference: 126500LN[\s\S]*Price: \$36,500/);
+  assert.match(priceEdit.messages.at(-1)!, /FS — Rolex Daytona 126500LN[\s\S]*Asking: \$36,500/);
   const referenceEdit = await handleIncomingMessage(phone, "change reference to 126500LN");
   assert.equal(referenceEdit.state.pendingSellIntake?.reference, "126500LN");
   assert.equal(referenceEdit.state.pendingSellIntake?.price, 36500);
@@ -320,7 +320,7 @@ test('a bare "wtb rolex" is asked for a model (after budget), and "any" broadens
 
   await handleIncomingMessage(phone, "pre-owned");
   const summary = await handleIncomingMessage(phone, "usa");
-  assert.match(summary.messages.join("\n"), /Model: Any/);
+  assert.match(summary.messages.join("\n"), /\(any model\)/);
 });
 
 test('"wtb rolex daytona" already names a model and is never asked for one', async () => {
@@ -334,7 +334,7 @@ test('a fully detailed first message still goes straight to confirmation, never 
   const phone = "15550002018"; resetState(phone);
   const result = await handleIncomingMessage(phone, "wtb rolex, pre-owned, usa, maximum $25,000");
   assert.match(result.messages.join("\n"), /Should I start monitoring/i, "condition+location were already given, so this must not stop for a model question");
-  assert.match(result.messages.join("\n"), /Model: Not provided/);
+  assert.doesNotMatch(result.messages.join("\n"), /Model:|Not provided/, "a field the customer never gave is absent, not a placeholder");
 });
 
 test('"make model 116500" corrects the reference, not a free-text model — that\'s what "model" means for a watch reference', async () => {
@@ -364,7 +364,7 @@ test('"model any" at confirm time clears the model rather than storing the liter
   // Live-reported: this showed "Model: any" in the confirmation summary -- the literal word,
   // not "no preference" -- even though a fresh model-intake question treats "any" that way.
   const corrected = await handleIncomingMessage(phone, "model any");
-  assert.match(corrected.messages.join("\n"), /Model: Any/, "labeled as no preference, not the literal word stored as a model name");
+  assert.match(corrected.messages.join("\n"), /\(any model\)/, "labeled as no preference, not the literal word stored as a model name");
   assert.equal(corrected.state.pendingBuyIntake?.model, undefined);
   assert.equal(corrected.state.pendingBuyIntake?.modelSkipped, true);
 

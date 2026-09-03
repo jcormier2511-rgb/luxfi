@@ -138,16 +138,26 @@ function displayName(watch: DigestWatch): string {
   return [watch.brand, watch.model, watch.reference].filter(Boolean).join(" ") || `request #${watch.postingId}`;
 }
 
+/**
+ * One block per active request, in the same labeled-field style as the WTB/FS review and
+ * Market Pulse. The prose it replaces ("We've seen 1 active buyers and 6 active
+ * sellers/listings in the past 15 days...") repeated every number inside a sentence and got
+ * its plurals wrong at 1; counts on their own lines have no plural to get wrong.
+ */
 export function formatDigest(watches: DigestWatch[], minimumObservations: number): string {
   const sections = watches.map((watch) => {
     const action = watch.type === "WTB" ? "search" : "listing";
-    const matchLine = watch.newMatches === 0 ? "No new matches since your last update." : `${watch.newMatches} new match${watch.newMatches === 1 ? "" : "es"} since your last update.`;
-    return (
-      `Market update for your ${displayName(watch)} ${action}: We've seen ${watch.buyers} active buyers and ` +
-      `${watch.sellers} active sellers/listings in the past 15 days. ${marketSentiment(watch.buyers, watch.sellers, minimumObservations)} ${matchLine}`
-    );
+    const matches = watch.newMatches === 0 ? "none" : String(watch.newMatches);
+    return [
+      `${displayName(watch)} — your ${action}`,
+      `Active buyers: ${watch.buyers}`,
+      `Active sellers/listings: ${watch.sellers}`,
+      `(past 15 days)`,
+      marketSentiment(watch.buyers, watch.sellers, minimumObservations),
+      `New matches since your last update: ${matches}`,
+    ].join("\n");
   });
-  return `Your LuxFi market update\n\n${sections.join("\n\n")}`;
+  return `Your LuxFi market update\n\n${sections.join("\n\n")}\n\nLive listings can be seen at watchfacts.com`;
 }
 
 function signature(watches: DigestWatch[]): string {

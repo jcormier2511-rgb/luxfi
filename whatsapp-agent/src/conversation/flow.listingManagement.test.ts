@@ -256,7 +256,7 @@ test("the live typo'd WTB stores clean structured fields, not its own lead-in", 
   assert.equal(draft.location, "USA");
 
   const text = reply.messages.join("\n");
-  assert.match(text, /Model: Not provided/);
+  assert.doesNotMatch(text, /Model:|Not provided/, "a model the customer never gave is absent, not a placeholder");
   assert.doesNotMatch(text, /ot buy/i);
   assert.doesNotMatch(text, /i want/i);
 });
@@ -321,7 +321,7 @@ test("a dial color is never stored as the model", async () => {
   assert.notEqual(draft.model, "black", "the dial color must not become the model");
   assert.equal(draft.reference, "116500");
   assert.equal(draft.dialColor, "black", "and it must still be captured as the dial");
-  assert.match(reply.messages.join("\n"), /Model: Daytona/);
+  assert.match(reply.messages.join("\n"), /WTB — Rolex Daytona 116500/);
 });
 
 const MODEL_EXTRACTION_CASES: ReadonlyArray<readonly [string, string | undefined, string | undefined]> = [

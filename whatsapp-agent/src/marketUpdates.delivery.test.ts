@@ -49,9 +49,9 @@ test("combined delivery is billing-neutral, replica-idempotent, and retries Whap
   const results = await Promise.all([updates.runMarketUpdates("morning", "2026-08-29"), updates.runMarketUpdates("morning", "2026-08-29")]);
   assert.equal(results[0].sent + results[1].sent, 3);
   assert.equal(sent.length, 3, "one digest per eligible user across overlapping replica ticks");
-  const digest = sent.find((message) => message.includes("126500LN search"))!;
-  assert.match(digest, /5712G search/);
-  assert.match(digest, /1 new match/);
+  const digest = sent.find((message) => message.includes("126500LN — your search"))!;
+  assert.match(digest, /5712G — your search/);
+  assert.match(digest, /New matches since your last update: 1/);
   assert.doesNotMatch(digest, /1555|\$28000|contact|group|budget/i);
 
   const usage = await db.withSchema((pool) => Promise.all([

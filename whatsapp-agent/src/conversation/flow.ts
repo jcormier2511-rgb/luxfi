@@ -1733,7 +1733,29 @@ const cash = (n: number, c = "USD") => `${c === "USD" ? "$" : c+" "}${n.toLocale
 // repeats every detail twice and reads as if Fi did not understand it. The stored description
 // is untouched — it remains the customer's own words.
 const identityLine=(p:PendingSellIntake|PendingBuyIntake)=>[displayBrand(p.brand),p.model,p.reference].filter(Boolean).join(" ")||p.description;
-const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{const priceLabel=type==="FS"?`asking ${cash(price,p.currency)}`:`maximum ${cash(price,p.currency)}`;return [`I have: ${type} ${identityLine(p)}${p.dialColor?`, ${p.dialColor} dial`:""}${p.condition?`, ${p.condition}`:""}${p.location?`, ${p.location}`:""}, ${priceLabel}. Should I start monitoring?`,`${type} listing review`,`Brand: ${displayBrand(p.brand)||"Not provided"}`,`Model: ${p.model||("modelSkipped" in p && p.modelSkipped ? "Any" : "Not provided")}`,`Reference: ${p.reference||"Not provided"}`,p.dialColor&&`Dial: ${p.dialColor}`,p.condition&&`Condition: ${p.condition}`,`${type==="FS"?"Price":"Budget"}: ${cash(price,p.currency)}`,p.location&&`Location: ${p.location}`,p.boxPapers&&`Box/Papers: ${p.boxPapers}`,p.year&&`Year: ${p.year}`,`Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}. Should I start monitoring?`,`Reply confirm to activate, or send a correction.`].filter(Boolean).join("\n");};
+// The review states each fact once, on its own line, and asks its one question once. The
+// block it replaces opened with a sentence that repeated every field, then listed the fields
+// again under a "listing review" heading with "Not provided" placeholders, and asked "Should I
+// start monitoring?" twice. Fields the customer did not give are simply absent; a model they
+// explicitly waived ("any") is said, because that is a decision, not a gap.
+const capitalize=(s:string)=>s.charAt(0).toUpperCase()+s.slice(1);
+const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{
+  const anyModel="modelSkipped" in p&&p.modelSkipped&&!p.model;
+  return [
+    "I have:",
+    `${type} — ${identityLine(p)}${anyModel?" (any model)":""}`,
+    p.dialColor&&`${capitalize(p.dialColor)} dial`,
+    p.condition&&capitalize(p.condition),
+    `${type==="FS"?"Asking":"Maximum"}: ${cash(price,p.currency)}`,
+    p.location&&`Location: ${p.location}`,
+    p.boxPapers&&`Box/Papers: ${p.boxPapers}`,
+    p.year&&`Year: ${p.year}`,
+    `Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}`,
+    "",
+    "Should I start monitoring?",
+    "Reply CONFIRM to start monitoring, or send a correction.",
+  ].filter((line): line is string => typeof line === "string").join("\n");
+};
 const sellSummary = (p: PendingSellIntake) => review("FS",p,p.price!);
 const buySummary = (p: PendingBuyIntake) => review("WTB",p,p.budget!);
 
