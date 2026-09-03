@@ -55,6 +55,17 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean),
   },
+  fulfillment: {
+    // Whether confirming a WTB may notify real dealers. Tri-state on purpose, because the
+    // dangerous default is the silent one:
+    //   unset  -- suppressed exactly when RESTRICT_OUTBOUND_TO is set. Restricting outbound
+    //             means "I am testing against production data", and a test WTB should not
+    //             reach into real dealers' inboxes, coverage counters, or opportunity claims.
+    //   "true" -- always suppressed, even unrestricted.
+    //   "false"-- never suppressed, even while restricted: the explicit opt-in for exercising
+    //             the outreach path itself and reading the redirected copies.
+    suppressDealerOutreach: (process.env.SUPPRESS_DEALER_OUTREACH ?? "").trim().toLowerCase(),
+  },
   server: {
     port: Number(process.env.PORT ?? 3000),
     webhookToken: required("WEBHOOK_TOKEN", "change-me"),
@@ -364,6 +375,23 @@ export function isChatIdAllowed(chatId: string, allowedChatIds: string[]): boole
 /** True when RESTRICT_OUTBOUND_TO is unset — the normal, unrestricted posture. */
 export function isOutboundUnrestricted(): boolean {
   return config.channels.restrictOutboundTo.length === 0;
+}
+
+/**
+ * Whether a confirmed WTB may reach out to real dealers.
+ *
+ * Redirecting outbound (RESTRICT_OUTBOUND_TO) is NOT enough on its own to make dealer outreach
+ * safe to run. The message is contained, but everything around it still happens for real: each
+ * candidate dealer's opportunity is claimed (ON CONFLICT DO NOTHING, so that dealer can never be
+ * offered this WTB again), their coverage counters are incremented, and the tester receives one
+ * redirected copy per candidate. Suppression stops the outreach before any of that, so a test
+ * WTB leaves no trace on anyone else's account and can be re-run.
+ */
+export function isDealerOutreachSuppressed(): boolean {
+  const setting = config.fulfillment.suppressDealerOutreach;
+  if (setting === "true") return true;
+  if (setting === "false") return false;
+  return !isOutboundUnrestricted();
 }
 
 /** True when this identity is allowed to receive its own real messages under the restriction. */
