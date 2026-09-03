@@ -298,6 +298,57 @@ test("required regression: a WatchFacts match card names the exact reference, pr
   assert.match(card, /https:\/\/watchfacts\.com\/flash-sales\/sale-1/);
 });
 
+test("required: formatMatchCard shows 'Active in N monitored dealer groups' for both a buy (FS) card and a sell (WTB) card alike, when a count is provided", () => {
+  const listing = {
+    id: "sale-groups-1",
+    type: "FS" as const,
+    category: "watches",
+    item: "Rolex Daytona 116500LN",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "Used",
+    price: "28500",
+    location: "North America",
+    contactName: "Marco D.",
+    contactPhone: "15551234567",
+    source: "WF",
+    rating: "4",
+    description: "",
+  };
+  const buyCard = formatMatchCard(listing, 0, "buy", undefined, undefined, undefined, 3);
+  assert.match(buyCard, /Active in 3 monitored dealer groups\b/);
+  const sellCard = formatMatchCard(listing, 0, "sell", undefined, undefined, undefined, 3);
+  assert.match(sellCard, /Active in 3 monitored dealer groups\b/, "a WTB/buyer card gets the same signal as an FS/seller card");
+});
+
+test("a count of exactly 1 is singular, and no count/a count of 0 omits the line entirely rather than showing a bad '0' signal", () => {
+  const listing = {
+    id: "sale-groups-2",
+    type: "FS" as const,
+    category: "watches",
+    item: "Rolex Daytona 116500LN",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "Used",
+    price: "28500",
+    location: "North America",
+    contactName: "Marco D.",
+    contactPhone: "15551234567",
+    source: "WF",
+    rating: "4",
+    description: "",
+  };
+  const singular = formatMatchCard(listing, 0, "buy", undefined, undefined, undefined, 1);
+  assert.match(singular, /Active in 1 monitored dealer group\b/);
+  assert.doesNotMatch(singular, /Active in 1 monitored dealer groups\b/);
+
+  const zero = formatMatchCard(listing, 0, "buy", undefined, undefined, undefined, 0);
+  assert.doesNotMatch(zero, /Active in \d+ monitored dealer group/);
+
+  const omitted = formatMatchCard(listing, 0, "buy");
+  assert.doesNotMatch(omitted, /Active in \d+ monitored dealer group/);
+});
+
 test("required regression: the card always includes a Description field with the verbatim stored source text, distinct from the normalized Watch title", () => {
   const listing = {
     id: "sale-3",

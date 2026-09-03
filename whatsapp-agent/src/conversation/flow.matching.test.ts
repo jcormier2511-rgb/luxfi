@@ -13,10 +13,15 @@ process.env.WEBHOOK_TOKEN = "test";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const postingsDb = require("../postings/db") as typeof import("../postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const adminStore = require("../admin/store") as typeof import("../admin/store");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 
 after(async () => {
   await inventoryDb._closePoolForTests();
+  await postingsDb._closePoolForTests();
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
 
@@ -156,6 +161,37 @@ test("required regression: a broken listing URL is omitted from the card entirel
   assert.ok(matchCard, "the match itself is unaffected by a broken detail URL");
   assert.doesNotMatch(matchCard!, /Listing:/, "a broken URL must be omitted, never sent as a dead link");
   assert.match(matchCard!, /Description: Rolex Daytona 116500LN, pre-owned/, "description must still be present regardless of URL validity");
+});
+
+test("required: a real search card includes 'Active in N monitored dealer groups' when the listing's contact has genuine group-posting history, via the actual flow.ts wiring (not just formatMatchCard in isolation)", async () => {
+  await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
+  await adminStore.initAdminSchema();
+  await postingsDb.withSchema((pool) => pool.query("DELETE FROM approved_groups"));
+
+  const sellerPhone = "19995559999";
+  await postingsDb.withSchema(async (pool) => {
+    await pool.query(
+      `INSERT INTO approved_groups(group_name,whatsapp_chat_id,status,monitoring_enabled,platform) VALUES('Miami Watch Traders','flow-groups-g1','active',true,'whatsapp')`
+    );
+    const canonicalUserId = (await pool.query("INSERT INTO canonical_users DEFAULT VALUES RETURNING id")).rows[0].id;
+    await pool.query("INSERT INTO linked_identities(canonical_user_id,platform,identity) VALUES($1,'whatsapp',$2)", [canonicalUserId, sellerPhone]);
+    await pool.query(
+      `INSERT INTO postings(source_platform,source_type,source_chat_id,canonical_user_id,type,original_text,brand,expires_at)
+       VALUES('whatsapp','chat','flow-groups-g1',$1,'FS','FS Rolex FLOWGROUPS $9000','Rolex',now()+interval '15 days')`,
+      [canonicalUserId]
+    );
+  });
+
+  await inventoryDb.upsertListings(
+    [fsRow("flow-groups-listing", { brand: "Rolex", ref: "FLOWGROUPS", contactPhone: sellerPhone, description: "Rolex, from a dealer active in monitored groups" })],
+    new Date().toISOString()
+  );
+
+  const messages = await freshSearch("19990009999", "buy: Rolex FLOWGROUPS");
+  const matchCard = messages.find((m) => /Potential Match/.test(m));
+  assert.ok(matchCard, "the listing must still be surfaced");
+  assert.match(matchCard!, /Active in 1 monitored dealer group\b/);
 });
 
 test('required regression: a price like "under $20000" is never treated as a requested reference', async () => {

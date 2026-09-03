@@ -469,10 +469,12 @@ function watchName(listing: InventoryListing): string {
  * Fi Conversation Flow Spec (v3) §2 Match Card — counterparty name and watch details are
  * shown up front (no separate anonymized/reveal step); "approve"/"pass" is what's metered
  * against the trial, and approving is what additionally surfaces the phone number.
- * "Fi Intelligence" (dealer reputation, market range, authenticity) is still omitted — no
- * data source for those exists in the pipeline yet. The price signal (Attractive/Fair/High,
- * see priceSignal.ts) is the one piece that now does: comps come from other active WatchFacts
- * FS listings for the same reference already in this app's own inventory, no external source.
+ * Most of "Fi Intelligence" (market range, authenticity) is still omitted — no data source
+ * for those exists in the pipeline yet. The price signal (Attractive/Fair/High, see
+ * priceSignal.ts) and the "Active in N monitored dealer groups" line (see
+ * postings/groupActivity.ts) are the two pieces that now do: price comps come from other
+ * active WatchFacts FS listings for the same reference already in this app's own inventory,
+ * and the group signal comes from postings history — both real, no external source.
  */
 function sourceLabel(listing: InventoryListing): string {
   if (listing.source === "WF") return "WatchFacts";
@@ -496,7 +498,8 @@ export function formatMatchCard(
   action: ItemRequest["action"],
   explanation?: string,
   priceSignal?: PriceSignal,
-  currencyDisplay?: CurrencyDisplay
+  currencyDisplay?: CurrencyDisplay,
+  activeGroupCount?: number
 ): string {
   const roleLabel = action === "buy" ? "Seller" : "Buyer";
   const priceLabel = action === "buy" ? "Asking" : "Bid";
@@ -517,6 +520,7 @@ export function formatMatchCard(
     `Watch: ${watchLine}`,
     `${priceLabel}: ${priceText}${priceSignal ? ` (${priceSignal} vs. comps)` : ""}`,
   ];
+  if (activeGroupCount) lines.push(`Active in ${activeGroupCount} monitored dealer group${activeGroupCount === 1 ? "" : "s"}`);
   // A converted estimate is always labeled as such — it excludes shipping/fees/duties/taxes,
   // and is never presented as a confirmed budget match on its own (the actual budget-ceiling
   // enforcement already happened upstream in findMatchesHybrid/findMatches using this same

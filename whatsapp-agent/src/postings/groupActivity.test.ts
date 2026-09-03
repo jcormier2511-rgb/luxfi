@@ -15,7 +15,7 @@ const store = require("./postingsStore") as typeof import("./postingsStore");
 const groupActivity = require("./groupActivity") as typeof import("./groupActivity");
 
 const { ingestChatPosting } = store;
-const { getActiveGroupCount } = groupActivity;
+const { getActiveGroupCount, getActiveGroupCountForContact } = groupActivity;
 
 after(async () => {
   await db._closePoolForTests();
@@ -83,4 +83,16 @@ test("a direct (non-chat) posting never counts toward group activity", async () 
     )
   );
   assert.equal(await getActiveGroupCount(canonicalUserId), 0, "a direct posting must not be mistaken for group activity even if it happens to share a chat id");
+});
+
+test("getActiveGroupCountForContact resolves the same count by phone -- for v3 search-flow cards, which have no canonical_user_id of their own", async () => {
+  await resetAll();
+  await addGroup("g1", "Miami Watch Traders");
+  await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "m1", senderIdentity: "poster-contact-1", text: "FS Rolex REF1 $1000" });
+  assert.equal(await getActiveGroupCountForContact("poster-contact-1"), 1);
+});
+
+test("getActiveGroupCountForContact returns 0, not an error, for a phone with no linked identity at all", async () => {
+  await resetAll();
+  assert.equal(await getActiveGroupCountForContact("never-seen-before"), 0);
 });

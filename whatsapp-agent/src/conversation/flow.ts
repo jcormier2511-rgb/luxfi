@@ -31,6 +31,7 @@ import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
 import { formatMarketPulse, getScopedMarketPulse, getNetworkMarketSnapshot, formatNetworkMarketSnapshot } from "../postings/marketPulse";
+import { getActiveGroupCountForContact } from "../postings/groupActivity";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -955,21 +956,29 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
   // a constructed WatchFacts URL isn't guaranteed to be a valid live page (wrong id, expired
   // listing, site-side error). An unreachable URL is dropped rather than sent broken; matching
   // itself (and the listing's own contactPhone) is completely unaffected either way.
-  const validated: { listing: InventoryListing; explanation?: string; priceSignal?: PriceSignal; currencyDisplay?: CurrencyDisplay }[] =
+  const validated: { listing: InventoryListing; explanation?: string; priceSignal?: PriceSignal; currencyDisplay?: CurrencyDisplay; activeGroupCount: number }[] =
     await Promise.all(
       withCurrency.map(async ({ listing, explanation, priceSignal, currencyDisplay }) => ({
         listing: { ...listing, detailUrl: await getValidatedListingUrl(listing.detailUrl) },
         explanation,
         priceSignal,
         currencyDisplay,
+        // Same "Active in N monitored dealer groups" signal as notify.ts's automated match
+        // cards (see postings/groupActivity.ts), for both FS listings (buy) and WTB buyer
+        // cards (sell) alike. Best-effort, same isolation as getValidatedListingUrl above —
+        // a lookup failure must never break the whole search, it just omits the line.
+        activeGroupCount: await getActiveGroupCountForContact(listing.contactPhone).catch((err) => {
+          console.error(`[flow] active-group lookup failed for ${listing.contactPhone} (omitting from card):`, err);
+          return 0;
+        }),
       }))
     );
 
   // Each card now ends with its own reply instructions (approve/photos/pass for an FS/seller
   // card, approve/pass for a WTB/buyer card) — see formatMatchCard — so there's no separate
   // shared footer message here anymore.
-  validated.forEach(({ listing, explanation, priceSignal, currencyDisplay }, i) =>
-    messages.push(formatMatchCard(listing, i, request.action, explanation, priceSignal, currencyDisplay))
+  validated.forEach(({ listing, explanation, priceSignal, currencyDisplay, activeGroupCount }, i) =>
+    messages.push(formatMatchCard(listing, i, request.action, explanation, priceSignal, currencyDisplay, activeGroupCount))
   );
   // A fresh search intentionally starts its own new monitor/numbering (spec: "a new buy/sell
   // request starts a new monitor") — any prior pendingMatches is superseded here, but note that

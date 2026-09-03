@@ -9,6 +9,7 @@ import {
 } from "../watchfacts/inventoryDb";
 import { InventoryListing } from "../types";
 import { formatMatchCard } from "./engine";
+import { getActiveGroupCountForContact } from "../postings/groupActivity";
 
 /**
  * Private "request photos before approval" workflow (Fi v4 matching). A photo request is
@@ -81,8 +82,14 @@ export async function handleIncomingSellerPhoto(fromPhone: string, imageUrl: str
     const listing = await getListingByKey(record.source, record.type, record.externalId);
     if (listing) {
       const displayIndex = (Number(record.matchId) || 1) - 1;
+      // Best-effort, same isolation as flow.ts's own use of this lookup — a failure here must
+      // never block resending the match card, it just omits the line.
+      const activeGroupCount = await getActiveGroupCountForContact(listing.contactPhone).catch((err) => {
+        console.error(`[photoRequests] active-group lookup failed for ${listing.contactPhone} (omitting from card):`, err);
+        return 0;
+      });
       await sendText(record.requesterPhone, "Photos received — here's the match again:");
-      await sendText(record.requesterPhone, formatMatchCard(listing, displayIndex, "buy"));
+      await sendText(record.requesterPhone, formatMatchCard(listing, displayIndex, "buy", undefined, undefined, undefined, activeGroupCount));
     }
   }
 
