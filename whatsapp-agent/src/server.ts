@@ -14,6 +14,7 @@ import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
 import { getActiveListings, getSyncStatus, searchListingsForDiagnostics } from "./watchfacts/inventoryDb";
 import { isProbableWatchFactsUrl, probeWatchFactsFeeds } from "./watchfacts/probeCatalogue";
+import { describeTable, listTables, openSourceDb } from "./watchfacts/sourceDb";
 import {
   getEntitlement,
   setManualOverride,
@@ -776,6 +777,38 @@ export function createServer() {
     const active = await getActivePostingsForUser(userId);
     for (const posting of active) await closePosting(posting.id, "admin_closed");
     res.json({ ok: true, identity, closed: active.map((p) => ({ id: p.id, type: p.type, brand: p.brand, model: p.model, reference: p.reference })) });
+  });
+
+  /**
+   * Describe WatchFacts' own tables from the deployed app, where the network and the database
+   * credentials are. Column names/types, row counts and a few masked sample rows for the
+   * tables that matter (auctions, master_catalog by default; ?table= to add others), plus the
+   * full table list — everything needed to write the direct-DB sync against real columns
+   * rather than guesses. Read-only: SELECTs only, contact-looking columns masked.
+   */
+  app.get("/admin/watchfacts/source-schema", async (req, res) => {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    if (!config.watchfacts.sourceDbUrl) {
+      return res.status(400).json({ error: "WATCHFACTS_DB_URL is not set on this deployment" });
+    }
+    const requested = ([] as string[]).concat(req.query.table as string | string[] ?? []).filter(Boolean);
+    const tables = requested.length > 0 ? requested : ["auctions", "master_catalog"];
+    if (tables.some((t) => !/^[A-Za-z0-9_]+$/.test(t))) return res.status(400).json({ error: "table names may only contain letters, digits and underscores" });
+    let db: import("./watchfacts/sourceDb").SourceDb | null = null;
+    try {
+      db = await openSourceDb();
+      const allTables = await listTables(db);
+      const reports = [];
+      for (const table of tables) reports.push(await describeTable(db, table));
+      res.json({ ok: true, tls: db.tls, tables: allTables, reports });
+    } catch (err) {
+      console.error("[watchfacts/source-schema] failed:", err);
+      res.status(500).json({ error: (err as Error).message });
+    } finally {
+      await db?.close().catch(() => undefined);
+    }
   });
 
   // Flat-fee, weekly-capped Fi membership tiers (billing/plans.ts) — the ONLY way to assign

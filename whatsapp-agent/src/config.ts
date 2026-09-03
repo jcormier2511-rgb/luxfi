@@ -241,6 +241,13 @@ export const config = {
     // Safety valve on pagination, not an expected ceiling -- it exists so a paging bug can't
     // loop forever. Sized for a full catalogue rather than the flash-sale pool.
     maxSyncPages: Math.max(1, Math.floor(Number(process.env.WATCHFACTS_MAX_SYNC_PAGES ?? 40000)) || 40000),
+    // Direct, read-only access to WatchFacts' own database (thecollective_inventory) — the
+    // whole catalogue with real timestamps, instead of the flash-sale API's promotional
+    // subset. Postgres on the wf-postgres-prod droplet; postgres:// only. See watchfacts/sourceDb.ts.
+    sourceDbUrl: (process.env.WATCHFACTS_DB_URL ?? "").trim(),
+    // The managed database's CA certificate (PEM). With it the server is verified; without it
+    // the connection is encrypted but unauthenticated, and the introspection output says so.
+    sourceDbSslCa: (process.env.WATCHFACTS_DB_SSL_CA ?? "").trim() || undefined,
   },
   storageDir: path.join(persistDir, "storage"),
   // Fi Build Spec v4 automatic monitoring/matching system (src/postings/) — reuses the same
