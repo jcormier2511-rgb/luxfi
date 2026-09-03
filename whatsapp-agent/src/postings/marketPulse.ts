@@ -111,6 +111,24 @@ export async function getScopedMarketPulse(scope: MarketScope): Promise<MarketPu
   });
 }
 
+/**
+ * A factual restatement of the FS/WTB counts as a ratio, not a subjective "tight"/"oversupplied"
+ * judgment call — e.g. "1:42 (42 listings per buyer)" when supply outnumbers demand, or "13:1
+ * (13 buyers per listing)" the other way. Falls back to plain English when either side is zero,
+ * since a ratio against zero has no sensible number to show.
+ */
+function formatLiquidityRatio(fsCount: number, wtbCount: number): string {
+  if (fsCount === 0 && wtbCount === 0) return "Implied liquidity ratio: no active listings or buyer demand";
+  if (fsCount === 0) return "Implied liquidity ratio: no active sellers";
+  if (wtbCount === 0) return "Implied liquidity ratio: no active buyer demand";
+  if (wtbCount >= fsCount) {
+    const perListing = Math.round((wtbCount / fsCount) * 10) / 10;
+    return `Implied liquidity ratio: ${perListing}:1 (${perListing} buyer${perListing === 1 ? "" : "s"} per listing)`;
+  }
+  const perBuyer = Math.round((fsCount / wtbCount) * 10) / 10;
+  return `Implied liquidity ratio: 1:${perBuyer} (${perBuyer} listing${perBuyer === 1 ? "" : "s"} per buyer)`;
+}
+
 export function formatMarketPulse(pulse: MarketPulse): string {
   const title = pulse.label || pulse.reference;
   const averageLine = pulse.scope === "brand" || pulse.scope === "model"
@@ -120,7 +138,7 @@ export function formatMarketPulse(pulse: MarketPulse): string {
           ? "Unavailable"
           : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pulse.averageFsAsk)
       }`;
-  return `Market Pulse — ${title}\n\nFS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests\n${averageLine}\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.`;
+  return `Market Pulse — ${title}\n\nFS: ${pulse.fsCount} active listings\nWTB: ${pulse.wtbCount} active requests\n${formatLiquidityRatio(pulse.fsCount, pulse.wtbCount)}\n${averageLine}\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.`;
 }
 
 
@@ -182,5 +200,5 @@ export function formatNetworkMarketSnapshot(snapshot: NetworkMarketSnapshot): st
   const average = snapshot.averageFsAsk === null
     ? "Unavailable"
     : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(snapshot.averageFsAsk);
-  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\nAverage FS ask: ${average}\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.`;
+  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\n${formatLiquidityRatio(snapshot.fsCount, snapshot.wtbCount)}\nAverage FS ask: ${average}\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.`;
 }

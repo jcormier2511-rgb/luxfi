@@ -6,7 +6,7 @@ process.env.WEBHOOK_TOKEN = "test";
 
 const db = require("./db") as typeof import("./db");
 const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
-const { getMarketPulse, formatMarketPulse } = require("./marketPulse") as typeof import("./marketPulse");
+const { getMarketPulse, formatMarketPulse, formatNetworkMarketSnapshot } = require("./marketPulse") as typeof import("./marketPulse");
 
 after(async () => { await db._closePoolForTests(); await inventory._closePoolForTests(); });
 beforeEach(async () => { await db._resetDbForTests(); await inventory._resetDbForTests(); });
@@ -37,11 +37,32 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
   assert.deepEqual({ ...pulse, averageFsAsk: Math.round(pulse.averageFsAsk! * 100) / 100 },
     { reference:"126500LN", fsCount:4, wtbCount:2, averageFsAsk:29833.33 });
   assert.equal(formatMarketPulse(pulse),
-    "Market Pulse — 126500LN\n\nFS: 4 active listings\nWTB: 2 active requests\nAverage FS ask: $29,833\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.");
+    "Market Pulse — 126500LN\n\nFS: 4 active listings\nWTB: 2 active requests\nImplied liquidity ratio: 1:2 (2 listings per buyer)\nAverage FS ask: $29,833\n\nBased on current WatchFacts inventory and dealer-group activity Fi monitors.");
 });
 
 test("pulse rejects a missing exact reference", async () => {
   await assert.rejects(getMarketPulse("   "), /exact watch reference/i);
+});
+
+test("implied liquidity ratio: more buyers than listings is expressed as buyers-per-listing", () => {
+  const text = formatMarketPulse({ reference: "116500LN", fsCount: 1, wtbCount: 13, averageFsAsk: 30000 });
+  assert.match(text, /Implied liquidity ratio: 13:1 \(13 buyers per listing\)/);
+});
+
+test("implied liquidity ratio: more listings than buyers is expressed as listings-per-buyer", () => {
+  const text = formatMarketPulse({ reference: "116500LN", fsCount: 42, wtbCount: 1, averageFsAsk: 30000 });
+  assert.match(text, /Implied liquidity ratio: 1:42 \(42 listings per buyer\)/);
+});
+
+test("implied liquidity ratio: falls back to plain English when either side is zero, rather than a ratio against zero", () => {
+  assert.match(formatMarketPulse({ reference: "X", fsCount: 0, wtbCount: 5, averageFsAsk: null }), /Implied liquidity ratio: no active sellers/);
+  assert.match(formatMarketPulse({ reference: "X", fsCount: 5, wtbCount: 0, averageFsAsk: 30000 }), /Implied liquidity ratio: no active buyer demand/);
+  assert.match(formatMarketPulse({ reference: "X", fsCount: 0, wtbCount: 0, averageFsAsk: null }), /Implied liquidity ratio: no active listings or buyer demand/);
+});
+
+test("implied liquidity ratio also appears in the network-wide Market Overview", () => {
+  const text = formatNetworkMarketSnapshot({ fsCount: 100, wtbCount: 25, averageFsAsk: 30000 });
+  assert.match(text, /Implied liquidity ratio: 1:4 \(4 listings per buyer\)/);
 });
 
 /**
