@@ -16,15 +16,30 @@ const FS_KEYWORDS = /\b(fs|wts|for\s+sale|selling|ready\s+stock|in\s+stock|avail
 // after ("25,5usd", already handled by normalizePriceShorthand's "first currency wins" rule —
 // see below). Recognizing these here (not just $-amounts) is what lets hasMultipleDistinctPrices
 // actually detect that kind of listing as the multi-item dump it is.
-const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|jpy|cny|rmb|chf)";
+const CURRENCY_CODE = "(?:usd|cad|hkd|eur|gbp|aed|sgd|aud|jpy|cny|rmb|chf)";
+// Longest-first prevents the bare "$" branch from splitting HK$/C$/S$/A$, while including euro,
+// pound, yen, and yuan symbols makes symbol-only overseas listings real priced inventory.
+const GENERIC_DOLLAR = "(?<![A-Za-z])\\$";
+const SPECIFIC_CURRENCY_SYMBOL = "(?:US\\$|HK\\$|C\\$|S\\$|A\\$|CN¥|[€£¥])";
 // Trailing `\s?[kK]?` captures dealer shorthand like "$25.5k" — see normalizePriceShorthand,
 // which does the actual k-multiplication; this pattern just needs to not truncate it away.
 // Must start with an actual digit — a naive `[\d,]+` also matches a BARE comma (no digits at
 // all), which let a stray ", " right before an unrelated currency code (e.g. "Sold, USD wire
 // only") turn into a phantom price token. Requires either proper thousands-grouped digits or a
 // plain unbroken digit run.
-const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?\\s?[kK]?";
-const PRICE_PATTERN = new RegExp(`\\$\\s?${NUM}\\b` + `|\\b${CURRENCY_CODE}\\s?${NUM}\\b` + `|\\b${NUM}\\s?${CURRENCY_CODE}\\b`, "gi");
+// Accept repeated comma OR dot thousands groups ("1,250,000" / "1.250.000"), while retaining
+// short-decimal shorthand such as "25.5k". The old single-dot tail truncated €1.250.000.
+const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)\\s?[kK]?";
+const PRICE_PATTERN = new RegExp(
+  `(?:${SPECIFIC_CURRENCY_SYMBOL})\\s?${NUM}\\b` +
+    `|(?:${GENERIC_DOLLAR})\\s?${NUM}\\b(?:\\s*${CURRENCY_CODE}\\b)?` +
+    `|\\b${CURRENCY_CODE}\\s?${NUM}\\b` +
+    // A reference can sit immediately before a currency-prefixed price, as in
+    // "Rolex 126333 RMB 137000". Do not consume "126333 RMB" as a trailing-code
+    // price when that currency is itself followed by another numeric token.
+    `|\\b${NUM}\\s?${CURRENCY_CODE}\\b(?!\\s*${NUM})`,
+  "gi"
+);
 // `(?<!\$\s?)` excludes a digit run directly preceded by a $ sign (with or without a space) —
 // "$20000"/"$ 20000" is unambiguously a price, never a reference, even though bare "20000"
 // alone would otherwise fit the same shape. This is the ONE disambiguation that's actually
@@ -179,6 +194,10 @@ const LOW_VALUE_THOUSANDS_THRESHOLD = 1000;
 
 /** Disambiguates "," / "." as a decimal point (1-2 trailing digits) vs. a thousands separator (exactly 3 trailing digits, e.g. "26,200"). */
 function parseNumericToken(token: string): { value: number | null; hadShortDecimal: boolean } {
+  if (/^\d{1,3}(?:[.,]\d{3})+$/.test(token)) {
+    const n = Number(token.replace(/[.,]/g, ""));
+    return { value: Number.isFinite(n) ? n : null, hadShortDecimal: false };
+  }
   const sepMatch = token.match(/^(\d+)[.,](\d+)$/);
   if (sepMatch) {
     const [, whole, frac] = sepMatch;
@@ -189,7 +208,7 @@ function parseNumericToken(token: string): { value: number | null; hadShortDecim
     const n = Number(`${whole}.${frac}`); // decimal point: "25.5" / "25,5" -> 25.5
     return { value: Number.isFinite(n) ? n : null, hadShortDecimal: true };
   }
-  // Multiple separators (e.g. "1,234,567" grouped thousands) — strip all commas and parse plain.
+  // Multiple separators that are not valid thousands grouping are not safe to reinterpret.
   const plain = Number(token.replace(/,/g, ""));
   return { value: Number.isFinite(plain) ? plain : null, hadShortDecimal: false };
 }
@@ -220,11 +239,66 @@ export function normalizePriceShorthand(raw: string): number | null {
 }
 
 /** The distinct normalized $-amounts named in `text` — shared by extractUnambiguousPrice (below) and hasMultipleDistinctPrices, so "how many different prices does this text mention" is computed exactly one way. */
+interface PriceMention {
+  amount: number;
+  currency: string;
+}
+
+/** Currency derived from the SAME token that supplied the amount, never unrelated text. */
+function currencyFromPriceToken(token: string): string {
+  const named = token.match(/\b(USD|CAD|HKD|EUR|GBP|AED|SGD|AUD|JPY|CNY|RMB|CHF)\b/i)?.[1].toUpperCase();
+  if (named) return named === "RMB" ? "CNY" : named;
+  if (/US\$/i.test(token)) return "USD";
+  if (/HK\$/i.test(token)) return "HKD";
+  if (/C\$/i.test(token)) return "CAD";
+  if (/S\$/i.test(token)) return "SGD";
+  if (/A\$/i.test(token)) return "AUD";
+  if (/CN¥/i.test(token)) return "CNY";
+  if (/€/.test(token)) return "EUR";
+  if (/£/.test(token)) return "GBP";
+  if (/¥/.test(token)) return "JPY";
+  return "USD";
+}
+
+function priceTokens(text: string): string[] {
+  const matches = [...text.matchAll(new RegExp(PRICE_PATTERN.source, "gi"))];
+  return matches
+    .filter((match) => {
+      const raw = match[0];
+      // A watch reference followed by settlement wording is not a trailing-code price:
+      // "Rolex 126333 USD wire only" states payment currency, not a USD 126,333 ask.
+      if (!new RegExp(`^${NUM}\\s?${CURRENCY_CODE}\\b`, "i").test(raw)) return true;
+      const index = match.index ?? 0;
+      const after = text.slice(index + raw.length);
+      const followedBySettlement = /^[\s,;:.()\[\]{}\-–—]*(?:wire|transfer|payment|settlement|account|accepted|only)\b/i.test(after);
+      if (!followedBySettlement) return true;
+      // If the text already named a watch reference before this token, this numeric token is
+      // the listing price even when settlement instructions follow it. Without an earlier
+      // reference, preserve the safer interpretation: the token itself is the reference.
+      const amount = normalizePriceShorthand(raw);
+      return REFERENCE_PATTERN.test(text.slice(0, index)) ||
+        (amount !== null && amount >= 1000 && amount % 500 === 0);
+    })
+    .map((match) => match[0]);
+}
+
+function priceMentions(text: string): PriceMention[] {
+  return priceTokens(text)
+    .map((raw) => {
+      const amount = normalizePriceShorthand(raw);
+      return amount === null ? null : { amount, currency: currencyFromPriceToken(raw) };
+    })
+    .filter((mention): mention is PriceMention => mention !== null);
+}
+
 function distinctPriceValues(text: string): Set<number> {
-  const matches = text.match(PRICE_PATTERN);
-  if (!matches) return new Set();
-  const values = matches.map((m) => normalizePriceShorthand(m)).filter((v): v is number => v !== null);
-  return new Set(values);
+  return new Set(priceMentions(text).map((mention) => mention.amount));
+}
+
+function extractUnambiguousMoney(text: string): PriceMention | null {
+  const mentions = priceMentions(text);
+  const distinct = new Map(mentions.map((mention) => [`${mention.currency}:${mention.amount}`, mention]));
+  return distinct.size === 1 ? [...distinct.values()][0] : null;
 }
 
 /**
@@ -236,10 +310,7 @@ function distinctPriceValues(text: string): Set<number> {
  * mapToInventoryListings for why the structured field alone isn't always trustworthy.
  */
 export function extractUnambiguousPrice(text: string): number | null {
-  const distinct = distinctPriceValues(text);
-  if (distinct.size !== 1) return null;
-  const [only] = distinct;
-  return Number.isFinite(only) ? only : null;
+  return extractUnambiguousMoney(text)?.amount ?? null;
 }
 
 /**
@@ -259,7 +330,11 @@ export function hasMultipleDistinctPrices(text: string): boolean {
 
 /** Shared by v3 (matching/engine.ts) and v4 (this file) — one reference-extraction rule, not two hand-synced copies. */
 export function extractReference(text: string): string | null {
-  const m = text.match(REFERENCE_PATTERN);
+  // Remove every recognized price token before looking for a reference. A symbol-prefixed
+  // amount such as "€100000" has the same numeric shape as a watch reference once the symbol is
+  // ignored, so a dollar-only lookbehind cannot safely protect the newly supported currencies.
+  const withoutPrices = priceTokens(text).reduce((remaining, token) => remaining.replace(token, " "), text);
+  const m = withoutPrices.match(REFERENCE_PATTERN);
   return m ? m[1].toUpperCase() : null;
 }
 
@@ -346,12 +421,11 @@ export function referencesMatch(a: string, b: string): boolean {
 export function normalizeText(text: string): NormalizedFields {
   const lower = text.toLowerCase();
   const brand = BRAND_LIST.find((b) => lower.includes(b)) ?? "";
-  const namedCurrency = text.match(/\b(USD|CAD|HKD|EUR|GBP|AED|JPY|CNY|RMB|CHF)\b/i)?.[1].toUpperCase();
-  const currency = namedCurrency === "RMB" ? "CNY" : namedCurrency ?? (/€/.test(text) ? "EUR" : /£/.test(text) ? "GBP" : /¥/.test(text) ? "JPY" : "USD");
+  const money = extractUnambiguousMoney(text);
   return {
     brand,
     reference: extractReference(text) ?? "",
-    price: extractUnambiguousPrice(text),
-    currency,
+    price: money?.amount ?? null,
+    currency: money?.currency ?? "USD",
   };
 }

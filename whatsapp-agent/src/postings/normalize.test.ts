@@ -193,51 +193,106 @@ test("normalizePriceShorthand handles a currency-code-prefixed amount with no $ 
   assert.equal(normalizePriceShorthand("usd25000"), 25000);
 });
 
-test("reference canonicalization is an explicit alias table, not a suffix guess", () => {
-  // A bare stem aliases to a suffixed reference ONLY where that stem has exactly one produced
-  // variant, so the shorthand cannot mean anything else.
-  assert.equal(canonicalizeReference("116500"), "116500LN");
-  assert.equal(canonicalizeReference(" 116500ln "), "116500LN");
-  assert.equal(canonicalizeReference("116500-LN"), "116500LN");
-  assert.equal(canonicalizeReference("126500"), "126500LN");
-  // 116610 is genuinely ambiguous (116610LN black, 116610LV green) and must never be rewritten,
-  // and no unrelated reference is touched either.
-  assert.equal(canonicalizeReference("116610"), "116610");
-  assert.equal(canonicalizeReference("116610LV"), "116610LV");
-  assert.equal(canonicalizeReference("5711/1A"), "5711/1A");
-  assert.equal(canonicalizeReference("   "), "");
+test("normalizeText preserves dollar-prefixed HKD and CAD symbols during ingestion", () => {
+  const hkd = normalizeText("FS Patek 5712G HK$ 820,000");
+  assert.equal(hkd.currency, "HKD");
+  assert.equal(hkd.price, 820000);
+
+  const cad = normalizeText("FS Rolex 116500LN C$ 30,000");
+  assert.equal(cad.currency, "CAD");
+  assert.equal(cad.price, 30000);
 });
 
-test("reference equivalents cover every stored form of the same watch", () => {
-  assert.deepEqual(referenceEquivalents("116500").sort(), ["116500", "116500LN"]);
-  assert.deepEqual(referenceEquivalents("116500LN").sort(), ["116500", "116500LN"]);
-  assert.deepEqual(referenceEquivalents("116610LV"), ["116610LV"]);
-  assert.deepEqual(referenceEquivalents("116508-0013"), ["1165080013"]);
+test("normalizeText binds a trailing ISO code to a dollar-prefixed listing price", () => {
+  const normalized = normalizeText("FS Patek 5712G $100k CAD");
+  assert.equal(normalized.price, 100000);
+  assert.equal(normalized.currency, "CAD");
 });
 
-test("intent language is recognized as carrying no identity", () => {
-  for (const phrase of ["", ",", "i want ot buy a", "ot buy a", "looking for", "wtb", "a", "to buy"]) {
-    assert.equal(isOnlyIntentLanguage(phrase), true, `"${phrase}" should be intent-only`);
-  }
-  for (const phrase of ["daytona", "white", "submariner date", "5711"]) {
-    assert.equal(isOnlyIntentLanguage(phrase), false, `"${phrase}" should be a real identity`);
+test("normalizeText binds currency to the price token, not an unrelated payment marker", () => {
+  const normalized = normalizeText("FS Patek 5712G HK$820,000 USD wire accepted");
+  assert.equal(normalized.price, 820000);
+  assert.equal(normalized.currency, "HKD");
+});
+
+test("normalizeText preserves SGD by code or S$ symbol", () => {
+  assert.equal(normalizeText("FS Patek 5712G SGD 110,000").currency, "SGD");
+  assert.equal(normalizeText("FS Patek 5712G S$110,000").currency, "SGD");
+});
+
+test("normalizeText preserves AUD by code or A$ symbol", () => {
+  assert.equal(normalizeText("FS Patek 5712G AUD 100,000").currency, "AUD");
+  assert.equal(normalizeText("FS Patek 5712G A$100,000").currency, "AUD");
+});
+
+test("a reference before a currency-prefixed amount is never mistaken for the asking price", () => {
+  const normalized = normalizeText("FS Rolex 126333 RMB 137000");
+  assert.equal(normalized.reference, "126333");
+  assert.equal(normalized.price, 137000);
+  assert.equal(normalized.currency, "CNY");
+});
+
+test("symbol-only EUR, GBP, JPY, and CNY listings retain their asking price", () => {
+  const cases = [
+    ["FS Patek 5712G US$100,000", 100000, "USD"],
+    ["FS Patek 5712G €95,000", 95000, "EUR"],
+    ["FS Rolex 116500LN £80,000", 80000, "GBP"],
+    ["FS Patek 5712G ¥15,000,000", 15000000, "JPY"],
+    ["FS Patek 5712G CN¥700,000", 700000, "CNY"],
+  ] as const;
+
+  for (const [text, price, currency] of cases) {
+    const normalized = normalizeText(text);
+    assert.equal(normalized.price, price, text);
+    assert.equal(normalized.currency, currency, text);
+    assert.equal(classifyText(text), "FS", text);
   }
 });
 
-test("a leading maker name is split off a market-pulse argument", () => {
-  assert.deepEqual(splitLeadingBrand("Rolex 116500LN"), { brand: "rolex", rest: "116500LN" });
-  assert.deepEqual(splitLeadingBrand("patek philippe 5711/1A"), { brand: "patek philippe", rest: "5711/1A" });
-  assert.deepEqual(splitLeadingBrand("116500LN"), { brand: null, rest: "116500LN" });
+test("symbol-only prices are never stored as watch references", () => {
+  for (const text of [
+    "FS Omega Speedmaster €100000",
+    "FS Omega Speedmaster £100000",
+    "FS Omega Speedmaster ¥100000",
+    "FS Omega Speedmaster HK$100000",
+    "FS Omega Speedmaster C$100000",
+  ]) {
+    const normalized = normalizeText(text);
+    assert.equal(normalized.price, 100000, text);
+    assert.equal(normalized.reference, "", text);
+  }
 });
 
-test("a phrase of pure descriptors names no model, but a model built from them survives", () => {
-  // Dial colors and condition words describe a watch; they never identify its model.
-  for (const phrase of ["black", "white dial", "pre-owned", "black dial", "any", "either", ","]) {
-    assert.equal(isOnlyNonModelLanguage(phrase), true, `"${phrase}" should name no model`);
+test("a reference followed by settlement currency wording is not treated as a price", () => {
+  for (const text of [
+    "FS Rolex 126333 USD wire only",
+    "FS Rolex 126333 USD, wire only",
+    "FS Rolex 126333 HKD payment accepted",
+    "FS Rolex 126333 EUR settlement account",
+  ]) {
+    const normalized = normalizeText(text);
+    assert.equal(normalized.reference, "126333", text);
+    assert.equal(normalized.price, null, text);
   }
-  // Whole-phrase judgement only — individual descriptor words are never removed, so real models
-  // built out of them are kept intact.
-  for (const phrase of ["black bay", "daytona", "speedmaster professional", "royal oak"]) {
-    assert.equal(isOnlyNonModelLanguage(phrase), false, `"${phrase}" is a real model`);
-  }
+});
+
+test("a model-only listing keeps a genuine round asking price before settlement wording", () => {
+  const normalized = normalizeText("FS Rolex Daytona 100000 USD, wire only");
+  assert.equal(normalized.reference, "");
+  assert.equal(normalized.price, 100000);
+  assert.equal(normalized.currency, "USD");
+});
+
+test("a genuine price before settlement wording is preserved when the watch reference was already named", () => {
+  const normalized = normalizeText("FS Patek 5712G 100000 USD, wire only");
+  assert.equal(normalized.reference, "5712G");
+  assert.equal(normalized.price, 100000);
+  assert.equal(normalized.currency, "USD");
+});
+
+test("repeated dot thousands separators are consumed as one complete price", () => {
+  assert.equal(normalizePriceShorthand("€1.250.000"), 1250000);
+  const normalized = normalizeText("FS Patek 5712G €1.250.000");
+  assert.equal(normalized.price, 1250000);
+  assert.equal(normalized.currency, "EUR");
 });

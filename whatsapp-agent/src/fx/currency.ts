@@ -16,11 +16,13 @@ export const CURRENCY_SYMBOLS: Record<string, string> = {
   SGD: "S$",
   CAD: "C$",
   AUD: "A$",
+  JPY: "¥",
+  CNY: "CN¥",
 };
 
 /**
- * Symbols tried longest-first so "HK$"/"S$"/"C$"/"A$" are recognized before the bare "$" they
- * contain. Bare "$" is deliberately excluded here and handled separately in
+ * Symbols tried longest-first so "HK$"/"S$"/"C$"/"A$"/"CN¥" are recognized before the
+ * bare "$"/"¥" they contain. Bare "$" is deliberately excluded here and handled separately in
  * parseNativePriceToken below, resolving to config.fx.baseCurrency rather than a hardcoded
  * "USD" — it's a config-driven default assumption, not a confirmed currency read from the text.
  */
@@ -41,7 +43,7 @@ function escapeRegex(s: string): string {
 // all), which let a stray ", " before an unrelated currency code turn into a phantom price
 // token. Requires either proper thousands-grouped digits (comma followed by exactly 3 digits,
 // one or more times) or a plain unbroken digit run — never a trailing/standalone comma.
-const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?\\s?[kK]?";
+const NUM = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+(?:[.,]\\d{1,2})?)\\s?[kK]?";
 // Bare "$" is included in the DETECTION pattern (a price is still a price even when its
 // currency is ambiguous) but listed LAST, after every multi-character symbol that contains
 // it — regex alternation tries left-to-right and won't re-match a span another alternative
@@ -49,10 +51,11 @@ const NUM = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?\\s?[kK]?";
 // leftover "$850,000" for the bare-$ branch to ALSO match as if it were a second, different
 // price mention.
 const SYMBOL_ALTERNATION = [...SYMBOL_TO_CURRENCY.map(([sym]) => escapeRegex(sym)), "\\$"].join("|");
-const CODE_GROUP = CURRENCY_CODES.join("|");
+// RMB is accepted as a text alias but canonicalized to CNY before storage/conversion.
+const CODE_GROUP = [...CURRENCY_CODES, "RMB"].join("|");
 
 const NATIVE_PRICE_PATTERN = new RegExp(
-  `(?:${SYMBOL_ALTERNATION})\\s?${NUM}` + `|\\b(?:${CODE_GROUP})\\s?${NUM}\\b` + `|\\b${NUM}\\s?(?:${CODE_GROUP})\\b`,
+  `(?:${SYMBOL_ALTERNATION})\\s?${NUM}(?:\\s*(?:${CODE_GROUP})\\b)?` + `|\\b(?:${CODE_GROUP})\\s?${NUM}\\b` + `|\\b${NUM}\\s?(?:${CODE_GROUP})\\b`,
   "gi"
 );
 
@@ -73,6 +76,11 @@ export interface NativePrice {
  * FX_BASE_CURRENCY (USD by default), the same assumption every price in this codebase has
  * always made, but never a code found in the text itself is overridden by that assumption.
  */
+function canonicalCurrencyCode(raw: string): string {
+  const code = raw.toUpperCase();
+  return code === "RMB" ? "CNY" : code;
+}
+
 function parseNativePriceToken(token: string): { amount: number; currency: string } | null {
   const trimmed = token.trim();
   for (const [symbol, currency] of SYMBOL_TO_CURRENCY) {
@@ -82,18 +90,23 @@ function parseNativePriceToken(token: string): { amount: number; currency: strin
     }
   }
   if (trimmed.startsWith("$")) {
-    const amount = normalizePriceShorthand(trimmed.slice(1));
-    return amount === null ? null : { amount, currency: config.fx.baseCurrency };
+    const trailingCode = trimmed.match(new RegExp(`\\b(${CODE_GROUP})$`, "i"))?.[1];
+    const amountText = trailingCode
+      ? trimmed.slice(1, trimmed.length - trailingCode.length)
+      : trimmed.slice(1);
+    const amount = normalizePriceShorthand(amountText);
+    const currency = trailingCode ? canonicalCurrencyCode(trailingCode) : config.fx.baseCurrency;
+    return amount === null ? null : { amount, currency };
   }
   const codeBefore = trimmed.match(new RegExp(`^(${CODE_GROUP})`, "i"));
   if (codeBefore) {
     const amount = normalizePriceShorthand(trimmed.slice(codeBefore[0].length));
-    return amount === null ? null : { amount, currency: codeBefore[1].toUpperCase() };
+    return amount === null ? null : { amount, currency: canonicalCurrencyCode(codeBefore[1]) };
   }
   const codeAfter = trimmed.match(new RegExp(`(${CODE_GROUP})$`, "i"));
   if (codeAfter) {
     const amount = normalizePriceShorthand(trimmed.slice(0, trimmed.length - codeAfter[0].length));
-    return amount === null ? null : { amount, currency: codeAfter[1].toUpperCase() };
+    return amount === null ? null : { amount, currency: canonicalCurrencyCode(codeAfter[1]) };
   }
   return null;
 }
