@@ -8,9 +8,10 @@ const db = require("./db") as typeof import("./db");
 const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 const { getMarketPulse, formatMarketPulse } = require("./marketPulse") as typeof import("./marketPulse");
 const rates = require("../fx/rates") as typeof import("../fx/rates");
+const urlValidator = require("../watchfacts/urlValidator") as typeof import("../watchfacts/urlValidator");
 
 after(async () => { await db._closePoolForTests(); await inventory._closePoolForTests(); });
-beforeEach(async () => { await db._resetDbForTests(); await inventory._resetDbForTests(); });
+beforeEach(async () => { await db._resetDbForTests(); await inventory._resetDbForTests(); urlValidator._clearUrlValidationCacheForTests(); });
 
 test("exact-reference pulse uses current normalized postings and deduplicates the WatchFacts mirror", async () => {
   await inventory.upsertListings([
@@ -39,7 +40,9 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
     { reference:"126500LN", requested:"126500LN", fsCount:4, wtbCount:2, averageFsAsk:29833.33,
       // The fourth FS posting has no price at all, so it counts toward fsCount but cannot
       // contribute to the average — and the basis says so rather than leaving it invisible.
-      averageBasis:{ converted:3, skipped:1 } });
+      averageBasis:{ converted:3, skipped:1 },
+      // None of these fixtures carries a detail_url, so there is nothing to link.
+      listingUrls:[] });
   // Every pulse states the scope it counted, so a brand-wide number can't be mistaken for one
   // about a single reference.
   assert.equal(formatMarketPulse(pulse),
@@ -82,9 +85,10 @@ test("116500 and 116500LN aggregate as one canonical bucket, in either direction
   const expected = { reference:"116500LN", fsCount:5, wtbCount:2, averageFsAsk:34400 };
   for (const typed of ["116500LN", "116500", " 116500ln ", "116500-LN"]) {
     const pulse = await getMarketPulse(typed);
-    const { requested, averageBasis, ...rest } = pulse;
+    const { requested, averageBasis, listingUrls, ...rest } = pulse;
     assert.equal(requested, typed.trim().toUpperCase(), "the pulse reports what was actually asked for");
     assert.equal(averageBasis?.converted, 5, "every priced FS listing is in the average");
+    assert.deepEqual(listingUrls, [], "these fixtures carry no detail_url");
     assert.deepEqual({ ...rest, averageFsAsk: Math.round(pulse.averageFsAsk!) }, expected,
       `"${typed}" must resolve to the same canonical bucket`);
   }
@@ -169,4 +173,47 @@ test("a listing Fi cannot convert is reported as skipped rather than guessed at"
   } finally {
     rates._resetRatesForTests();
   }
+});
+
+test("a pulse never counts or averages inventory Fi would refuse to show as too old", async () => {
+  const wf = (id: string, price: string) => ({
+    id, type:"FS" as const, category:"watches", item:"Daytona", brand:"Rolex", ref:"116500LN",
+    condition:"new", price, location:"NY", contactName:"A", contactPhone:"1", rating:"", description:"",
+  });
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86400000).toISOString();
+  await inventory.upsertListings([wf("recent", "$30,000")], daysAgo(2));
+  await inventory.upsertListings([wf("ancient", "$90,000")], daysAgo(40));
+
+  const pulse = await getMarketPulse("116500LN");
+  assert.equal(pulse.fsCount, 1, "the 40-day-old listing is out of the window and out of the count");
+  assert.equal(pulse.averageFsAsk, 30000, "and it cannot drag the average with a price nobody can still buy at");
+});
+
+test("a pulse links the WatchFacts listings behind its numbers, and shows no link it could not reach", async (t) => {
+  t.mock.method(globalThis, "fetch", async (url: string) =>
+    ({ ok: !String(url).includes("gone"), status: String(url).includes("gone") ? 404 : 200 }) as Response);
+  const wf = (id: string, price: string) => ({
+    id, type:"FS" as const, category:"watches", item:"Daytona", brand:"Rolex", ref:"116500LN",
+    condition:"new", price, location:"NY", contactName:"A", contactPhone:"1", rating:"", description:"",
+    detailUrl:`https://watchfacts.com/flash-sales/${id}`,
+  });
+  await inventory.upsertListings([wf("live-a","$30,000"), wf("gone","$31,000"), wf("live-b","$32,000")], new Date().toISOString());
+
+  const pulse = await getMarketPulse("116500LN");
+  assert.deepEqual(pulse.listingUrls, [
+    "https://watchfacts.com/flash-sales/live-a",
+    "https://watchfacts.com/flash-sales/live-b",
+  ], "the 404 link is dropped rather than sent broken");
+  assert.match(formatMarketPulse(pulse), /Current WatchFacts listings:\nhttps:\/\/watchfacts\.com\/flash-sales\/live-a\nhttps:\/\/watchfacts\.com\/flash-sales\/live-b/);
+});
+
+test("a pulse with no reachable WatchFacts link shows no empty link heading", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => ({ ok: false, status: 404 }) as Response);
+  await db.withSchema((pool) => pool.query(`
+    INSERT INTO postings (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,status,expires_at)
+    VALUES ('whatsapp','chat','approved-group','g-fs',NULL,'FS','group FS','116500LN',30000,'USD','active',now()+interval '1 day')`));
+
+  const pulse = await getMarketPulse("116500LN");
+  assert.deepEqual(pulse.listingUrls, []);
+  assert.doesNotMatch(formatMarketPulse(pulse), /Current WatchFacts listing/);
 });

@@ -239,3 +239,25 @@ test("getSyncStatus(true) reports WTB's real status once re-enabled", async () =
   assert.equal(status.wtb.status, "ok");
   assert.ok(status.wtb.lastSuccessAt);
 });
+
+const daysAgo = (n: number) => new Date(Date.now() - n * 86400000).toISOString();
+
+test("inventory older than the freshness window is not shown, however active it still is", async () => {
+  await _resetDbForTests();
+  await upsertListings([row("fresh", "FS")], daysAgo(1));
+  await upsertListings([row("edge", "FS")], daysAgo(14));
+  await upsertListings([row("stale", "FS")], daysAgo(20));
+
+  const ids = (await getActiveListings("FS")).map((l) => l.id).sort();
+  assert.deepEqual(ids, ["edge", "fresh"], "a 20-day-old listing is stale even though is_active is still TRUE");
+  assert.equal(config.watchfacts.maxListingAgeDays, 15, "the default window this test is written against");
+});
+
+test("age is measured from first sight, so a listing that keeps re-appearing in syncs still ages out", async () => {
+  await _resetDbForTests();
+  await upsertListings([row("long-runner", "FS")], daysAgo(30));
+  // Seen again today: last_seen_at moves forward, first_seen_at deliberately does not.
+  await upsertListings([row("long-runner", "FS", { price: "2000" })], daysAgo(0));
+
+  assert.deepEqual(await getActiveListings("FS"), [], "re-sighting must not reset a listing's age");
+});

@@ -1,7 +1,8 @@
 import { withSchema } from "./db";
-import { initInventorySchema } from "../watchfacts/inventoryDb";
+import { freshInventorySql, initInventorySchema } from "../watchfacts/inventoryDb";
 import { canonicalizeReference, referenceEquivalents } from "./normalize";
 import { convertAmount } from "../fx/convert";
+import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 
 /** How an average was actually arrived at, so a figure built from part of the set says so. */
 export interface AverageBasis {
@@ -22,7 +23,15 @@ export interface MarketPulse {
   wtbCount: number;
   averageFsAsk: number | null;
   averageBasis?: AverageBasis;
+  /** Reachable watchfacts.com links for the FS listings this pulse counted, so the numbers can
+   *  be checked against the actual listings instead of taken on trust. Exact-reference pulses
+   *  only -- a brand- or model-wide pulse counts too many listings for a link list to mean
+   *  anything. Capped, deduplicated, and validated the same way a match card's link is. */
+  listingUrls?: string[];
 }
+
+/** Enough links to be useful without turning a pulse into a link dump. */
+const MAX_PULSE_LISTING_URLS = 3;
 
 export interface MarketScope { brand?: string; model?: string; reference?: string }
 
@@ -42,7 +51,9 @@ export interface MarketScope { brand?: string; model?: string; reference?: strin
  * stored "116508-0013" never lined up with a typed "1165080013".
  */
 
-interface PricedRow { type: string; amount: number | null; currency: string | null }
+/** `detail_url` is only selected by the exact-reference pulse (which shows links); the
+ *  network-wide snapshot leaves it undefined, and neither one needs the other's columns. */
+interface PricedRow { type: string; amount: number | null; currency: string | null; detail_url?: string | null }
 
 /**
  * Averages FS asking prices in USD, converting every other currency rather than ignoring it.
@@ -69,6 +80,19 @@ async function averageFsAskInUsd(rows: PricedRow[]): Promise<{ average: number |
   return { average: converted === 0 ? null : total / converted, basis: { converted, skipped } };
 }
 
+/**
+ * The FS listings' own watchfacts.com links, deduplicated, capped, and checked for reachability
+ * before being sent -- a constructed flash-sale URL is not guaranteed to resolve, and the same
+ * validator (and its cache) already guards every match card, so a pulse and a card never
+ * disagree about whether a link is safe to show. An unreachable link is dropped, never shown
+ * broken.
+ */
+async function validatedListingUrls(rows: PricedRow[]): Promise<string[]> {
+  const candidates = [...new Set(rows.filter((r) => r.type === "FS").map((r) => r.detail_url).filter((u): u is string => Boolean(u)))];
+  const checked = await Promise.all(candidates.slice(0, MAX_PULSE_LISTING_URLS).map(getValidatedListingUrl));
+  return checked.filter((u): u is string => Boolean(u));
+}
+
 export async function getMarketPulse(reference: string): Promise<MarketPulse> {
   const canonicalReference = canonicalizeReference(reference);
   if (!canonicalReference) throw new Error("An exact watch reference is required");
@@ -80,7 +104,8 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
       `WITH current_inventory AS (
          SELECT p.type,
                 CASE WHEN p.price > 0 THEN p.price::double precision END AS amount,
-                COALESCE(NULLIF(p.currency,''),'USD') AS currency
+                COALESCE(NULLIF(p.currency,''),'USD') AS currency,
+                p.detail_url
          FROM postings p
          WHERE p.status='active' AND p.expires_at > now()
            AND upper(regexp_replace(COALESCE(p.reference,''), '[^A-Za-z0-9]', '', 'g')) = ANY($1::text[])
@@ -91,9 +116,11 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
                 COALESCE(i.native_price_amount,
                   CASE WHEN i.price ~ '^[[:space:]$]*[0-9][0-9,]*(\\.[0-9]+)?[[:space:]]*$'
                        THEN regexp_replace(i.price, '[^0-9.]', '', 'g')::double precision END) AS amount,
-                COALESCE(NULLIF(i.native_currency,''),'USD') AS currency
+                COALESCE(NULLIF(i.native_currency,''),'USD') AS currency,
+                i.detail_url
          FROM inventory_listings i
-         WHERE i.is_active=TRUE AND upper(regexp_replace(COALESCE(i.ref,''), '[^A-Za-z0-9]', '', 'g')) = ANY($1::text[])
+         WHERE i.is_active=TRUE AND ${freshInventorySql("i")}
+           AND upper(regexp_replace(COALESCE(i.ref,''), '[^A-Za-z0-9]', '', 'g')) = ANY($1::text[])
            AND i.type IN ('FS','WTB')
            AND NOT EXISTS (
              SELECT 1 FROM postings p
@@ -102,7 +129,7 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
                AND p.type=i.type AND p.external_listing_id=i.external_id
            )
        )
-       SELECT type, amount, currency FROM current_inventory`,
+       SELECT type, amount, currency, detail_url FROM current_inventory`,
       [equivalents]
     );
     const rows = result.rows as PricedRow[];
@@ -114,6 +141,7 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
       wtbCount: rows.filter((r) => r.type === "WTB").length,
       averageFsAsk: average,
       averageBasis: basis,
+      listingUrls: await validatedListingUrls(rows),
     };
   });
 }
@@ -137,7 +165,7 @@ export async function getScopedMarketPulse(scope: MarketScope): Promise<MarketPu
       `WITH scoped AS (
          SELECT p.type FROM postings p WHERE p.status='active' AND p.expires_at>now() AND upper(trim(p.${postingColumn}))=$1
          UNION ALL
-         SELECT i.type FROM inventory_listings i WHERE i.is_active=TRUE AND i.type IN ('FS','WTB')
+         SELECT i.type FROM inventory_listings i WHERE i.is_active=TRUE AND ${freshInventorySql("i")} AND i.type IN ('FS','WTB')
            AND upper(trim(i.${inventoryColumn}))=$1
            AND NOT EXISTS (SELECT 1 FROM postings p WHERE p.source_type='api' AND p.source_platform='watchfacts_api'
              AND p.status='active' AND p.expires_at>now() AND p.type=i.type AND p.external_listing_id=i.external_id)
@@ -190,7 +218,15 @@ export function formatMarketPulse(pulse: MarketPulse): string {
     averageLine = averageLineFor("Average FS ask", pulse.averageFsAsk, pulse.averageBasis);
   }
 
-  return `Market Pulse — ${title}\n\n${scopeLine}\n${counts}\n${averageLine}\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.`;
+  // The listings behind the number. A pulse that says "3 active listings" and then shows none
+  // of them asks to be taken on trust; these are the actual WatchFacts pages, so the figures
+  // can be checked. Absent (brand/model scope, no WF-sourced listings, or every link
+  // unreachable) the block is simply omitted rather than left as an empty heading.
+  const links = pulse.listingUrls?.length
+    ? `\n\nCurrent WatchFacts listing${pulse.listingUrls.length === 1 ? "" : "s"}:\n${pulse.listingUrls.join("\n")}`
+    : "";
+
+  return `Market Pulse — ${title}\n\n${scopeLine}\n${counts}\n${averageLine}${links}\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.`;
 }
 
 
@@ -223,7 +259,7 @@ export async function getNetworkMarketSnapshot(): Promise<NetworkMarketSnapshot>
                        THEN regexp_replace(i.price, '[^0-9.]', '', 'g')::double precision END) AS amount,
                 COALESCE(NULLIF(i.native_currency,''),'USD') AS currency
          FROM inventory_listings i
-         WHERE i.is_active=TRUE AND i.type IN ('FS','WTB')
+         WHERE i.is_active=TRUE AND ${freshInventorySql("i")} AND i.type IN ('FS','WTB')
            AND NOT EXISTS (
              SELECT 1 FROM postings p
              WHERE p.source_type='api' AND p.source_platform='watchfacts_api'

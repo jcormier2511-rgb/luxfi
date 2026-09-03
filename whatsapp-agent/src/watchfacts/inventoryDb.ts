@@ -333,12 +333,28 @@ function loadGroupListings(type?: ListingType): InventoryListing[] {
     .filter((l) => !type || l.type === type);
 }
 
-/** Active WatchFacts listings from Postgres, merged with group-monitor CSV captures. */
+/**
+ * The freshness half of "is this listing showable", as a SQL fragment on `alias`, so matching
+ * (getActiveListings below) and market pulse (postings/marketPulse.ts) apply ONE definition of
+ * stale rather than two that can drift apart. Always pair it with `is_active = TRUE`.
+ *
+ * The interval is built from config, not from a bound parameter, because Postgres will not
+ * accept a placeholder inside an interval literal. config.watchfacts.maxListingAgeDays is
+ * coerced to a non-negative integer at load (see config.ts), so nothing user-supplied reaches
+ * this string. 0 disables the window and yields a constant-true predicate.
+ */
+export function freshInventorySql(alias: string): string {
+  const days = config.watchfacts.maxListingAgeDays;
+  return days > 0 ? `${alias}.first_seen_at > now() - interval '${days} days'` : "TRUE";
+}
+
+/** Active, non-stale WatchFacts listings from Postgres, merged with group-monitor CSV captures. */
 export async function getActiveListings(type?: ListingType): Promise<InventoryListing[]> {
   await ensureSchema();
+  const fresh = freshInventorySql("inventory_listings");
   const result = type
-    ? await getPool().query(`SELECT * FROM inventory_listings WHERE is_active = TRUE AND type = $1`, [type])
-    : await getPool().query(`SELECT * FROM inventory_listings WHERE is_active = TRUE`);
+    ? await getPool().query(`SELECT * FROM inventory_listings WHERE is_active = TRUE AND ${fresh} AND type = $1`, [type])
+    : await getPool().query(`SELECT * FROM inventory_listings WHERE is_active = TRUE AND ${fresh}`);
   const dbListings = (result.rows as ListingRow[]).map(rowToListing);
   return [...dbListings, ...loadGroupListings(type)];
 }

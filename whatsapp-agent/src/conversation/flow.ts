@@ -1235,10 +1235,39 @@ const SELL_PHOTO_QUESTION = 'Would you like to attach a photo? Send it now, or r
  *  the word "any" as though it were a real model name. */
 const NO_MODEL_PREFERENCE = /^(?:any|all|skip|none|no|n\/a|unsure|not\s+sure|don'?t\s+know|do\s+not\s+know)$/i;
 
+/**
+ * One side of a price range. Both ends must independently look like MONEY -- a currency marker,
+ * a "k" suffix, or comma thousands grouping -- so a hyphenated reference ("116500-0013") and a
+ * year range ("2020-2022") can never be read as one.
+ */
+const RANGE_END = String.raw`(?:(?:HK|US|C|S|A|CN)?[$€£¥]|\b(?:USD|CAD|HKD|EUR|GBP|AED|SGD|AUD|JPY|CNY|RMB|CHF)\s*)\s*\d[\d,.]*\s*k?|\d[\d,.]*\s*k\b|\d{1,3}(?:,\d{3})+`;
+/** "HK$800k-HK$900k", "$28,000 to $30,000", "28k – 30k". "/" is deliberately NOT a separator:
+ *  "25,5usd/35,4cad" is one amount quoted in two currencies, not a range (see normalizePriceShorthand). */
+const PRICE_RANGE = new RegExp(String.raw`(${RANGE_END})\s*(?:-|–|—|to|through)\s*(${RANGE_END})`, "i");
+
+function extractListingRange(text: string): { low: number; high: number } | null {
+  const m = text.match(PRICE_RANGE);
+  if (!m) return null;
+  const a = normalizePriceShorthand(m[1]);
+  const b = normalizePriceShorthand(m[2]);
+  if (a === null || b === null) return null;
+  return { low: Math.min(a, b), high: Math.max(a, b) };
+}
+
 /** Private listing shorthand commonly omits a currency marker. Only accept a standalone
  * trailing amount, and never the already-identified reference, so 116500LN cannot become a
- * price while `... 28500` reliably does. */
-function extractListingAmount(text: string, reference: string | null): number | undefined {
+ * price while `... 28500` reliably does.
+ *
+ * When the text names a RANGE, which end to keep depends on what the number means to its
+ * author, so the caller says: a WTB budget is a ceiling ("max"), and a buyer who writes
+ * "HK$800k-HK$900k" will pay up to 900k -- keeping the floor was the live bug here, and it
+ * silently hid every listing between the two figures. An FS ask is the price a seller is
+ * willing to start at ("min"), so a range there keeps the low end and the listing stays visible
+ * to every buyer who could actually transact on it. Absent a range both agree, and this is the
+ * single marked-or-trailing amount as before. */
+function extractListingAmount(text: string, reference: string | null, prefer: "max" | "min" = "max"): number | undefined {
+  const range = extractListingRange(text);
+  if (range) return prefer === "max" ? range.high : range.low;
   const marked = text.match(/(?:under|max(?:imum)?|budget|asking|price|for|[$€£])(?:\s+is)?\s*[$€£]?\s*([\d,.]+\s*k?)/i);
   const trailing = text.match(/(?:^|\s)([\d,.]+\s*k?)\s*$/i);
   const raw = marked?.[1] ?? trailing?.[1];
@@ -1246,8 +1275,8 @@ function extractListingAmount(text: string, reference: string | null): number | 
   return normalizePriceShorthand(raw) ?? undefined;
 }
 
-function intakeSlots(text: string, reference: string | null) {
-  const price = extractListingAmount(text, reference);
+function intakeSlots(text: string, reference: string | null, prefer: "max" | "min" = "max") {
+  const price = extractListingAmount(text, reference, prefer);
   const locationRaw =
     text.match(/\b(?:in|from|located in|based in)\s+(?:the\s+)?(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\b/i)?.[1] ??
     text.match(/(?:^|,)\s*(US|USA|United States|UK|UAE|Hong Kong|Singapore|Canada|Europe)\s*(?=,|$)/i)?.[1];
@@ -1317,7 +1346,7 @@ function looksLikePlace(text: string): boolean {
 function dialRelevant(reference: string | null): boolean { return /^(116500LN|126500LN)$/i.test(reference ?? ""); }
 
 function applySellSlots(p: PendingSellIntake, text: string): boolean {
-  const s = intakeSlots(text, p.reference); let changed = false;
+  const s = intakeSlots(text, p.reference, "min"); let changed = false;
   if (s.reference) { p.reference = s.reference; changed = true; }
   if(s.brand){p.brand=s.brand;changed=true;} if(s.model){p.model=s.model;changed=true;} if(s.boxPapers){p.boxPapers=s.boxPapers;changed=true;} if(s.year){p.year=s.year;changed=true;}
   if (containsKnownBrand(text) || s.reference) { p.description = stripLeadingIntent(text); changed = true; }
@@ -1416,7 +1445,7 @@ function applyBareQualifier(p: PendingSellIntake | PendingBuyIntake, text: strin
 function applyScopedSellAnswer(p: PendingSellIntake, text: string): boolean {
   if (applyBareQualifier(p, text)) return true;
   if (/\b(?:change|update|make|set)\b[\s\S]*\b(?:price|asking)\b|\b(?:price|asking)\b[\s\S]*\b(?:to|is)\b/i.test(text)) {
-    const price = extractListingAmount(text, p.reference);
+    const price = extractListingAmount(text, p.reference, "min");
     if (price === undefined) return false;
     p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD";
     const slots = intakeSlots(text, p.reference);
@@ -1426,7 +1455,7 @@ function applyScopedSellAnswer(p: PendingSellIntake, text: string): boolean {
     return true;
   }
   if (p.step === "price") {
-    const price = extractListingAmount(text, p.reference);
+    const price = extractListingAmount(text, p.reference, "min");
     if (price === undefined) return false;
     p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; return true;
   }
@@ -1437,7 +1466,7 @@ function applyScopedSellAnswer(p: PendingSellIntake, text: string): boolean {
   if (p.step === "confirm") {
     let changed = false;
     if (/\b(?:price|asking)\b/i.test(text)) {
-      const price = extractListingAmount(text, p.reference); if (price !== undefined) { p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; changed = true; }
+      const price = extractListingAmount(text, p.reference, "min"); if (price !== undefined) { p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; changed = true; }
     }
     changed = applyNamedIdentityCorrections(p, text) || changed;
     const slots = intakeSlots(text, p.reference);

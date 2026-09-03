@@ -206,6 +206,17 @@ export const config = {
     // WTB is reported as "disabled" rather than as a recurring error, until a real captured
     // value is available to hardcode.
     enableWtbSync: (process.env.ENABLE_WTB_SYNC ?? "false").toLowerCase() === "true",
+    // Only surface inventory Fi first saw within this many days. Trading-floor stock goes
+    // stale fast: a listing Fi has been carrying for weeks is usually sold or repriced, and
+    // quoting it back at a buyer costs more trust than the extra coverage is worth. Applied
+    // wherever inventory is read for a customer -- matching AND market pulse -- so a pulse can
+    // never average over listings Fi would refuse to show.
+    //
+    // Measured from first_seen_at, which is when FI first saw the listing, not when the dealer
+    // posted it: the WatchFacts API returns no creation date (only a flash-sale `deadline`).
+    // On a freshly-populated mirror every row is therefore 0 days old and this filter does
+    // nothing until the mirror itself is older than the window. 0 disables it entirely.
+    maxListingAgeDays: Math.max(0, Math.floor(Number(process.env.WATCHFACTS_MAX_LISTING_AGE_DAYS ?? 15)) || 0),
   },
   storageDir: path.join(persistDir, "storage"),
   // Fi Build Spec v4 automatic monitoring/matching system (src/postings/) — reuses the same

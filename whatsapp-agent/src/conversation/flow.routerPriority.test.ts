@@ -262,3 +262,46 @@ test("a genuine place is still accepted as a free-text location", async () => {
     assert.equal(getState(phone).pendingBuyIntake?.location, expected);
   }
 });
+
+/**
+ * A budget written as a range is a CEILING, and Fi kept the floor.
+ *
+ * "WTB Rolex 116500LN, HK$800k-HK$900k" stored 800,000 HKD because the amount matcher had no
+ * notion of a range and simply took the first number it saw. Every listing between the two
+ * figures — exactly the ones the buyer wrote the range to include — was then filtered out.
+ */
+test("a WTB budget written as a range keeps the ceiling, not the floor", async () => {
+  const cases: ReadonlyArray<readonly [string, number, string]> = [
+    ["WTB Rolex 116500LN, HK$800k-HK$900k", 900000, "HKD"],
+    ["WTB Rolex 116500LN, $28,000 to $30,000", 30000, "USD"],
+    ["WTB Rolex 116500LN, 28k – 32k", 32000, "USD"],
+    ["WTB Rolex 116500LN, budget 30k-28k", 30000, "USD"],
+  ];
+  for (const [message, expected, currency] of cases) {
+    const phone = freshPhone();
+    await handleIncomingMessage(phone, message);
+    const draft = getState(phone).pendingBuyIntake!;
+    assert.equal(draft.budget, expected, `"${message}"`);
+    assert.equal(draft.currency, currency, `"${message}" currency`);
+  }
+});
+
+test("an FS ask written as a range keeps the floor — the price the seller will actually trade at", async () => {
+  const phone = freshPhone();
+  await handleIncomingMessage(phone, "WTS Rolex 116500LN, asking $28,000-$30,000");
+  assert.equal(getState(phone).pendingSellIntake?.price, 28000);
+});
+
+test("only real money reads as a range — a hyphenated reference or a year span never does", async () => {
+  const phone = freshPhone();
+  await handleIncomingMessage(phone, "WTB Rolex 116508-0013, 2019-2021, max $35,000");
+  const draft = getState(phone).pendingBuyIntake!;
+  assert.equal(draft.budget, 35000, "the years must not be read as a 2019-2021 budget");
+  assert.equal(draft.reference, "116508-0013");
+});
+
+test("a single amount is unaffected by range handling", async () => {
+  const phone = freshPhone();
+  await handleIncomingMessage(phone, "WTB Rolex 116500LN, max $35,000");
+  assert.equal(getState(phone).pendingBuyIntake?.budget, 35000);
+});
