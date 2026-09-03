@@ -7,6 +7,7 @@ process.env.WEBHOOK_TOKEN = "test";
 const db = require("./db") as typeof import("./db");
 const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 const { getMarketPulse, formatMarketPulse } = require("./marketPulse") as typeof import("./marketPulse");
+const rates = require("../fx/rates") as typeof import("../fx/rates");
 
 after(async () => { await db._closePoolForTests(); await inventory._closePoolForTests(); });
 beforeEach(async () => { await db._resetDbForTests(); await inventory._resetDbForTests(); });
@@ -35,11 +36,14 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
 
   const pulse = await getMarketPulse(" 126500ln ");
   assert.deepEqual({ ...pulse, averageFsAsk: Math.round(pulse.averageFsAsk! * 100) / 100 },
-    { reference:"126500LN", requested:"126500LN", fsCount:4, wtbCount:2, averageFsAsk:29833.33 });
+    { reference:"126500LN", requested:"126500LN", fsCount:4, wtbCount:2, averageFsAsk:29833.33,
+      // The fourth FS posting has no price at all, so it counts toward fsCount but cannot
+      // contribute to the average — and the basis says so rather than leaving it invisible.
+      averageBasis:{ converted:3, skipped:1 } });
   // Every pulse states the scope it counted, so a brand-wide number can't be mistaken for one
   // about a single reference.
   assert.equal(formatMarketPulse(pulse),
-    "Market Pulse — 126500LN\n\nScope: this exact reference\nFS: 4 active listings\nWTB: 2 active requests\nAverage FS ask: $29,833\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.");
+    "Market Pulse — 126500LN\n\nScope: this exact reference\nFS: 4 active listings\nWTB: 2 active requests\nAverage FS ask: $29,833\n(from 3 of 4 FS listings, converted to USD — 1 had no usable price or FX rate)\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.");
 });
 
 test("pulse rejects a missing exact reference", async () => {
@@ -78,8 +82,9 @@ test("116500 and 116500LN aggregate as one canonical bucket, in either direction
   const expected = { reference:"116500LN", fsCount:5, wtbCount:2, averageFsAsk:34400 };
   for (const typed of ["116500LN", "116500", " 116500ln ", "116500-LN"]) {
     const pulse = await getMarketPulse(typed);
-    const { requested, ...rest } = pulse;
+    const { requested, averageBasis, ...rest } = pulse;
     assert.equal(requested, typed.trim().toUpperCase(), "the pulse reports what was actually asked for");
+    assert.equal(averageBasis?.converted, 5, "every priced FS listing is in the average");
     assert.deepEqual({ ...rest, averageFsAsk: Math.round(pulse.averageFsAsk!) }, expected,
       `"${typed}" must resolve to the same canonical bucket`);
   }
@@ -112,4 +117,56 @@ test("a pulse always states which scope it counted, and discloses a canonical re
   const brand = formatMarketPulse({ reference:"", label:"Rolex", scope:"brand", fsCount:180, wtbCount:1, averageFsAsk:null });
   assert.match(brand, /Scope: every Rolex listing Fi can see/);
   assert.match(brand, /not shown for a whole brand/);
+});
+
+
+/**
+ * The averages used to be computed in SQL over USD rows only: a listing priced in HKD or EUR
+ * counted toward the FS total but vanished from the average, so the headline figure silently
+ * described a subset. Every currency is now converted to USD instead.
+ */
+test("non-USD listings are converted into the average, not dropped from it", async () => {
+  rates._setRatesForTests({ base: "USD", rates: { USD: 1, HKD: 8, EUR: 0.5 }, fetchedAt: new Date() });
+  try {
+    await db.withSchema((pool) => pool.query(`
+      INSERT INTO postings
+        (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,status,expires_at)
+      VALUES
+        ('whatsapp','chat','g','fx-usd',NULL,'FS','usd','116500LN',30000,'USD','active',now()+interval '1 day'),
+        ('whatsapp','chat','g','fx-hkd',NULL,'FS','hkd','116500LN',240000,'HKD','active',now()+interval '1 day'),
+        ('whatsapp','chat','g','fx-eur',NULL,'FS','eur','116500LN',15000,'EUR','active',now()+interval '1 day')
+    `));
+
+    // HKD 240,000 / 8 = $30,000 and EUR 15,000 / 0.5 = $30,000 — all three are the same watch
+    // at the same price, so the average must be exactly $30,000, not the USD row alone.
+    const pulse = await getMarketPulse("116500LN");
+    assert.equal(pulse.fsCount, 3);
+    assert.equal(Math.round(pulse.averageFsAsk!), 30000);
+    assert.deepEqual(pulse.averageBasis, { converted: 3, skipped: 0 });
+    assert.doesNotMatch(formatMarketPulse(pulse), /had no usable price/, "nothing was skipped, so nothing is disclosed");
+  } finally {
+    rates._resetRatesForTests();
+  }
+});
+
+test("a listing Fi cannot convert is reported as skipped rather than guessed at", async () => {
+  rates._setRatesForTests({ base: "USD", rates: { USD: 1 }, fetchedAt: new Date() });
+  try {
+    await db.withSchema((pool) => pool.query(`
+      INSERT INTO postings
+        (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,status,expires_at)
+      VALUES
+        ('whatsapp','chat','g','sk-usd',NULL,'FS','usd','116500LN',30000,'USD','active',now()+interval '1 day'),
+        ('whatsapp','chat','g','sk-jpy',NULL,'FS','jpy','116500LN',4000000,'JPY','active',now()+interval '1 day')
+    `));
+
+    // JPY has no rate in this table, so fx/convert.ts returns null rather than inventing one.
+    const pulse = await getMarketPulse("116500LN");
+    assert.equal(pulse.fsCount, 2, "it still counts as an active listing");
+    assert.equal(Math.round(pulse.averageFsAsk!), 30000, "but never enters the average at a guessed rate");
+    assert.deepEqual(pulse.averageBasis, { converted: 1, skipped: 1 });
+    assert.match(formatMarketPulse(pulse), /from 1 of 2 FS listings, converted to USD — 1 had no usable price or FX rate/);
+  } finally {
+    rates._resetRatesForTests();
+  }
 });
