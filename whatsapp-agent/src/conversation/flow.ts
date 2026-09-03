@@ -1626,8 +1626,15 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   if (skippedPhoto) p.photoSkipped = true;
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your listing draft open."); messages.push(nextSell(p)??sellSummary(p)); return; }
-  const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text); if(freeLocation)p.location=text.trim();
-  const changed=applyScopedSellAnswer(p,text) || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
+  // The scoped answer runs FIRST, and free-text location is only the fallback for what it did
+  // not claim. Computing them independently meant a message the scoped answer had already
+  // handled was ALSO stored as the location: "change my price to 32000", sent while the draft
+  // was waiting on a location, correctly repriced the draft and then set its location to the
+  // whole sentence.
+  const scopedChange=applyScopedSellAnswer(p,text);
+  const freeLocation=!scopedChange&&p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text);
+  if(freeLocation)p.location=text.trim();
+  const changed=scopedChange || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open."); }
   messages.push(nextSell(p)??sellSummary(p));
@@ -1643,8 +1650,12 @@ async function handleBuyIntakeAnswer(state: ConversationState, text: string, mes
     state.pendingBuyIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
-  const freeLocation=p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text); if(freeLocation)p.location=text.trim();
-  const changed=applyScopedBuyAnswer(p,text)||skippedReference||freeLocation;
+  // See the sell handler above: the scoped answer claims the message first, and only what it
+  // leaves unclaimed can become a free-text location.
+  const scopedChange=applyScopedBuyAnswer(p,text);
+  const freeLocation=!scopedChange&&p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text);
+  if(freeLocation)p.location=text.trim();
+  const changed=scopedChange||skippedReference||freeLocation;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your request draft open."); }
   messages.push(nextBuy(p)??buySummary(p));

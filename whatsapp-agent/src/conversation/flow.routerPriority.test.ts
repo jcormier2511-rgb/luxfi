@@ -233,3 +233,32 @@ for (const answer of LOCATION_ANSWERS) {
     assert.match(reply.messages.join("\n"), /116500LN/, "the summary must still describe the watch");
   });
 }
+
+/**
+ * Found by running the live script rather than by the suite: with the draft waiting on a
+ * location, "change my budget to 32000" correctly repriced it AND stored the whole sentence as
+ * the location. The scoped answer and the free-text location fallback were computed
+ * independently, so both fired on one message.
+ */
+test("a field correction sent while awaiting a location does not become the location", async () => {
+  for (const correction of ["change my budget to 32000", "change my price to 28000", "make the budget 30000"]) {
+    const phone = freshPhone();
+    await handleIncomingMessage(phone, "WTB Rolex 116500, black dial, pre-owned, max $35,000");
+    assert.equal(getState(phone).pendingBuyIntake?.step, "location", "precondition: waiting on a location");
+
+    const reply = await handleIncomingMessage(phone, correction);
+    const draft = getState(phone).pendingBuyIntake!;
+    assert.equal(draft.location, undefined, `"${correction}" was stored as the location`);
+    assert.notEqual(draft.budget, 35000, "the correction must still have been applied");
+    assert.match(reply.messages.join("\n"), /location/i, "and Fi still asks for the location it never got");
+  }
+});
+
+test("a genuine place is still accepted as a free-text location", async () => {
+  for (const [place, expected] of [["Hong Kong", "Hong Kong"], ["Miami, FL", "Miami, FL"], ["NY 10001", "NY 10001"]] as const) {
+    const phone = freshPhone();
+    await handleIncomingMessage(phone, "WTB Rolex 116500, black dial, pre-owned, max $35,000");
+    await handleIncomingMessage(phone, place);
+    assert.equal(getState(phone).pendingBuyIntake?.location, expected);
+  }
+});
