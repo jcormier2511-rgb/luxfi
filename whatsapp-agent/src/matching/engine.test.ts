@@ -157,7 +157,7 @@ test('required regression: "under $20000" is never treated as a requested refere
   assert.equal(matches.length, 1, "20000 must be recognized as a price, not force an exact-reference-only search");
 });
 
-test("required regression: a stated location is a mandatory pre-filter — a listing outside it is excluded outright, not just ranked lower", async () => {
+test("required regression: a stated location never excludes a listing outright — it only ranks a resolving match higher (WatchFacts' continent-level data can't support a hard exclusion)", async () => {
   await _resetDbForTests();
   await upsertListings(
     [
@@ -168,8 +168,8 @@ test("required regression: a stated location is a mandatory pre-filter — a lis
   );
 
   const matches = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5, { location: "USA" });
-  assert.equal(matches.length, 1, "the Asia listing must be excluded outright for a stated USA requirement");
-  assert.equal(matches[0].id, "us-listing");
+  assert.equal(matches.length, 2, "neither listing is excluded on location grounds");
+  assert.equal(matches[0].id, "us-listing", "the resolving location still sorts first");
 });
 
 test("required regression: 'USA' matches the stored 'North America' region (WatchFacts only gives continent-level location)", async () => {
@@ -180,12 +180,21 @@ test("required regression: 'USA' matches the stored 'North America' region (Watc
   assert.equal(matches.length, 1, "'US' must resolve to the same region bucket as the stored 'North America'");
 });
 
-test("a listing with no location on file is excluded when a location is explicitly required — never assumed to match", async () => {
+test("a listing with no location on file, or a city-level requirement that a broad region can't literally satisfy, is never excluded — only an unresolved granularity gap, not a real conflict", async () => {
   await _resetDbForTests();
-  await upsertListings([row("a", { brand: "Rolex", ref: "116500LN", location: "", description: "Rolex Daytona 116500LN" })], new Date().toISOString());
+  await upsertListings(
+    [
+      row("a", { brand: "Rolex", ref: "116500LN", location: "", description: "Rolex Daytona 116500LN" }),
+      row("b", { brand: "Rolex", ref: "126710BLRO", location: "North America", description: "Rolex GMT-Master II 126710BLRO" }),
+    ],
+    new Date().toISOString()
+  );
 
-  const matches = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5, { location: "USA" });
-  assert.equal(matches.length, 0, "an unverifiable location can't be presented as satisfying a stated requirement");
+  const noLocation = await findMatches({ action: "buy", query: "Rolex Daytona 116500LN" }, 5, { location: "USA" });
+  assert.equal(noLocation.length, 1, "a listing with no location on file is still shown, not treated as a conflict");
+
+  const cityVsRegion = await findMatches({ action: "buy", query: "Rolex GMT-Master II 126710BLRO" }, 5, { location: "Miami" });
+  assert.equal(cityVsRegion.length, 1, "a city-level requirement must not exclude a region-tagged listing WatchFacts can't verify at that granularity");
 });
 
 test("without a stated location preference, matching is unaffected regardless of the listing's location", async () => {

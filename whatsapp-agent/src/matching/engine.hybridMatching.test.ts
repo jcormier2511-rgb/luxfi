@@ -180,7 +180,7 @@ test("required regression: a reference named in the raw message still gates elig
   assert.equal(results.length, 0, "the deterministic reference in the raw message must still exclude an unrelated model, even if the AI's own extraction missed it");
 });
 
-test("required regression: a stated location from the AI's interpretation is a mandatory pre-filter in the hybrid path too", async (t) => {
+test("required regression: a stated location from the AI's interpretation never excludes a candidate in the hybrid path either — WatchFacts' continent-level data can't support a hard exclusion", async (t) => {
   await _resetDbForTests();
   await upsertListings(
     [
@@ -194,8 +194,7 @@ test("required regression: a stated location from the AI's interpretation is a m
     candidates.map((c) => ({ id: c.id, explanation: "matches request", evidence: "Rolex Daytona 116500LN" }))
   );
   const results = await findMatchesHybrid(TEST_PHONE, { action: "buy", query: "buy Rolex Daytona 116500 USA only" }, 5);
-  assert.equal(results.length, 1, "the Asia listing must never be sent to AI or surfaced when USA was explicitly stated");
-  assert.equal(results[0].listing.id, "us-listing");
+  assert.equal(results.length, 2, "both listings must reach AI and be surfaced — a stated location is context, not a hard gate");
 });
 
 test("required acceptance: no arbitrary fallback inventory — an AI outage falls back to deterministic matching, not to an unrelated pool", async (t) => {

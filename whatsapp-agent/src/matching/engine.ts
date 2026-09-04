@@ -188,35 +188,41 @@ function locationsMatch(requested: string, actual: string): boolean {
 }
 
 /**
- * A stated location is a MANDATORY pre-filter, same principle as price: "US only" must exclude
- * a Hong Kong listing outright, not just rank it lower. A listing with no location on file
- * can't be verified against a stated requirement, so it's excluded too — never assumed to match.
+ * Location is informational only, never a hard exclusion — unlike price, which is a real
+ * monetary constraint. WatchFacts only reports continent-level location (see REGION_ALIASES
+ * above), so a stated city ("Miami") can never literally match a listing's broad region ("North
+ * America") even though there's no actual conflict; previously treating location as mandatory
+ * here (same as price) meant a real listing — including an exact reference match — was silently
+ * excluded over nothing but a granularity mismatch. See softPreferenceScore below: a listing
+ * whose location DOES resolve to the stated one still ranks higher, it just never gets dropped
+ * for failing to.
  */
-function matchesLocation(listing: InventoryListing, preferences?: SearchPreferences): boolean {
-  if (!preferences?.location) return true; // no stated requirement — nothing to exclude on
-  if (!listing.location) return false; // can't verify an unstated location against a stated one
+function locationPreferenceMatches(listing: InventoryListing, preferences?: SearchPreferences): boolean {
+  if (!preferences?.location || !listing.location) return false;
   return locationsMatch(preferences.location, listing.location);
 }
 
-/** Dial/condition are freeform text, so they nudge sort order rather than hard-exclude — unlike
- *  location (see matchesLocation above), which is now a mandatory pre-filter. */
+/** Dial/condition/location are all freeform-ish and only ever nudge sort order — see
+ *  locationPreferenceMatches above for why location stopped hard-excluding. */
 function softPreferenceScore(listing: InventoryListing, preferences?: SearchPreferences): number {
   if (!preferences) return 0;
   let s = 0;
   const haystack = `${listing.description} ${listing.item}`.toLowerCase();
   if (preferences.dialColor && haystack.includes(preferences.dialColor)) s += 1;
   if (preferences.condition && listing.condition.toLowerCase().includes(preferences.condition)) s += 1;
+  if (locationPreferenceMatches(listing, preferences)) s += 1;
   return s;
 }
 
 /**
  * A buyer's request ("buy") matches against FS (for sale) listings;
  * a seller's request ("sell") matches against WTB (want to buy) listings.
- * `preferences` (price/location/dial/condition, collected once per contact) applies price AND
- * location as MANDATORY pre-filters, before any ranking — a listing outside the stated budget
- * or outside the stated location is excluded outright, never shown anyway just to have something
- * to display. Dial/condition nudge sort order for the freeform fields instead of hard-excluding,
- * since those are much fuzzier to match on exact text.
+ * `preferences` (price/location/dial/condition, collected once per contact) applies price as a
+ * MANDATORY pre-filter, before any ranking — a listing outside the stated budget is excluded
+ * outright, never shown anyway just to have something to display. Location/dial/condition all
+ * only nudge sort order instead of hard-excluding (see locationPreferenceMatches/
+ * softPreferenceScore) — location because WatchFacts' continent-level granularity makes a city
+ * vs. region "mismatch" meaningless, dial/condition because they're free text.
  *
  * When the query names a specific reference number, that's a hard filter: only listings whose
  * own `ref` normalizes to an exact match are ever returned — never falling back to keyword
@@ -245,10 +251,10 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
 
   if (requestedRef) {
     const exact = candidates.filter((l) => l.ref && referencesMatch(l.ref, requestedRef));
-    // No price/location-ignoring fallback: a listing over budget or outside the stated location
-    // is excluded, period — showing it anyway "so there's something to display" is worse than
-    // truthfully showing nothing.
-    const pool = exact.filter((l) => inPriceRange(l, preferences, priceMap) && matchesLocation(l, preferences));
+    // No price-ignoring fallback: a listing over budget is excluded, period — showing it anyway
+    // "so there's something to display" is worse than truthfully showing nothing. Location is
+    // NOT filtered here — see locationPreferenceMatches above.
+    const pool = exact.filter((l) => inPriceRange(l, preferences, priceMap));
     const ranked = pool
       .map((listing) => ({
         listing,
@@ -263,9 +269,10 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   }
 
   const tokens = tokenize(request.query);
-  // Same mandatory price/location pre-filter as the reference branch above — a hard budget or
-  // location is never relaxed just because nothing else in the broader pool happens to fit it.
-  const pool = candidates.filter((l) => inPriceRange(l, preferences, priceMap) && matchesLocation(l, preferences));
+  // Same mandatory price pre-filter as the reference branch above — a hard budget is never
+  // relaxed just because nothing else in the broader pool happens to fit it. Location is NOT
+  // filtered here — see locationPreferenceMatches above.
+  const pool = candidates.filter((l) => inPriceRange(l, preferences, priceMap));
 
   const ranked = pool
     .map((listing) => ({
@@ -421,9 +428,10 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
   // missing/ambiguous (ASK, or unparseable) is excluded when a ceiling is stated, rather than
   // presented as a confirmed match with an unverified price.
   const priceCeiling = normalizedPreferences?.priceMax;
-  // Same mandatory-location principle as findMatches (see matchesLocation) — a stated "US only"
-  // is never relaxed just because the AI's own pool happens to be thin without it.
-  const requestedLocation = interpreted.location ?? preferences?.location;
+  // Location is NOT filtered here, same reasoning as findMatches/locationPreferenceMatches —
+  // WatchFacts' continent-level granularity means a stated city can never literally match a
+  // listing's broad region, so a hard exclusion would drop real matches over nothing but that
+  // gap. The AI reranker still sees interpreted.location as context for its own explanation.
   // Currency-aware, precomputed once for the eligible pool — see buildComparablePriceMap.
   const priceMap = await buildComparablePriceMap(eligible);
   const withinBudget = eligible.filter((l) => {
@@ -431,7 +439,6 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
       const price = priceMap.get(l.id);
       if (price === undefined || price > priceCeiling) return false;
     }
-    if (requestedLocation && !matchesLocation(l, { location: requestedLocation })) return false;
     return true;
   });
 
@@ -459,7 +466,6 @@ export async function findMatchesHybrid(phone: string, request: ItemRequest, lim
       const price = priceMap.get(listing.id);
       if (price === undefined || price > priceCeiling) continue; // belt & suspenders — never surface an over-budget or unverifiable/unconvertible price under a stated ceiling
     }
-    if (requestedLocation && !matchesLocation(listing, { location: requestedLocation })) continue; // belt & suspenders — never surface a listing outside a stated location requirement
     results.push({ listing, explanation: pick.explanation });
     if (results.length >= limit) break;
   }
