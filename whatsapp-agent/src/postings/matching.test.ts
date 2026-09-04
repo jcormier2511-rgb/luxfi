@@ -336,16 +336,21 @@ test("runReconciliation recovers a match the immediate path missed, without dupl
   assert.equal(matches.rows.length, 1, "reconciliation must never create duplicate match rows for the same pair");
 });
 
-test("explicit dial, condition, and location requirements are mandatory", () => {
+test("an explicit dial/condition conflict rejects a match, but a blank FS value (unrecorded, not conflicting) does not", () => {
   const baseFs = posting({ reference: "116500LN", dial: "white", condition: "pre-owned", location: "USA" });
   const baseWtb = posting({ type: "WTB", reference: "116500LN", dial: "white", condition: "pre-owned", location: "US" });
   assert.ok(scoreMatch(baseFs, baseWtb));
   assert.equal(scoreMatch({ ...baseFs, dial: "black" }, baseWtb), null, "dial mismatch");
-  assert.equal(scoreMatch({ ...baseFs, dial: "" }, baseWtb), null, "missing dial");
+  assert.ok(scoreMatch({ ...baseFs, dial: "" }, baseWtb), "a listing that never recorded a dial color isn't a conflict");
   assert.equal(scoreMatch({ ...baseFs, condition: "new" }, baseWtb), null, "condition mismatch");
-  assert.equal(scoreMatch({ ...baseFs, condition: "" }, baseWtb), null, "missing condition");
-  assert.equal(scoreMatch({ ...baseFs, location: "Canada" }, baseWtb), null, "location mismatch");
-  assert.equal(scoreMatch({ ...baseFs, location: "" }, baseWtb), null, "missing location");
+  assert.ok(scoreMatch({ ...baseFs, condition: "" }, baseWtb), "a listing that never recorded a condition isn't a conflict");
+});
+
+test("location is informational only and never gates a match — inventory ships beyond one city, and FS listings are often tagged with a broad region rather than a city", () => {
+  const baseFs = posting({ reference: "116500LN", location: "North America" });
+  const baseWtb = posting({ type: "WTB", reference: "116500LN", location: "Miami" });
+  assert.ok(scoreMatch(baseFs, baseWtb), "a region/city granularity mismatch must not block an otherwise-exact reference match");
+  assert.ok(scoreMatch({ ...baseFs, location: "" }, baseWtb), "a listing with no location recorded must not block a match either");
 });
 
 test("cross-currency budgets are converted before comparison", async (t) => {

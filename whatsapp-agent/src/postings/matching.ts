@@ -46,25 +46,28 @@ export function scoreMatch(fs: PostingRow, wtb: PostingRow): ScoreResult | null 
     return null; // no structured basis for a match
   }
 
+  // A blank fs.dial/fs.condition means the source listing never recorded one (common — e.g.
+  // thecollective_inventory.auctions frequently has no dial_color, and the DB-direct sync has
+  // no condition_id lookup yet) — that's "unknown," not "conflicting," so it must not disqualify
+  // an otherwise-strong reference match. Only an FS value that actively DIFFERS from what the
+  // WTB side asked for rejects the match.
   const canonical = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
   const requestedDial = canonical(wtb.dial || "");
   if (requestedDial && requestedDial !== "any" && requestedDial !== "either") {
-    if (!fs.dial || canonical(fs.dial) !== requestedDial) return null;
-    reasons.push(`Dial: ${wtb.dial}`);
+    if (fs.dial && canonical(fs.dial) !== requestedDial) return null;
+    if (fs.dial) reasons.push(`Dial: ${wtb.dial}`);
   }
   const requestedCondition = canonical(wtb.condition || "");
   if (requestedCondition && requestedCondition !== "any" && requestedCondition !== "anycondition") {
-    if (!fs.condition || canonical(fs.condition) !== requestedCondition) return null;
-    reasons.push(`Condition: ${wtb.condition}`);
+    if (fs.condition && canonical(fs.condition) !== requestedCondition) return null;
+    if (fs.condition) reasons.push(`Condition: ${wtb.condition}`);
   }
-  const locationAlias = (value: string) => {
-    const normalized = canonical(value);
-    return ["us", "usa", "unitedstates"].includes(normalized) ? "us" : normalized;
-  };
-  const requestedLocation = locationAlias(wtb.location || "");
-  if (requestedLocation && requestedLocation !== "any") {
-    if (!fs.location || locationAlias(fs.location) !== requestedLocation) return null;
-    reasons.push(`Location: ${wtb.location}`);
+  // Location is informational only, never a match gate — inventory routinely ships nationally/
+  // internationally, and FS listings are tagged with broad regions (e.g. "North America") while
+  // a WTB request typically names a city, so exact-string comparison would reject a real match
+  // over a granularity mismatch rather than an actual location conflict.
+  if (fs.location && wtb.location) {
+    reasons.push(`FS in ${fs.location}, requested ${wtb.location}`);
   }
 
   const fsPrice = fs.price !== null ? Number(fs.price) : null;
