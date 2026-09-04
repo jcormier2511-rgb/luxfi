@@ -80,11 +80,24 @@ export async function ingestDirectBuyPosting(input: DirectSellPostingInput): Pro
  * so a routine sync never re-notifies anyone about a listing nothing actually changed on.
  */
 export async function ingestApiFsSync(listings: ApiFsListing[]): Promise<void> {
-  for (const listing of listings) {
-    const { posting, materialChange } = await mirrorApiFsPosting(listing);
+  // Sequential by design (each posting's match check depends on the postings table reflecting
+  // every prior one in this same batch), but that means a large batch is otherwise silent for
+  // however long it takes — the very first sync against a real feed processes every "new to
+  // this table" listing at once (tens of thousands), which can take a long time with nothing
+  // to distinguish "still working" from "hung". Logged every 500 rows and at the end so a long
+  // run is visible in Deploy Logs rather than looking indistinguishable from a stuck process.
+  const started = Date.now();
+  let materialChanges = 0;
+  for (let i = 0; i < listings.length; i++) {
+    const { posting, materialChange } = await mirrorApiFsPosting(listings[i]);
     if (materialChange) {
+      materialChanges++;
       await runImmediateMatch(posting);
+    }
+    if ((i + 1) % 500 === 0) {
+      console.log(`[postings] ingestApiFsSync: ${i + 1}/${listings.length} (${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s elapsed)`);
     }
   }
   await markApiPostingsInactive(listings.map((l) => l.id));
+  console.log(`[postings] ingestApiFsSync: done — ${listings.length} listings, ${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s total`);
 }
