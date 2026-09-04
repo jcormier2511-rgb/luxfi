@@ -610,7 +610,18 @@ function formatActiveAcknowledgment(p: import("../postings/postingsStore").Posti
   const outcome = matchesFound
     ? `I found ${matchesFound} potential ${p.type === "FS" ? "buyer" : "listing"}${matchesFound === 1 ? "" : "s"}.`
     : `I’ll keep monitoring for a qualifying ${p.type === "FS" ? "buyer" : "seller"}.`;
-  return `${heading}\n\n${details}\n\n${outcome}`;
+  return `${heading}\n\n${details}\n\n${outcome}\n\n${whatHappensNext(p.type)}`;
+}
+
+/** Closes the activation card with the three things a user can actually do from here. Kept in
+ *  the same message (not a follow-up) so both channels show one card and nobody gets nagged. */
+function whatHappensNext(type: "FS" | "WTB"): string {
+  return [
+    "What happens next:",
+    `• I’ll message you here the moment a matching ${type === "FS" ? "buyer" : "listing"} appears, with an approve / pass choice.`,
+    `• Reply "listings" any time to review this ${type === "FS" ? "listing" : "request"}, or "cancel" to stop monitoring.`,
+    "• Reply \"help\" for everything else I can do.",
+  ].join("\n");
 }
 
 /** A one-time nudge right after the contact's first successful listing — the moment they've

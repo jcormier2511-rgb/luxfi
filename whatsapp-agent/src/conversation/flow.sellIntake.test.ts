@@ -88,6 +88,7 @@ test("required: seller details are collected, summarized, and only saved after c
   assert.ok(summary.state.pendingSellIntake, "summary is still an unsaved draft");
   const confirmed = await handleIncomingMessage(phone, "yes");
   assert.match(confirmed.messages.join("\n"), /Your FS listing is active:[\s\S]*Rolex Submariner 116610LV[\s\S]*Asking: \$14,500[\s\S]*USA[\s\S]*qualifying buyer/i);
+  assert.match(confirmed.messages[0], /What happens next:\n• I’ll message you here the moment a matching buyer appears[\s\S]*review this listing, or "cancel" to stop monitoring\.\n• Reply "help"/, "sellers get the same next-steps block, worded for a listing");
   assert.equal(confirmed.state.pendingSellIntake, undefined);
 });
 

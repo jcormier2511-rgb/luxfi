@@ -82,6 +82,9 @@ test("REQUIRED: the exact live sentence becomes ONE complete WTB draft and goes 
 
   const confirmed = await handleIncomingMessage(identity, "confirm");
   assert.match(confirmed.messages.join("\n"), /active|monitoring/i);
+  // 14. The activation card itself tells the customer what happens next — in the SAME message
+  // (one card on both channels), naming only commands that exist.
+  assert.match(confirmed.messages[0], /Your WTB request is active:[\s\S]*What happens next:\n• I’ll message you here the moment a matching listing appears, with an approve \/ pass choice\.\n• Reply "listings" any time to review this request, or "cancel" to stop monitoring\.\n• Reply "help" for everything else I can do\.$/);
   const active = await getActivePostingsForUser(userId);
   assert.equal(active.length, 1, "confirmation activates exactly one request");
   assert.equal(active[0].reference, "116500LN");
