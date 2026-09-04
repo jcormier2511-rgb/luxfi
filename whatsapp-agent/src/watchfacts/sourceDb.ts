@@ -72,19 +72,44 @@ async function openPostgres(url: string, ca: string | undefined): Promise<Source
   };
 }
 
+/**
+ * Unlike Postgres (where sslOptionsFor's "encrypted unless explicitly disabled" default is the
+ * right call — every droplet in this codebase speaks TLS unless sslmode=disable says
+ * otherwise), MySQL here defaults the other way: OFF unless a CA is supplied or the URL
+ * explicitly opts in (?ssl=true or ?sslmode=require). mysql-production (161.35.0.209) has been
+ * directly confirmed to accept only plain connections; requesting TLS against a server that
+ * doesn't speak it doesn't fail fast; the handshake stalls and the connection just hangs
+ * (indistinguishable from a slow query without digging into what's actually stuck), which cost
+ * real time to diagnose. If a future MySQL source does speak TLS, opt it in explicitly rather
+ * than changing this default.
+ */
+function mysqlWantsTls(url: string, ca: string | undefined): boolean {
+  if (ca) return true;
+  let parsed: URL | null = null;
+  try { parsed = new URL(url); } catch { return false; }
+  return parsed.searchParams.get("ssl") === "true" || parsed.searchParams.get("sslmode") === "require";
+}
+
 async function openMysql(url: string, ca: string | undefined): Promise<SourceDb> {
-  const ssl = sslOptionsFor(url, ca);
+  const wantsTls = mysqlWantsTls(url, ca);
   const pool: MysqlPool = mysql.createPool({
     uri: url,
-    ssl: ssl === false ? undefined : ca ? { ca, rejectUnauthorized: true } : { rejectUnauthorized: false },
+    ssl: wantsTls ? (ca ? { ca, rejectUnauthorized: true } : { rejectUnauthorized: false }) : undefined,
     connectionLimit: 2,
     connectTimeout: 10_000,
   });
   return {
     dialect: "mysql",
-    tls: ssl === false ? "off" : ssl.rejectUnauthorized ? "verified" : "unverified",
+    tls: !wantsTls ? "off" : ca ? "verified" : "unverified",
+    // No per-query timeout in mysql2's pool config (unlike pg's statement_timeout above) — a
+    // stuck connection (bad TLS negotiation, a runaway query) would otherwise hang forever and,
+    // via runInventorySync's syncRunning flag, wedge every future sync attempt behind it with
+    // no way to recover short of a restart. This is exactly what happened once already.
     async query<T>(sql: string, params: unknown[] = []) {
-      const [rows] = await pool.query(sql, params);
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("MySQL query timed out after 30s")), 30_000)
+      );
+      const [rows] = await Promise.race([pool.query(sql, params), timeout]);
       return rows as T[];
     },
     async close() { await pool.end(); },
