@@ -25,6 +25,19 @@ export async function login(page: Page): Promise<void> {
 
   const submit = page.getByRole("button", { name: /log\s?in|sign\s?in/i }).first();
   await Promise.all([page.waitForLoadState("networkidle").catch(() => {}), submit.click()]);
+
+  // Diagnostic: confirm the post-submit page is actually the logged-in app, not still /login
+  // or some interstitial — logs loudly so a failed automated login is visible without needing
+  // to reproduce it by hand. Safe to remove once login is confirmed reliable.
+  const landedUrl = page.url();
+  const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 300) ?? "");
+  console.log(`[watchfacts] login: landed on ${landedUrl}`);
+  console.log(`[watchfacts] login: page text starts with: ${JSON.stringify(bodyText)}`);
+  if (landedUrl.includes("/login")) {
+    console.error("[watchfacts] login: STILL ON LOGIN PAGE after submit — credentials rejected or form fields mismatched");
+  }
+  const cookies = await page.context().cookies();
+  console.log(`[watchfacts] login: ${cookies.length} cookies set, names: ${cookies.map((c) => c.name).join(", ")}`);
 }
 
 /**
