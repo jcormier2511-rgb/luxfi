@@ -1,21 +1,37 @@
 /**
- * Read-only access to WatchFacts' OWN database — the Postgres behind watchfacts.com, on the
- * DigitalOcean droplet wf-postgres-prod (database thecollective_inventory).
+ * Read-only access to WatchFacts' OWN database — thecollective_inventory, MySQL on the
+ * mysql-production droplet (161.35.0.209). (Originally assumed to be the Postgres instance on
+ * wf-postgres-prod; confirmed by direct inspection that thecollective_inventory has only ever
+ * existed as a MySQL database — that assumption was wrong and cost real time to work out, so a
+ * postgres:// URL is still accepted here in case some other WatchFacts-owned database is ever
+ * genuinely Postgres, but it is no longer the only URL scheme understood.)
  *
  * Fi has so far mirrored WatchFacts through its flash-sales API: a browser session, paged
- * requests, a promotional subset of the inventory, and no posted date on anything. With direct
- * database access the mirror can read the whole catalogue (auctions) and the reference
- * identity table (master_catalog) as they are, with their real timestamps.
+ * requests, and — critically — no server-side status filter, so a full sync meant paging
+ * through the ENTIRE historical catalogue (auctions has ~1.5M rows total; only ~38k are
+ * currently `status='open'`) via a login-gated endpoint that a session hiccup can break at any
+ * point. With direct database access the mirror can filter to open listings in one query
+ * against the real table, with real timestamps, no browser and no pagination.
  *
  * Nothing here writes. Every statement is a SELECT, and the introspection helpers mask any
  * column that looks like a contact detail before returning sample rows.
  */
-import { Pool } from "pg";
+import { Pool as PgPool } from "pg";
+import mysql, { Pool as MysqlPool } from "mysql2/promise";
 import { config } from "../config";
 
-export function isPostgresUrl(url: string): boolean {
+export type SourceDialect = "postgres" | "mysql";
+
+export function detectDialect(url: string): SourceDialect | null {
   const scheme = url.trim().split(":")[0]?.toLowerCase();
-  return scheme === "postgres" || scheme === "postgresql";
+  if (scheme === "postgres" || scheme === "postgresql") return "postgres";
+  if (scheme === "mysql") return "mysql";
+  return null;
+}
+
+/** @deprecated kept for the existing call sites/tests that only ever cared about Postgres. */
+export function isPostgresUrl(url: string): boolean {
+  return detectDialect(url) === "postgres";
 }
 
 /**
@@ -36,24 +52,50 @@ export function sslOptionsFor(url: string, ca: string | undefined): { ca?: strin
 }
 
 export interface SourceDb {
+  dialect: SourceDialect;
   tls: "verified" | "unverified" | "off";
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
   close(): Promise<void>;
 }
 
-export async function openSourceDb(url = config.watchfacts.sourceDbUrl, ca = config.watchfacts.sourceDbSslCa): Promise<SourceDb> {
-  if (!url) throw new Error("WATCHFACTS_DB_URL is not set");
-  if (!isPostgresUrl(url)) throw new Error(`WATCHFACTS_DB_URL must be a postgres:// URL (got "${url.split(":")[0]}://")`);
+async function openPostgres(url: string, ca: string | undefined): Promise<SourceDb> {
   const ssl = sslOptionsFor(url, ca);
   // pg would otherwise read sslmode from the string itself; passing ssl explicitly makes the
   // decision above the only one in force.
   const connectionString = url.replace(/([?&])sslmode=[^&]*&?/, "$1").replace(/[?&]$/, "");
-  const pool = new Pool({ connectionString, ssl: ssl === false ? false : ssl, max: 2, statement_timeout: 30_000, connectionTimeoutMillis: 10_000 });
+  const pool = new PgPool({ connectionString, ssl: ssl === false ? false : ssl, max: 2, statement_timeout: 30_000, connectionTimeoutMillis: 10_000 });
   return {
+    dialect: "postgres",
     tls: ssl === false ? "off" : ssl.rejectUnauthorized ? "verified" : "unverified",
     async query<T>(sql: string, params: unknown[] = []) { return (await pool.query(sql, params)).rows as T[]; },
     async close() { await pool.end(); },
   };
+}
+
+async function openMysql(url: string, ca: string | undefined): Promise<SourceDb> {
+  const ssl = sslOptionsFor(url, ca);
+  const pool: MysqlPool = mysql.createPool({
+    uri: url,
+    ssl: ssl === false ? undefined : ca ? { ca, rejectUnauthorized: true } : { rejectUnauthorized: false },
+    connectionLimit: 2,
+    connectTimeout: 10_000,
+  });
+  return {
+    dialect: "mysql",
+    tls: ssl === false ? "off" : ssl.rejectUnauthorized ? "verified" : "unverified",
+    async query<T>(sql: string, params: unknown[] = []) {
+      const [rows] = await pool.query(sql, params);
+      return rows as T[];
+    },
+    async close() { await pool.end(); },
+  };
+}
+
+export async function openSourceDb(url = config.watchfacts.sourceDbUrl, ca = config.watchfacts.sourceDbSslCa): Promise<SourceDb> {
+  if (!url) throw new Error("WATCHFACTS_DB_URL is not set");
+  const dialect = detectDialect(url);
+  if (!dialect) throw new Error(`WATCHFACTS_DB_URL must be a postgres:// or mysql:// URL (got "${url.split(":")[0]}://")`);
+  return dialect === "postgres" ? openPostgres(url, ca) : openMysql(url, ca);
 }
 
 // --------------------------------------------------------------------------------------------
@@ -78,12 +120,18 @@ export function maskValue(column: string, value: unknown): unknown {
   return value;
 }
 
-function quoteIdent(name: string): string {
+function quoteIdent(dialect: SourceDialect, name: string): string {
   if (!/^[A-Za-z0-9_]+$/.test(name)) throw new Error(`invalid identifier: ${name}`);
-  return `"${name}"`;
+  return dialect === "mysql" ? `\`${name}\`` : `"${name}"`;
 }
 
 export async function listTables(db: SourceDb): Promise<string[]> {
+  if (db.dialect === "mysql") {
+    const rows = await db.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name`
+    );
+    return rows.map((r) => r.table_name);
+  }
   const rows = await db.query<{ table_name: string }>(
     `SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name`
   );
@@ -91,15 +139,24 @@ export async function listTables(db: SourceDb): Promise<string[]> {
 }
 
 export async function describeTable(db: SourceDb, table: string, sampleRows = 3): Promise<TableReport> {
-  const columnsRaw = await db.query<{ column_name: string; data_type: string; is_nullable: string }>(
-    `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 ORDER BY ordinal_position`,
-    [table]
-  );
+  const columnsRaw =
+    db.dialect === "mysql"
+      ? await db.query<{ column_name: string; data_type: string; is_nullable: string }>(
+          `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position`,
+          [table]
+        )
+      : await db.query<{ column_name: string; data_type: string; is_nullable: string }>(
+          `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 ORDER BY ordinal_position`,
+          [table]
+        );
   const columns: ColumnInfo[] = columnsRaw.map((c) => ({ name: c.column_name, type: c.data_type, nullable: c.is_nullable.toUpperCase() === "YES" }));
   if (columns.length === 0) return { table, exists: false, rowCount: null, columns: [], sample: [] };
 
-  const q = quoteIdent(table);
-  const countRows = await db.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ${q}`);
+  const q = quoteIdent(db.dialect, table);
+  const countRows =
+    db.dialect === "mysql"
+      ? await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM ${q}`)
+      : await db.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ${q}`);
   const rowCount = Number(countRows[0]?.n ?? 0);
   const sampleRaw = await db.query<Record<string, unknown>>(`SELECT * FROM ${q} LIMIT ${Math.max(0, Math.min(sampleRows, 10))}`);
   const sample = sampleRaw.map((row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, maskValue(k, v)])));

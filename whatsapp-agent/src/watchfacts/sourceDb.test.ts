@@ -4,13 +4,15 @@ import assert from "node:assert/strict";
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 
-const { isPostgresUrl, sslOptionsFor, maskValue, openSourceDb } = require("./sourceDb") as typeof import("./sourceDb");
+const { detectDialect, isPostgresUrl, sslOptionsFor, maskValue, openSourceDb } = require("./sourceDb") as typeof import("./sourceDb");
 
-test("only a postgres:// URL is accepted — WatchFacts is Postgres on the wf-postgres-prod droplet, nothing else", () => {
-  assert.equal(isPostgresUrl("postgres://u:p@157.245.84.14:5432/thecollective_inventory"), true);
-  assert.equal(isPostgresUrl("postgresql://u:p@host/db"), true);
+test("dialect is detected from the URL scheme — thecollective_inventory is MySQL on the mysql-production droplet, but a postgres:// URL is still accepted for any other WatchFacts-owned database that genuinely is Postgres", () => {
+  assert.equal(detectDialect("mysql://u:p@161.35.0.209:3306/thecollective_inventory"), "mysql");
+  assert.equal(detectDialect("postgres://u:p@157.245.84.14:5432/watchfacts"), "postgres");
+  assert.equal(detectDialect("postgresql://u:p@host/db"), "postgres");
+  assert.equal(detectDialect("mongodb://u:p@host/db"), null);
+  assert.equal(isPostgresUrl("postgres://u:p@host/db"), true, "isPostgresUrl is kept for existing call sites");
   assert.equal(isPostgresUrl("mysql://u:p@host/db"), false);
-  assert.equal(isPostgresUrl("mongodb://u:p@host/db"), false);
 });
 
 test("TLS follows the URL's sslmode: a self-hosted droplet may not speak TLS at all", () => {
@@ -30,7 +32,13 @@ test("sample rows never carry contact details in full", () => {
   assert.equal(maskValue("created_at", new Date("2026-09-01T00:00:00Z")), "2026-09-01T00:00:00.000Z");
 });
 
-test("openSourceDb refuses to run with no URL or a non-Postgres URL, before opening a pool", async () => {
+test("openSourceDb refuses to run with no URL or an unrecognized scheme, before opening a pool", async () => {
   await assert.rejects(() => openSourceDb("", undefined), /WATCHFACTS_DB_URL is not set/);
-  await assert.rejects(() => openSourceDb("mysql://u:p@host/db", undefined), /must be a postgres:\/\/ URL/);
+  await assert.rejects(() => openSourceDb("mongodb://u:p@host/db", undefined), /must be a postgres:\/\/ or mysql:\/\/ URL/);
+});
+
+test("openSourceDb accepts a mysql:// URL (pools are lazy — this doesn't connect)", async () => {
+  const db = await openSourceDb("mysql://u:p@127.0.0.1:1/db", undefined);
+  assert.equal(db.dialect, "mysql");
+  await db.close();
 });
