@@ -156,3 +156,18 @@ test("the nudge is skipped entirely once a preference is already set", async () 
   const confirmed = await handleIncomingMessage(phone, "confirm");
   assert.doesNotMatch(confirmed.messages.join("\n"), /how would you like me to notify you/i);
 });
+
+test("required regression: a bare channel word alone (exactly what the nudge itself quotes as a valid reply) sets the preference, not just the full \"notify me on X\" phrasing", async () => {
+  const phone = freshPhone();
+  const reply = await handleIncomingMessage(phone, "telegram");
+  const canonicalUserId = await getOrCreateCanonicalUser("whatsapp", phone);
+  const pref = await notificationPreferences.getNotificationPreference(canonicalUserId);
+  assert.equal(pref.preferredChannel, "telegram");
+  assert.doesNotMatch(reply.messages.join("\n"), /Try "buy:/i, "must not fall through to the generic help text");
+
+  const phone2 = freshPhone();
+  const reply2 = await handleIncomingMessage(phone2, "SMS");
+  const canonicalUserId2 = await getOrCreateCanonicalUser("whatsapp", phone2);
+  assert.equal((await notificationPreferences.getNotificationPreference(canonicalUserId2)).preferredChannel, "sms");
+  assert.match(reply2.messages.join("\n"), /phone number/i, "SMS still needs a phone number linked, same as the full phrasing");
+});

@@ -366,6 +366,12 @@ function parseNotificationChannelCommand(text: string): NotificationChannelInten
     new RegExp(`^notify\\s+me\\s+(?:by|on|via|through)\\s+${channelWord}$`, "i"),
     new RegExp(`^use\\s+${channelWord}\\s+for\\s+(?:my\\s+)?(?:matches|notifications|alerts)$`, "i"),
     new RegExp(`^(?:set\\s+)?(?:my\\s+)?(?:notification|alert)\\s+channel\\s+(?:to|=)\\s+${channelWord}$`, "i"),
+    // maybeNudgeChannelPreference's own one-time question quotes "Telegram"/"SMS" as valid
+    // replies on their own, not only inside the full "notify me on X" phrasing — a bare "SMS"
+    // (or "sms") failed to match anything and fell through to the generic help text, exactly as
+    // reported live. A message that is ENTIRELY just the channel word (nothing else) is
+    // unambiguous enough to accept the same way.
+    new RegExp(`^${channelWord}$`, "i"),
   ];
   for (const re of patterns) {
     const m = t.match(re);
@@ -947,13 +953,22 @@ function parseListingEditCommand(text: string): ListingEditCommand | null {
 
   const indexMatch = t.match(LISTING_INDEX_PATTERN);
   if (!indexMatch) {
-    let m = t.match(/^(?:change|lower|raise|update|set)\s+my\s+(asking\s+)?(?:price|budget)\s+to\s+(\$?[\d,]+)$/i);
+    // Same softening lead-ins the WITH-a-listing-number form already tolerates (LISTING_MANAGEMENT_VERB) —
+    // plus "let"/"let's"/"let me", which that one doesn't cover either. Real reported gap: "let
+    // change location to USA" (no listing number, and no dedicated location shortcut at all)
+    // matched nothing here and fell through to the generic fallback, then a full re-description
+    // of the whole listing had to be sent instead, creating a second listing rather than editing
+    // the first.
+    const leadIn = "(?:please\\s+)?(?:let'?s?\\s+|let\\s+me\\s+)?(?:can\\s+you\\s+|could\\s+you\\s+)?";
+    let m = t.match(new RegExp(`^${leadIn}(?:change|lower|raise|update|set)\\s+my\\s+(asking\\s+)?(?:price|budget)\\s+to\\s+(\\$?[\\d,]+)$`, "i"));
     if (m) {
       const value = parseListingAmount(m[2]);
       if (value !== null) return { action: "price", index: null, value, typeHint: m[1] ? "FS" : undefined };
     }
-    m = t.match(/^change\s+(?:my\s+)?dial\s+to\s+(.+)$/i);
+    m = t.match(new RegExp(`^${leadIn}change\\s+(?:my\\s+)?dial\\s+to\\s+(.+)$`, "i"));
     if (m) return { action: "dial", index: null, value: m[1].trim() };
+    m = t.match(new RegExp(`^${leadIn}(?:change|update|set)\\s+(?:my\\s+)?(?:location|region|country|market|area)\\s+to\\s+(.+)$`, "i"));
+    if (m) return { action: "location", index: null, value: m[1].trim() };
     return null;
   }
 

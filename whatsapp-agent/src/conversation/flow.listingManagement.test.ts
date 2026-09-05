@@ -509,3 +509,32 @@ test("a WTS message during an open draft asks to replace rather than being swall
   const reply = await handleIncomingMessage(phone, "WTS Rolex 126610LN, 14000");
   assert.match(reply.messages.join("\n"), /replace it or add another/i);
 });
+
+test("required regression: \"let change location to USA\" edits the seller's single active listing in place instead of falling through and creating a duplicate", async () => {
+  const phone = freshPhone();
+  const listing = await makeListing(phone, "FS", "116500LN", 24500, { location: "Miami" });
+
+  const reply = await handleIncomingMessage(phone, "let change location to USA");
+  assert.match(reply.messages.join("\n"), /Updated:/i);
+  assert.doesNotMatch(reply.messages.join("\n"), /Try "buy:/i, "must not fall through to the generic help text");
+
+  const updated = await store.getPosting(listing.id);
+  assert.equal(updated?.location, "USA");
+  assert.equal(updated?.status, "active", "editing in place, never closing and re-creating");
+
+  const all = await store.getActivePostingsForUser(listing.canonical_user_id!);
+  assert.equal(all.length, 1, "must not create a second listing");
+});
+
+test("required regression: index-less location/price/dial edit shortcuts also tolerate \"let\"/\"let's\"/\"let me\" lead-ins", async () => {
+  for (const [text, check] of [
+    ["let's change my location to Dallas", async (id: number) => assert.equal((await store.getPosting(id))?.location, "Dallas")],
+    ["let me change my price to 26000", async (id: number) => assert.equal(Number((await store.getPosting(id))?.price), 26000)],
+  ] as const) {
+    const phone = freshPhone();
+    const listing = await makeListing(phone, "FS", "116500LN", 24500, { location: "Miami" });
+    const reply = await handleIncomingMessage(phone, text);
+    assert.match(reply.messages.join("\n"), /Updated:/i, `"${text}" should be recognized as an edit`);
+    await check(listing.id);
+  }
+});
