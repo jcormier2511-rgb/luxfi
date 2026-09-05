@@ -27,6 +27,7 @@ function dedupeById(sales: RawFlashSale[]): RawFlashSale[] {
 
 interface AuctionRow {
   id: string;
+  number: string | number | null; // the site's own public flash-sales/<number> id — see RawFlashSale.publicId
   is_bundle: number;
   title: string | null;
   status: string;
@@ -69,7 +70,7 @@ interface AuctionRow {
 export async function fetchOpenAuctionsFromDb(db: SourceDb, type: string): Promise<RawFlashSale[]> {
   const placeholder = db.dialect === "mysql" ? "?" : "$1";
   const rows = await db.query<AuctionRow>(
-    `SELECT id, is_bundle, title, status, price, deadline, brand, model, reference,
+    `SELECT id, number, is_bundle, title, status, price, deadline, brand, model, reference,
             normalized_reference, condition_id, front_image, box, papers, dial_color,
             from_name, from_number, dealer_rating, region
        FROM auctions
@@ -79,6 +80,7 @@ export async function fetchOpenAuctionsFromDb(db: SourceDb, type: string): Promi
 
   return rows.map((row) => ({
     id: row.id,
+    publicId: row.number != null ? String(row.number) : undefined,
     isBundle: !!row.is_bundle,
     title: row.title ?? "",
     status: row.status,

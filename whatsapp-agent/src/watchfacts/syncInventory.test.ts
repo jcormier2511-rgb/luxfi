@@ -2,6 +2,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import type { Page } from "playwright";
 import type { RawFlashSale } from "./api";
+import type { SourceDb } from "./sourceDb";
 
 // Must be set before config.ts (and therefore inventoryDb.ts) is first required — see the
 // same note in inventoryDb.test.ts.
@@ -15,7 +16,7 @@ const api = require("./api") as typeof import("./api");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("./inventoryDb") as typeof import("./inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { syncOneSide } = require("./syncInventory") as typeof import("./syncInventory");
+const { syncOneSide, fetchOpenAuctionsFromDb } = require("./syncInventory") as typeof import("./syncInventory");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require("../postings/db") as typeof import("../postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -157,4 +158,40 @@ test("required regression: a WatchFacts FS listing's dial/model/location reach t
   const wtbPosting = { ...fsPosting, reference: "116500LN", dial: "black", condition: "", location: "" };
   const result = scoreMatch(fsPosting, wtbPosting);
   assert.ok(result, "a dial-specific WTB must be able to match a WatchFacts FS listing once its dial actually reaches the postings table");
+});
+
+test("required regression: fetchOpenAuctionsFromDb carries auctions.number through as publicId — the real reported bug was every DB-synced listing's link 500ing on the actual site because it was built from auctions.id (an internal UUID) instead", async () => {
+  const fakeDb: SourceDb = {
+    dialect: "mysql",
+    tls: "off",
+    query: async () => [
+      {
+        id: "9fd0c621-53e6-466f-9481-ebd852682c3f",
+        number: 9180837,
+        is_bundle: 0,
+        title: "116500ln black Daytona 40mm w&c full links 2017 $25,000",
+        status: "open",
+        price: "25000.00",
+        deadline: "2026-09-06 21:01:30",
+        brand: null,
+        model: null,
+        reference: null,
+        normalized_reference: null,
+        condition_id: 6,
+        front_image: "6a94d26a494f9_front_image.jpg",
+        box: "No",
+        papers: "Yes",
+        dial_color: null,
+        from_name: "Eli Gamzo - wholesale",
+        from_number: "12134492911",
+        dealer_rating: null,
+        region: "North America",
+      },
+    ],
+    close: async () => undefined,
+  } as unknown as SourceDb;
+
+  const [auction] = await fetchOpenAuctionsFromDb(fakeDb, "sale");
+  assert.equal(auction.id, "9fd0c621-53e6-466f-9481-ebd852682c3f", "the internal id is still used for our own dedup/matching key");
+  assert.equal(auction.publicId, "9180837", "auctions.number must be carried through so the link the site actually serves gets built");
 });

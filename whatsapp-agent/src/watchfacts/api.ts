@@ -41,6 +41,12 @@ export interface RawFlashSale {
   whatsappNumber: string | null;
   companyWhatsapp: string | null;
   region: string | null;
+  // The site's own public flash-sales URL is keyed on `auctions.number` (a short integer),
+  // NOT this object's own `id` (that table's UUID primary key) — confirmed by a 500 on every
+  // link built from `id` and a real listing loading correctly at .../flash-sales/<number>.
+  // Only the direct-DB sync path (syncInventory.ts's fetchOpenAuctionsFromDb) currently
+  // populates this; when absent, mapToInventoryListings falls back to `id` unchanged.
+  publicId?: string;
 }
 
 const CATEGORY_ID_WATCHES = 19;
@@ -150,7 +156,7 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
       source: "WF",
       rating: sale.companyStars != null ? String(sale.companyStars) : "",
       description: title,
-      detailUrl: `https://watchfacts.com/flash-sales/${sale.id}`,
+      detailUrl: `https://watchfacts.com/flash-sales/${sale.publicId ?? sale.id}`,
       imageUrl: detail?.frontImage || undefined,
       nativePriceAmount: native?.amount,
       nativeCurrency: native?.currency,

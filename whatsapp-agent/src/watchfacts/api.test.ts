@@ -72,6 +72,16 @@ test("required regression: mapToInventoryListings carries dial/model/box+papers 
   assert.equal(listing.boxPapers, "Box: Yes, Papers: No");
 });
 
+test("required regression: the public detail link is built from publicId (auctions.number), not id (auctions.number's own UUID) — a link built from id 500s on the real site", () => {
+  const [withPublicId] = mapToInventoryListings(sale({ publicId: "9180837" }), "FS");
+  assert.equal(withPublicId.detailUrl, "https://watchfacts.com/flash-sales/9180837");
+});
+
+test("mapToInventoryListings falls back to id for detailUrl when publicId isn't available (the browser-scraped path doesn't set it)", () => {
+  const [withoutPublicId] = mapToInventoryListings(sale(), "FS"); // default fixture has no publicId
+  assert.equal(withoutPublicId.detailUrl, "https://watchfacts.com/flash-sales/sale-1");
+});
+
 test("mapToInventoryListings leaves dial/model/boxPapers undefined when WatchFacts reports none of them", () => {
   const bare = sale({
     listings: [{ ...sale().listings[0], model: null, box: null, papers: null, dialColor: null }],
