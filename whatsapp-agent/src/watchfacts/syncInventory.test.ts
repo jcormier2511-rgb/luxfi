@@ -194,4 +194,33 @@ test("required regression: fetchOpenAuctionsFromDb carries auctions.number throu
   const [auction] = await fetchOpenAuctionsFromDb(fakeDb, "sale");
   assert.equal(auction.id, "9fd0c621-53e6-466f-9481-ebd852682c3f", "the internal id is still used for our own dedup/matching key");
   assert.equal(auction.publicId, "9180837", "auctions.number must be carried through so the link the site actually serves gets built");
+  assert.equal(
+    auction.listings[0].frontImage,
+    "https://thecollective-prod.nyc3.digitaloceanspaces.com/listings/full/6a94d26a494f9_front_image.jpg",
+    "required regression: auctions.front_image is a bare filename, not a URL — a \"Photo:\" line built from it verbatim 404'd; it must be prefixed with DigitalOcean Spaces' listings/full/ path, confirmed against a real working photo"
+  );
+});
+
+test("fetchOpenAuctionsFromDb leaves frontImage null when auctions.front_image is null, and passes an already-absolute URL through unchanged", async () => {
+  const rowsByCall = [
+    [{ front_image: null }],
+    [{ front_image: "https://cdn.example.com/already-full.jpg" }],
+  ];
+  let call = 0;
+  const baseRow = {
+    id: "x", number: 1, is_bundle: 0, title: "t", status: "open", price: "1", deadline: null,
+    brand: null, model: null, reference: null, normalized_reference: null, condition_id: null,
+    box: null, papers: null, dial_color: null, from_name: null, from_number: null, dealer_rating: null, region: null,
+  };
+  const fakeDb: SourceDb = {
+    dialect: "mysql",
+    tls: "off",
+    query: async () => rowsByCall[call++].map((r) => ({ ...baseRow, ...r })),
+    close: async () => undefined,
+  } as unknown as SourceDb;
+
+  const [nullImage] = await fetchOpenAuctionsFromDb(fakeDb, "sale");
+  assert.equal(nullImage.listings[0].frontImage, null);
+  const [absoluteImage] = await fetchOpenAuctionsFromDb(fakeDb, "sale");
+  assert.equal(absoluteImage.listings[0].frontImage, "https://cdn.example.com/already-full.jpg");
 });

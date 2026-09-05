@@ -67,6 +67,17 @@ interface AuctionRow {
  * doesn't attempt, so contact fields fall through to `from_name`/`from_number`, which this
  * table does have directly, per mapToInventoryListings' own existing fallback chain.
  */
+// auctions.front_image is a bare filename (e.g. "6a98d1aa0055a_front_image.jpg"), not a URL —
+// confirmed against production: a "Photo:" line built straight from that column 404'd, but this
+// exact filename under DigitalOcean Spaces' listings/full/ prefix loaded the real photo. Same
+// class of bug as detailUrl/publicId above (an internal storage value used verbatim instead of
+// being turned into the real, working link).
+function listingImageUrl(frontImage: string | null): string | null {
+  if (!frontImage) return null;
+  if (/^https?:\/\//i.test(frontImage)) return frontImage; // already a full URL — pass through
+  return `https://thecollective-prod.nyc3.digitaloceanspaces.com/listings/full/${frontImage}`;
+}
+
 export async function fetchOpenAuctionsFromDb(db: SourceDb, type: string): Promise<RawFlashSale[]> {
   const placeholder = db.dialect === "mysql" ? "?" : "$1";
   const rows = await db.query<AuctionRow>(
@@ -95,7 +106,7 @@ export async function fetchOpenAuctionsFromDb(db: SourceDb, type: string): Promi
         normalizedReference: row.normalized_reference,
         title: row.title ?? "",
         condition: null,
-        frontImage: row.front_image,
+        frontImage: listingImageUrl(row.front_image),
         box: row.box,
         papers: row.papers,
         dialColor: row.dial_color,
