@@ -45,6 +45,7 @@ import { runCheckoutReconciliation, activateClaimedCheckout } from "./billing/ch
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
 import { getLinkedIdentities, resetNotificationPreference } from "./postings/notificationPreferences";
+import { debugMarketGuideComparables } from "./postings/marketGuide";
 import { getPosting, extendPosting, getOwnPostingForMatch, getActivePostingsForUser, closePosting } from "./postings/postingsStore";
 import { getV4OperationalStatus } from "./postings/status";
 import { initSchema } from "./postings/db";
@@ -917,6 +918,20 @@ export function createServer() {
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
     if (!q) return res.status(400).json({ error: "?q=<search term> is required" });
     res.json({ ok: true, results: await searchListingsForDiagnostics(q) });
+  });
+
+  // Read-only diagnostic: `curl "https://<host>/admin/market-guide/debug?token=...&reference=116500LN"`
+  // — the raw comparable rows behind that reference's Market Guide, with each row's stored
+  // currency and USD conversion shown individually, so a reported "the range looks wrong" can be
+  // root-caused (e.g. a specific listing's price silently defaulting to USD instead of its real
+  // native currency) without needing raw DB access.
+  app.get("/admin/market-guide/debug", async (req, res) => {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const reference = typeof req.query.reference === "string" ? req.query.reference.trim() : "";
+    if (!reference) return res.status(400).json({ error: "?reference=<reference> is required" });
+    res.json({ ok: true, ...(await debugMarketGuideComparables(reference)) });
   });
 
   // On-demand diagnostic: `curl "https://<host>/admin/ai-diagnostic?token=..."` — a minimal,

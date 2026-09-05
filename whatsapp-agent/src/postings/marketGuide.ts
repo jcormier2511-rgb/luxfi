@@ -84,6 +84,7 @@ interface RawComparableRow {
   type: "FS" | "WTB";
   amount: number | null;
   currency: string | null;
+  location: string | null;
   dial: string | null;
   condition: string | null;
   year: string | null;
@@ -91,6 +92,29 @@ interface RawComparableRow {
   contact_name: string | null;
   contact_phone: string | null;
   observed_at: string | Date | null;
+}
+
+/**
+ * WatchFacts has no dedicated currency column on a listing — a listing's native currency is
+ * only ever detected by parsing an explicit symbol/code out of its own title text (see
+ * fx/currency.ts's extractNativePrice). A dealer who prices in their own local currency without
+ * writing "HK$"/"HKD" at all (confirmed live: Hong Kong dealers do this routinely, since it's
+ * locally unambiguous) leaves NO textual signal at all — silently defaulting that to USD turned
+ * a real ~$24-32k Daytona range into a reported $28,928-$207,000 range once a cluster of
+ * HK$-priced, symbol-less listings got read as if they were USD. Applied ONLY when no currency
+ * was detected from the text at all (never overrides an explicit signal), and only for an exact,
+ * narrow region match — never a broad continental bucket like "Asia", which spans several
+ * distinct currencies (JPY/CNY/SGD/HKD) and would be just as wrong a guess as USD.
+ */
+const REGION_CURRENCY_DEFAULT: ReadonlyMap<string, string> = new Map([
+  ["hong kong", "HKD"],
+  ["hk", "HKD"],
+]);
+
+function inferCurrency(rawCurrency: string | null, location: string | null): string {
+  if (rawCurrency) return rawCurrency;
+  const region = (location ?? "").trim().toLowerCase();
+  return REGION_CURRENCY_DEFAULT.get(region) ?? "USD";
 }
 
 interface PricedComparable {
@@ -119,7 +143,8 @@ async function fetchComparableRows(equivalents: string[]): Promise<RawComparable
            'postings:' || p.id::text AS comparable_id,
            p.type,
            CASE WHEN p.price > 0 THEN p.price::double precision END AS amount,
-           COALESCE(NULLIF(p.currency,''),'USD') AS currency,
+           NULLIF(p.currency,'') AS currency,
+           NULLIF(p.location,'') AS location,
            NULLIF(p.dial,'') AS dial,
            NULLIF(p.condition,'') AS condition,
            NULLIF(p.year,'') AS year,
@@ -139,7 +164,8 @@ async function fetchComparableRows(equivalents: string[]): Promise<RawComparable
            COALESCE(i.native_price_amount,
              CASE WHEN i.price ~ '^[[:space:]$]*[0-9][0-9,]*(\\.[0-9]+)?[[:space:]]*$'
                   THEN regexp_replace(i.price, '[^0-9.]', '', 'g')::double precision END) AS amount,
-           COALESCE(NULLIF(i.native_currency,''),'USD') AS currency,
+           NULLIF(i.native_currency,'') AS currency,
+           NULLIF(i.location,'') AS location,
            NULL::text AS dial,
            NULLIF(i.condition,'') AS condition,
            NULL::text AS year,
@@ -311,7 +337,7 @@ export async function getMarketGuide(input: MarketGuideInput): Promise<MarketGui
   const priced: PricedComparable[] = [];
   const currencyExcluded: ComparableExclusion[] = [];
   for (const row of fsRowsWithPrice) {
-    const currency = (row.currency || "USD").toUpperCase();
+    const currency = inferCurrency(row.currency, row.location).toUpperCase();
     const converted = await convertAmount(row.amount as number, currency, "USD");
     if (!converted) {
       currencyExcluded.push({ id: row.comparable_id, reason: `unconvertible currency (${currency})` });
@@ -448,4 +474,57 @@ export function formatMarketGuide(result: MarketGuideResult, sellerAsk?: { amoun
   );
 
   return lines.join("\n");
+}
+
+export interface MarketGuideDebugRow {
+  comparableId: string;
+  type: "FS" | "WTB";
+  rawAmount: number | null;
+  rawCurrency: string | null;
+  location: string | null;
+  inferredCurrency: string;
+  amountUsd: number | null;
+  conversionError: string | null;
+  dial: string | null;
+  observedAt: string | null;
+}
+
+/**
+ * Admin/debugging only (server.ts's /admin/market-guide/debug) — the raw comparable rows behind
+ * a reference's Market Guide, BEFORE dedup/outlier filtering, with each row's stored currency and
+ * its USD conversion made visible. Exists because "the range looks wrong" is otherwise
+ * undiagnosable from outside: comparableIdsUsed/comparableIdsExcluded on the result itself only
+ * ever show what getMarketGuide decided, not what every individual row's raw price/currency
+ * actually was going in — this shows that raw input instead.
+ */
+export async function debugMarketGuideComparables(reference: string): Promise<{ canonicalReference: string; rows: MarketGuideDebugRow[] }> {
+  const canonicalReference = canonicalizeReference(reference);
+  if (!canonicalReference) return { canonicalReference: "", rows: [] };
+  const rawRows = await fetchComparableRows(referenceEquivalents(canonicalReference));
+  const rows: MarketGuideDebugRow[] = [];
+  for (const row of rawRows) {
+    let amountUsd: number | null = null;
+    let conversionError: string | null = null;
+    const inferredCurrency = inferCurrency(row.currency, row.location).toUpperCase();
+    if (row.amount !== null && Number.isFinite(row.amount) && row.amount > 0) {
+      const converted = await convertAmount(row.amount, inferredCurrency, "USD");
+      if (converted) amountUsd = converted.amount;
+      else conversionError = `unconvertible currency (${inferredCurrency})`;
+    } else {
+      conversionError = "no usable price";
+    }
+    rows.push({
+      comparableId: row.comparable_id,
+      type: row.type,
+      rawAmount: row.amount,
+      rawCurrency: row.currency,
+      location: row.location,
+      inferredCurrency,
+      amountUsd,
+      conversionError,
+      dial: row.dial,
+      observedAt: row.observed_at ? new Date(row.observed_at).toISOString() : null,
+    });
+  }
+  return { canonicalReference, rows };
 }

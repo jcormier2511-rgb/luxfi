@@ -100,6 +100,35 @@ test("3. currency conversion works — HKD and EUR asks are normalized to USD be
   assert.equal(guide.medianAskUsd, 24000, "the HKD listing must be converted before the median is computed");
 });
 
+test("required regression: a WatchFacts listing with no detected native currency at all, from a Hong Kong dealer, is treated as HKD rather than silently defaulting to USD", async () => {
+  // Real reported bug: WatchFacts has no dedicated currency column -- a listing's currency is
+  // only ever detected from an explicit symbol/code in its own title text. A Hong Kong dealer's
+  // bare-number title (no "HK$"/"HKD" at all) left nativeCurrency unset, and a HK$192,000
+  // Daytona (really ~$24,000) got silently read as $192,000 USD, blowing out the whole range.
+  await inventory.upsertListings(
+    [
+      {
+        id: "hk-bare-1", type: "FS", category: "watches", item: "Rolex Daytona 116500LN 192000",
+        brand: "Rolex", ref: "116500LN", condition: "", price: "192000", location: "Hong Kong",
+        contactName: "HK Dealer", contactPhone: "1", rating: "", description: "",
+        // nativePriceAmount/nativeCurrency intentionally omitted -- exactly what a bare-number,
+        // no-currency-symbol title produces from mapToInventoryListings/extractNativePrice.
+      },
+    ],
+    new Date().toISOString()
+  );
+  await insertFsPosting({ id: "usd-baseline-1", reference: "116500LN", price: 23800, currency: "USD" });
+  await insertFsPosting({ id: "usd-baseline-2", reference: "116500LN", price: 24000, currency: "USD" });
+  await insertFsPosting({ id: "usd-baseline-3", reference: "116500LN", price: 24200, currency: "USD" });
+
+  const guide = await getMarketGuide({ reference: "116500LN" });
+  assert.equal(guide.rawSampleSize, 4);
+  // All ~$23,800-24,200 once the HK listing is correctly read as HKD -- if it were wrongly read
+  // as USD ($192,000), the median would be nowhere near $24,000 and IQR would also misbehave (a
+  // systematic mislabeling, not a real statistical outlier, is exactly what IQR cannot fix).
+  assert.equal(guide.medianAskUsd, 24000);
+});
+
 test("4. stale listings (beyond the freshness window) are excluded", async () => {
   await insertFsPosting({ id: "fresh-1", reference: "116500LN", price: 24000 });
   await inventory.upsertListings(
