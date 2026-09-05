@@ -133,9 +133,10 @@ test("presented match preserves every available decision field and remains appro
 
   const card = sent.find((message) => message.phone === "buyer-rich-card")?.message;
   assert.ok(card);
-  for (const expected of ["ABC Watches", "Rolex Daytona 116500LN", "Dial/Color: Black", "2023 • Full set • New", "$28,500", "Miami, USA", "Candidate ID: dealer-listing-413", "Source: https://example.com/listings/413", "Photo: https://example.com/photos/413.jpg"]) {
+  for (const expected of ["ABC Watches", "Rolex Daytona 116500LN", "Dial/Color: Black", "2023 • Full set • New", "$28,500", "Miami, USA", "Source: https://example.com/listings/413", "Photo: https://example.com/photos/413.jpg"]) {
     assert.match(card!, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `card should include ${expected}`);
   }
+  assert.doesNotMatch(card!, /Candidate ID/, "the raw internal listing id is noise once the seller's own name is already shown");
   const matchId = Number(card!.match(/approve (\d+)/)?.[1]);
   assert.ok(Number.isInteger(matchId));
   const outcome = await approveMatch(matchId, "buyer-rich-card");
@@ -520,4 +521,18 @@ test("a delivery failure is never retried on another channel when fallback deliv
 
   const delivered = await db.withSchema((pool) => pool.query(`SELECT delivered_at FROM match_recipients WHERE match_id=$1`, [matchId]));
   assert.equal(delivered.rows.length, 0, "the claim is deleted (retryable) after a failed delivery, same as the pre-existing failure path");
+});
+
+test("formatPhoneForDisplay: a North American number (with or without a leading country code) reads as +1 (XXX) XXX-XXXX", () => {
+  assert.equal(notify.formatPhoneForDisplay("12134492911"), "+1 (213) 449-2911", "11 digits, leading country code");
+  assert.equal(notify.formatPhoneForDisplay("2134492911"), "+1 (213) 449-2911", "10 digits, no country code");
+  assert.equal(notify.formatPhoneForDisplay("+1 (213) 449-2911"), "+1 (213) 449-2911", "already-formatted input is normalized the same way");
+});
+
+test("formatPhoneForDisplay: a non-North-American-shaped number is shown as a plain +<digits> rather than guessed at", () => {
+  assert.equal(notify.formatPhoneForDisplay("442071838750"), "+442071838750");
+});
+
+test("formatPhoneForDisplay: a non-numeric identifier (e.g. an API-mirrored listing's internal contact id) is passed through unchanged rather than mangled", () => {
+  assert.equal(notify.formatPhoneForDisplay("dealer-413"), "dealer-413");
 });

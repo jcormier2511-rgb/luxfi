@@ -55,6 +55,23 @@ async function getMatchWithPostings(
   });
 }
 
+/**
+ * Cosmetic only — the raw digits-only phone stored on a posting (e.g. "12134492911") is never
+ * altered for matching/sending, only for how it reads once two sides are actually connected. A
+ * North American number (10 digits, or 11 with a leading country-code "1") gets the familiar
+ * +1 (XXX) XXX-XXXX form; anything else is shown as a plain "+<digits>" E.164-ish string rather
+ * than guessed at without a full phone-number library.
+ */
+export function formatPhoneForDisplay(phone: string): string {
+  const digits = phone.replace(/[^0-9]/g, "");
+  const local = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits.length === 10 ? digits : null;
+  if (local) return `+1 (${local.slice(0, 3)}) ${local.slice(3, 6)}-${local.slice(6)}`;
+  // Below the shortest real phone number length (7) this isn't phone-shaped at all — e.g. an
+  // API-mirrored listing's internal placeholder contact id ("dealer-413") — so it's left alone
+  // rather than mangled into a fake-looking "+413".
+  return digits.length >= 7 ? `+${digits}` : phone;
+}
+
 function watchLabel(posting: PostingRow): string {
   const structured = [posting.brand, posting.model, posting.reference].filter(Boolean).join(" ");
   // Parser-derived brand/model values may be normalized to lowercase. When no reference was
@@ -76,7 +93,6 @@ export interface MatchPresentation {
   price?: string;
   currency?: string;
   location?: string;
-  sourceId?: string;
   sourceUrl?: string;
   photoUrl?: string;
   /** "Groups active in" signal — omitted (not 0) when unknown, see groupActivity.ts. */
@@ -96,7 +112,6 @@ function presentationFor(posting: PostingRow, photoUrl?: string | null, activeGr
     price: posting.price ?? undefined,
     currency: posting.currency || undefined,
     location: posting.location || undefined,
-    sourceId: posting.external_listing_id || undefined,
     sourceUrl: posting.detail_url || undefined,
     photoUrl: photoUrl || undefined,
     activeGroupCount: activeGroupCount && activeGroupCount > 0 ? activeGroupCount : undefined,
@@ -105,7 +120,9 @@ function presentationFor(posting: PostingRow, photoUrl?: string | null, activeGr
 
 export function formatMatchPresentation(matchId: number, roleLabel: string, match: MatchPresentation, heading = "Match"): string {
   const lines = [`${heading} ${matchId}`];
-  if (match.sourceId) lines.push(`Candidate ID: ${match.sourceId}`);
+  // The seller/buyer's own name (already shown right below) is the identifier a person actually
+  // recognizes — a raw internal id ("Candidate ID: 9fd0c621-53e6-...") added nothing but noise
+  // and was the real reported complaint here.
   if (match.identity) lines.push(`${roleLabel}: ${match.identity}`);
   if (match.activeGroupCount) lines.push(`Active in ${match.activeGroupCount} monitored dealer group${match.activeGroupCount === 1 ? "" : "s"}`);
   const watch = [match.brand, match.model, match.reference].filter(Boolean).join(" ");
@@ -146,7 +163,7 @@ export function formatMatchMessage(
     // useful to people scanning a chat, downstream channel consumers and the PR #20 regression
     // suite intentionally recognize automatic notifications by the "Potential Match" heading.
     formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl, activeGroupCount), "Potential Match") +
-    (reasons.length ? `\n\nWhy it matched:\n${reasons.map((r) => `- ${r}`).join("\n")}` : "") +
+    (reasons.length ? `\n\nWhy it matched:\n${reasons.map((r) => `• ${r}`).join("\n")}` : "") +
     `\n\nReply "approve ${matchId}" to connect, or "pass ${matchId}" to skip.`
   );
 }
@@ -502,7 +519,7 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
         const deliveredTo = await sendToCanonicalUser(
           result.notify.canonicalUserId,
           phone,
-          `You're connected! ${result.notify.myContact.name}: ${result.notify.myContact.phone}\n\n${config.fiFlow.escrowSuggestion}`
+          `You're connected! ${result.notify.myContact.name}: ${formatPhoneForDisplay(result.notify.myContact.phone)}\n\n${config.fiFlow.escrowSuggestion}`
         );
         markPendingEscrowOffer(deliveredTo);
       } catch (err) {

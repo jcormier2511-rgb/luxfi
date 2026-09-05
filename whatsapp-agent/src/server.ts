@@ -40,7 +40,7 @@ import {
 } from "./billing/authorizeNet";
 import { recordMembershipPayment } from "./postings/approvalUsage";
 import { handleIncomingSellerPhoto } from "./matching/photoRequests";
-import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation } from "./postings/notify";
+import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, formatPhoneForDisplay } from "./postings/notify";
 import { runCheckoutReconciliation, activateClaimedCheckout } from "./billing/checkoutReconciliation";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
@@ -86,7 +86,7 @@ export function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number)
   switch (outcome.status) {
     case "approved":
       return outcome.counterpart
-        ? `${approved}\n\nYou're connected! ${outcome.counterpart.name}: ${outcome.counterpart.phone}\n\n${config.fiFlow.escrowSuggestion}`
+        ? `${approved}\n\nYou're connected! ${outcome.counterpart.name}: ${formatPhoneForDisplay(outcome.counterpart.phone)}\n\n${config.fiFlow.escrowSuggestion}`
         : `${approved}.`;
     case "pending_confirmation":
       return `${approved}\n\nI'll let you know as soon as the other side confirms too.`;

@@ -75,7 +75,7 @@ export function scoreMatch(fs: PostingRow, wtb: PostingRow): ScoreResult | null 
   if (fsPrice !== null && wtbMaxBid !== null) {
     if ((fs.currency || "USD") !== (wtb.currency || "USD")) return null;
     if (fsPrice > wtbMaxBid) return null; // hard max bid respected
-    reasons.push(`Within budget ($${fsPrice} ≤ $${wtbMaxBid})`);
+    reasons.push(`Within budget ($${fsPrice.toLocaleString("en-US")} ≤ $${wtbMaxBid.toLocaleString("en-US")})`);
   }
 
   return { score, reasons };
@@ -91,7 +91,9 @@ export async function scoreMatchWithCurrency(fs: PostingRow, wtb: PostingRow): P
     convertMoneyToUsd({ amount: Number(wtb.price), currency: wtb.currency as any }),
   ]);
   if (fsUsd === null || budgetUsd === null || fsUsd > budgetUsd) return null;
-  return { ...withoutPrices, reasons: [...withoutPrices.reasons, `Within converted budget (${fs.currency} ${fs.price} ≤ ${wtb.currency} ${wtb.price})`] };
+  const fsAmount = Number(fs.price).toLocaleString("en-US");
+  const wtbAmount = Number(wtb.price).toLocaleString("en-US");
+  return { ...withoutPrices, reasons: [...withoutPrices.reasons, `Within converted budget (${fs.currency} ${fsAmount} ≤ ${wtb.currency} ${wtbAmount})`] };
 }
 
 /**

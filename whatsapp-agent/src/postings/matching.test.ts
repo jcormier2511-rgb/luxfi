@@ -118,6 +118,13 @@ test("scoreMatch: within-budget adds a reason but doesn't change the base score"
   assert.ok(result!.reasons.some((r) => /Within budget/.test(r)));
 });
 
+test("required regression: the budget reason formats amounts with thousands separators, not raw digit strings", () => {
+  const fs = posting({ reference: "116500LN", price: "25000" });
+  const wtb = posting({ reference: "116500LN", price: "25000" });
+  const result = scoreMatch(fs, wtb);
+  assert.ok(result!.reasons.some((r) => r === "Within budget ($25,000 ≤ $25,000)"), `got: ${JSON.stringify(result!.reasons)}`);
+});
+
 test("upsertMatch creates a new match at revision 1", async () => {
   await db._resetDbForTests();
   const fs = await ingestChatPosting({
