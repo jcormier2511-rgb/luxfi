@@ -2,6 +2,7 @@ import { withSchema } from "./db";
 import { freshInventorySql, initInventorySchema } from "../watchfacts/inventoryDb";
 import { canonicalizeReference, referenceEquivalents } from "./normalize";
 import { convertAmount } from "../fx/convert";
+import { inferCurrency } from "../fx/currency";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 
 /** How an average was actually arrived at, so a figure built from part of the set says so. */
@@ -53,7 +54,7 @@ export interface MarketScope { brand?: string; model?: string; reference?: strin
 
 /** `detail_url` is only selected by the exact-reference pulse (which shows links); the
  *  network-wide snapshot leaves it undefined, and neither one needs the other's columns. */
-interface PricedRow { type: string; amount: number | null; currency: string | null; detail_url?: string | null }
+interface PricedRow { type: string; amount: number | null; currency: string | null; location: string | null; detail_url?: string | null }
 
 /**
  * Averages FS asking prices in USD, converting every other currency rather than ignoring it.
@@ -71,7 +72,7 @@ async function averageFsAskInUsd(rows: PricedRow[]): Promise<{ average: number |
   for (const row of rows) {
     if (row.type !== "FS") continue;
     if (row.amount === null || !Number.isFinite(row.amount) || row.amount <= 0) { skipped += 1; continue; }
-    const currency = (row.currency || "USD").toUpperCase();
+    const currency = inferCurrency(row.currency, row.location).toUpperCase();
     const result = await convertAmount(row.amount, currency, "USD");
     if (!result) { skipped += 1; continue; }
     total += result.amount;
@@ -104,7 +105,8 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
       `WITH current_inventory AS (
          SELECT p.type,
                 CASE WHEN p.price > 0 THEN p.price::double precision END AS amount,
-                COALESCE(NULLIF(p.currency,''),'USD') AS currency,
+                NULLIF(p.currency,'') AS currency,
+                NULLIF(p.location,'') AS location,
                 p.detail_url
          FROM postings p
          WHERE p.status='active' AND p.expires_at > now()
@@ -116,7 +118,8 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
                 COALESCE(i.native_price_amount,
                   CASE WHEN i.price ~ '^[[:space:]$]*[0-9][0-9,]*(\\.[0-9]+)?[[:space:]]*$'
                        THEN regexp_replace(i.price, '[^0-9.]', '', 'g')::double precision END) AS amount,
-                COALESCE(NULLIF(i.native_currency,''),'USD') AS currency,
+                NULLIF(i.native_currency,'') AS currency,
+                NULLIF(i.location,'') AS location,
                 i.detail_url
          FROM inventory_listings i
          WHERE i.is_active=TRUE AND ${freshInventorySql("i")}
@@ -129,7 +132,7 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
                AND p.type=i.type AND p.external_listing_id=i.external_id
            )
        )
-       SELECT type, amount, currency, detail_url FROM current_inventory`,
+       SELECT type, amount, currency, location, detail_url FROM current_inventory`,
       [equivalents]
     );
     const rows = result.rows as PricedRow[];
@@ -260,7 +263,8 @@ export async function getNetworkMarketSnapshot(): Promise<NetworkMarketSnapshot>
       `WITH current_inventory AS (
          SELECT type,
                 CASE WHEN price > 0 THEN price::double precision END AS amount,
-                COALESCE(NULLIF(currency,''),'USD') AS currency
+                NULLIF(currency,'') AS currency,
+                NULLIF(location,'') AS location
          FROM postings WHERE status='active' AND expires_at > now()
 
          UNION ALL
@@ -269,7 +273,8 @@ export async function getNetworkMarketSnapshot(): Promise<NetworkMarketSnapshot>
                 COALESCE(i.native_price_amount,
                   CASE WHEN i.price ~ '^[[:space:]$]*[0-9][0-9,]*(\\.[0-9]+)?[[:space:]]*$'
                        THEN regexp_replace(i.price, '[^0-9.]', '', 'g')::double precision END) AS amount,
-                COALESCE(NULLIF(i.native_currency,''),'USD') AS currency
+                NULLIF(i.native_currency,'') AS currency,
+                NULLIF(i.location,'') AS location
          FROM inventory_listings i
          WHERE i.is_active=TRUE AND ${freshInventorySql("i")} AND i.type IN ('FS','WTB')
            AND NOT EXISTS (
@@ -279,7 +284,7 @@ export async function getNetworkMarketSnapshot(): Promise<NetworkMarketSnapshot>
                AND p.type=i.type AND p.external_listing_id=i.external_id
            )
        )
-       SELECT type, amount, currency FROM current_inventory`
+       SELECT type, amount, currency, location FROM current_inventory`
     );
     const rows = result.rows as PricedRow[];
     const { average, basis } = await averageFsAskInUsd(rows);

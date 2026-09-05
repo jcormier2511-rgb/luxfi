@@ -153,6 +153,39 @@ test("non-USD listings are converted into the average, not dropped from it", asy
   }
 });
 
+test('required regression: a WatchFacts listing with no detected native currency, from a Hong Kong dealer, is treated as HKD rather than silently defaulting to USD (the bug behind "Avg FS ask: $125,702" for a reference that trades around $29k)', async () => {
+  rates._setRatesForTests({ base: "USD", rates: { USD: 1, HKD: 8 }, fetchedAt: new Date() });
+  try {
+    await inventory.upsertListings(
+      [
+        {
+          id: "hk-bare-1", type: "FS", category: "watches", item: "Rolex Daytona 116500LN 192000",
+          brand: "Rolex", ref: "116500LN", condition: "", price: "192000", location: "Hong Kong",
+          contactName: "HK Dealer", contactPhone: "1", rating: "", description: "",
+          // nativePriceAmount/nativeCurrency intentionally omitted — a bare-number, no-currency-
+          // symbol title (extractNativePrice finds nothing) is exactly what a real HK dealer's
+          // listing produces.
+        },
+      ],
+      new Date().toISOString()
+    );
+    await db.withSchema((pool) =>
+      pool.query(
+        `INSERT INTO postings (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,status,expires_at)
+         VALUES ('whatsapp','chat','g','usd-baseline',NULL,'FS','usd','116500LN',24000,'USD','active',now()+interval '1 day')`
+      )
+    );
+
+    const pulse = await getMarketPulse("116500LN");
+    assert.equal(pulse.fsCount, 2);
+    // HK$192,000 / 8 = $24,000 — averaged with the $24,000 USD listing, the average must be
+    // ~$24,000, nowhere near what reading it as $192,000 USD would have produced.
+    assert.equal(Math.round(pulse.averageFsAsk!), 24000);
+  } finally {
+    rates._resetRatesForTests();
+  }
+});
+
 test("a listing Fi cannot convert is reported as skipped rather than guessed at", async () => {
   rates._setRatesForTests({ base: "USD", rates: { USD: 1 }, fetchedAt: new Date() });
   try {

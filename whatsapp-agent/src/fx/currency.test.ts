@@ -5,7 +5,7 @@ process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { extractNativePrice, formatCurrency } = require("./currency") as typeof import("./currency");
+const { extractNativePrice, formatCurrency, inferCurrency } = require("./currency") as typeof import("./currency");
 
 test("required regression: extractNativePrice reads a currency-code-prefixed amount (HKD)", () => {
   const result = extractNativePrice("Rolex Daytona 116500LN, HKD850,000, box and papers");
@@ -98,4 +98,20 @@ test("yen currencies format with their distinct symbols", () => {
 
 test("required regression: an unknown/unmapped currency still formats with its ISO code, never a wrong symbol", () => {
   assert.equal(formatCurrency(1000000, "CHF"), "1,000,000 CHF");
+});
+
+test("required regression: inferCurrency defaults a Hong Kong listing with no detected currency to HKD, never USD", () => {
+  assert.equal(inferCurrency(null, "Hong Kong"), "HKD");
+  assert.equal(inferCurrency(null, "HK"), "HKD");
+  assert.equal(inferCurrency(null, "hong kong"), "HKD", "case-insensitive");
+});
+
+test("required regression: inferCurrency never overrides an explicit detected currency", () => {
+  assert.equal(inferCurrency("EUR", "Hong Kong"), "EUR");
+});
+
+test('required regression: inferCurrency defaults to USD for a broad region ("Asia", spanning several distinct currencies) rather than guessing', () => {
+  assert.equal(inferCurrency(null, "Asia"), "USD");
+  assert.equal(inferCurrency(null, "North America"), "USD");
+  assert.equal(inferCurrency(null, null), "USD");
 });

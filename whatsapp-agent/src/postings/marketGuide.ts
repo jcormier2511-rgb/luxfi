@@ -2,6 +2,7 @@ import { withSchema } from "./db";
 import { freshInventorySql, initInventorySchema } from "../watchfacts/inventoryDb";
 import { canonicalizeReference, referenceEquivalents } from "./normalize";
 import { convertAmount } from "../fx/convert";
+import { inferCurrency } from "../fx/currency";
 
 /**
  * Fi's automatic seller-facing Market Guide (spec: "FI AUTOMATIC MARKET GUIDE FOR SELLERS").
@@ -94,28 +95,6 @@ interface RawComparableRow {
   observed_at: string | Date | null;
 }
 
-/**
- * WatchFacts has no dedicated currency column on a listing — a listing's native currency is
- * only ever detected by parsing an explicit symbol/code out of its own title text (see
- * fx/currency.ts's extractNativePrice). A dealer who prices in their own local currency without
- * writing "HK$"/"HKD" at all (confirmed live: Hong Kong dealers do this routinely, since it's
- * locally unambiguous) leaves NO textual signal at all — silently defaulting that to USD turned
- * a real ~$24-32k Daytona range into a reported $28,928-$207,000 range once a cluster of
- * HK$-priced, symbol-less listings got read as if they were USD. Applied ONLY when no currency
- * was detected from the text at all (never overrides an explicit signal), and only for an exact,
- * narrow region match — never a broad continental bucket like "Asia", which spans several
- * distinct currencies (JPY/CNY/SGD/HKD) and would be just as wrong a guess as USD.
- */
-const REGION_CURRENCY_DEFAULT: ReadonlyMap<string, string> = new Map([
-  ["hong kong", "HKD"],
-  ["hk", "HKD"],
-]);
-
-function inferCurrency(rawCurrency: string | null, location: string | null): string {
-  if (rawCurrency) return rawCurrency;
-  const region = (location ?? "").trim().toLowerCase();
-  return REGION_CURRENCY_DEFAULT.get(region) ?? "USD";
-}
 
 interface PricedComparable {
   id: string;

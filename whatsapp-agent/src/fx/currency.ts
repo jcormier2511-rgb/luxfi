@@ -142,3 +142,29 @@ export function formatCurrency(amount: number, currency: string): string {
   const formatted = Math.round(amount).toLocaleString("en-US");
   return `${symbol}${formatted} ${currency}`;
 }
+
+/**
+ * WatchFacts has no dedicated currency column on a listing — a listing's native currency is
+ * only ever detected by parsing an explicit symbol/code out of its own title text (see
+ * extractNativePrice above). A dealer who prices in their own local currency without writing
+ * "HK$"/"HKD" at all (confirmed live: Hong Kong dealers do this routinely, since it's locally
+ * unambiguous) leaves NO textual signal at all — silently defaulting that to USD turned a real
+ * ~$24-32k Daytona range into a reported $28,928-$207,000 range once a cluster of HK$-priced,
+ * symbol-less listings got read as if they were USD (the same bug independently corrupted
+ * marketPulse.ts's plain average once enough of them piled up — a $125,702 "average" for a
+ * reference that actually trades around $29k). Shared by both, so the fix can't drift between
+ * them. Applied ONLY when no currency was detected from the text at all (never overrides an
+ * explicit signal), and only for an exact, narrow region match — never a broad continental
+ * bucket like "Asia", which spans several distinct currencies (JPY/CNY/SGD/HKD) and would be
+ * just as wrong a guess as USD.
+ */
+const REGION_CURRENCY_DEFAULT: ReadonlyMap<string, string> = new Map([
+  ["hong kong", "HKD"],
+  ["hk", "HKD"],
+]);
+
+export function inferCurrency(rawCurrency: string | null, location: string | null): string {
+  if (rawCurrency) return rawCurrency;
+  const region = (location ?? "").trim().toLowerCase();
+  return REGION_CURRENCY_DEFAULT.get(region) ?? "USD";
+}
