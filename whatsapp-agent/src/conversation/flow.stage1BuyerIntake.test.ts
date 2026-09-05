@@ -91,6 +91,19 @@ test("REQUIRED: the exact live sentence becomes ONE complete WTB draft and goes 
   assert.equal(active[0].location, "Miami");
 });
 
+test('required regression: a one-character typo on "confirm" ("confirrm") still activates the request — Fi explicitly asks the customer to reply with that exact word', async () => {
+  const identity = fresh();
+  resetState(identity);
+  await handleIncomingMessage(identity, "hi");
+  await handleIncomingMessage(identity, LIVE_SENTENCE);
+  assert.equal(getState(identity).pendingBuyIntake?.step, "confirm");
+
+  const typoed = await handleIncomingMessage(identity, "confirrm");
+  assert.match(typoed.messages.join("\n"), /active|monitoring/i, "a near-miss typo of the exact requested word must not read as an unrecognized reply");
+  const userId = await getOrCreateCanonicalUser(platformForIdentity(identity), identity);
+  assert.equal((await getActivePostingsForUser(userId)).length, 1);
+});
+
 /** 14. Telegram and WhatsApp share the canonical intake: the same text, the same draft. */
 test("REQUIRED: Telegram and WhatsApp inbound produce equivalent structured intake for the live sentence", async (t) => {
   t.mock.method(whapi, "sendText", async () => {});

@@ -84,6 +84,25 @@ function isFreshBuyRequest(text: string): boolean {
   return parseItemRequests(text).some((item) => item.action === "buy" && carriesProductIdentity(item.query));
 }
 
+// Same shape as FRESH_BUY_LEAD_IN, sell-side keywords.
+const FRESH_SELL_LEAD_IN = /^\s*(?:i(?:\s+am|\s*['’]m)?\s+)?(?:would\s+like\s+to\s+|want(?:ing)?\s+to\s+|need\s+to\s+)?(?:fs|wts|for\s+sale|sell(?:ing)?|i\s+have)\b/i;
+
+/**
+ * Is this message a NEW sell request, rather than an answer to the open draft's question? Same
+ * two-part rule as isFreshBuyRequest. Real reported bug this fixes: the router used to check
+ * only an anchored `/^(?:FS|WTS|for sale|sell(?:ing)?)\b/` — which requires the message to
+ * literally START with one of those words — so "I want to sell a rolex 116500 black dial or
+ * 38000 preowned" (sell intent, but prefixed with "I want to") never matched. Both this and an
+ * abandoned draft stuck at the photo step (see channels/telegram.ts's document fix) meant the
+ * new, complete request silently got treated as a scoped EDIT to the stale draft instead of a
+ * fresh one — corrupting it with a garbled model and carrying over a stale, already-superseded
+ * price.
+ */
+function isFreshSellRequest(text: string): boolean {
+  if (FRESH_SELL_LEAD_IN.test(text)) return true;
+  return parseItemRequests(text).some((item) => item.action === "sell" && carriesProductIdentity(item.query));
+}
+
 // Tried longest/most-specific first, in a loop, so a compound lead-in ("I want to buy a...")
 // gets fully consumed rather than just its first word — the real reported bug this fixes: the
 // old single-pass regex only ever stripped ONE leading keyword, so "want to buy a patek 5712G"
@@ -1520,8 +1539,14 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
     .replace(new RegExp(`\\s+(?:${DIAL_COLORS})\\s*$`, "i"), " ")
     .replace(/\bonly\b/gi, "")
     // Same budget markers extractListingAmount understands — "around $25k" must not leave
-    // "around" behind as the model any more than "under 25k" leaves "under".
-    .replace(/(?:under|max(?:imum)?|budget|asking|price|for|up\s+to|(?:no\s+)?more\s+than|around|about|spend(?:ing)?)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, "")
+    // "around" behind as the model any more than "under 25k" leaves "under". Replaced with a
+    // single space, not "" — the real reported bug: this match's own \s* consumes the
+    // whitespace on BOTH sides of the number, so removing it outright fused whatever word came
+    // right before and right after ("... or 38000 preowned" -> "...orpreowned"), which then
+    // defeated the very next cleanup step's \b word-boundary check for trailing condition words.
+    // The stray double space this can leave behind is what the final \s+ -> " " collapse below
+    // (in `scrubbed`) exists to clean up.
+    .replace(/(?:under|max(?:imum)?|budget|asking|price|for|up\s+to|(?:no\s+)?more\s+than|around|about|spend(?:ing)?)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, " ")
     .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
   // Belt and braces: whatever survives the scrubbing above is still rejected outright if it
@@ -1794,7 +1819,30 @@ function nextBuy(p: PendingBuyIntake): string | null {
   if (!p.location) { p.step="location"; return BUY_LOCATION_QUESTION; }
   p.step="confirm"; return null;
 }
-const confirmed = (text: string) => /^(yes|yep|yeah|confirm|correct|sure|ok(?:ay)?|start|do it)\b/i.test(text.trim());
+function levenshteinDistance(a: string, b: string): number {
+  const dp: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...new Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+/**
+ * Real reported gap: a typo on the exact word Fi just asked for ("Reply CONFIRM to start
+ * monitoring") fell through to "I didn't understand," even though the intent was obvious.
+ * Tolerates a single-character edit on "confirm" specifically — the one word every intake
+ * confirmation step explicitly instructs the user to reply with — not the other, shorter
+ * keywords below, which are too collision-prone for fuzzy matching (a 1-edit typo of "ok" or
+ * "yes" can land on a real, unrelated word).
+ */
+const confirmed = (text: string) => {
+  const trimmed = text.trim();
+  if (/^(yes|yep|yeah|confirm|correct|sure|ok(?:ay)?|start|do it)\b/i.test(trimmed)) return true;
+  const firstWord = trimmed.split(/\s+/)[0]?.toLowerCase() ?? "";
+  return firstWord.length >= 5 && levenshteinDistance(firstWord, "confirm") === 1;
+};
 const cash = (n: number, c = "USD") => `${c === "USD" ? "$" : c+" "}${n.toLocaleString("en-US")}`;
 // The one-line summary names the WATCH, not the sentence it arrived in. Echoing the whole
 // message back ("I have: WTB pre-owned Rolex Daytona 116500LN with a black dial. I'm in Miami
@@ -2314,7 +2362,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
     return handleIncomingMessage(phone, text, contact, imageUrl);
   }
 
-  if ((state.pendingSellIntake || state.pendingBuyIntake) && (/^\s*(?:FS|WTS|for sale|sell(?:ing)?)\b/i.test(text) || isFreshBuyRequest(text))) {
+  if ((state.pendingSellIntake || state.pendingBuyIntake) && (isFreshSellRequest(text) || isFreshBuyRequest(text))) {
     state.pendingReplacementRequest = text;
     messages.push("You already have an incomplete request. Should I replace it or add another?");
     saveState(state);

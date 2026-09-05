@@ -74,6 +74,30 @@ test("required: a specific request skips straight to the price question", async 
   assert.match(result.messages.join("\n"), /What's your asking price\?/);
 });
 
+test('required regression: a price/condition mentioned mid-sentence ("... or 38000 preowned") must not fuse the words around it into a garbled model like "orpreowned"', async () => {
+  const phone = "19992220003"; resetState(phone); await inventoryDb._resetDbForTests();
+  await handleIncomingMessage(phone, "hi");
+  const result = await handleIncomingMessage(phone, "I want to sell a rolex 116500 black dial or 38000 preowned");
+  const text = result.messages.join("\n");
+  assert.doesNotMatch(text, /orpreowned/i, "the price-stripping regex must not fuse the words on either side of a mid-sentence number when removing it");
+  assert.equal(result.state.pendingSellIntake?.condition, "pre-owned", "the condition itself must still be recognized correctly");
+});
+
+test("required regression: a fresh, complete sell message is recognized as NEW rather than silently merged into an abandoned draft stuck at the photo step", async () => {
+  const phone = "19992220004"; resetState(phone); await inventoryDb._resetDbForTests();
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "I want to sell a Rolex 116500");
+  await handleIncomingMessage(phone, "39000");
+  await handleIncomingMessage(phone, "pre-owned");
+  const afterLocation = await handleIncomingMessage(phone, "Miami");
+  assert.equal(afterLocation.state.pendingSellIntake?.step, "photo", "sanity check: the draft is stuck exactly where the real reported bug got stuck");
+
+  const result = await handleIncomingMessage(phone, "I want to sell a rolex 116500 black dial or 38000 preowned");
+  const text = result.messages.join("\n");
+  assert.match(text, /already have an incomplete request/i, "a fresh, complete sell message must be recognized as new, not silently merged into the stale draft as a scoped edit");
+  assert.doesNotMatch(text, /orpreowned/i);
+});
+
 test("required: seller details are collected, summarized, and only saved after confirmation", async (t) => {
   const phone = "19992220003"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests(); mockSends(t);
   await handleIncomingMessage(phone, "hi");
