@@ -291,6 +291,43 @@ test("current WatchFacts command uses active opposite-side inventory, deduplicat
   assert.doesNotMatch(result.messages.at(-1)!, /6\. /);
 });
 
+test("required regression: a stated budget/ask on the current-listings step is a real constraint — a $25,000 budget must not surface $29,500+ listings", async (t) => {
+  const phone = "15550002012"; resetState(phone);
+  const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
+  t.mock.method(inventory, "getActiveListings", async () => [
+    { id: "over", type: "FS" as const, category: "watches", item: "Daytona", brand: "Rolex", ref: "116500LN",
+      condition: "New", price: "29500", location: "North America", contactName: "Dealer", contactPhone: "1",
+      source: "WF", rating: "", description: "Rolex Daytona 116500LN" },
+    { id: "under", type: "FS" as const, category: "watches", item: "Daytona", brand: "Rolex", ref: "116500LN",
+      condition: "Used", price: "24000", location: "North America", contactName: "Dealer", contactPhone: "2",
+      source: "WF", rating: "", description: "Rolex Daytona 116500LN" },
+  ]);
+  await handleIncomingMessage(phone, "wtb rolex daytona 116500LN for 25000");
+  await handleIncomingMessage(phone, "any"); // dial
+  await handleIncomingMessage(phone, "any"); // condition
+  await handleIncomingMessage(phone, "any"); // location
+  const result = await handleIncomingMessage(phone, "yes"); // confirm
+  const last = result.messages.join("\n"); // the current-listings text isn't always the very last message (a one-time channel-preference nudge can follow it)
+  assert.match(last, /24,000|24000/, "the in-budget listing must still be shown");
+  assert.doesNotMatch(last, /29,500|29500/, "the real reported bug: an over-budget listing must never be surfaced against a stated budget");
+});
+
+test("required regression: a blank dial or a city-vs-region location mismatch never excludes a listing on the current-listings step, only ranks it lower", async (t) => {
+  const phone = "15550002013"; resetState(phone);
+  const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
+  t.mock.method(inventory, "getActiveListings", async () => [
+    { id: "no-dial-region", type: "FS" as const, category: "watches", item: "Daytona", brand: "Rolex", ref: "116500LN",
+      condition: "Used", price: "24000", location: "North America", contactName: "Dealer", contactPhone: "1",
+      source: "WF", rating: "", description: "Rolex Daytona 116500LN" },
+  ]);
+  await handleIncomingMessage(phone, "wtb rolex daytona 116500LN black dial in Miami for 25000");
+  await handleIncomingMessage(phone, "any"); // condition
+  const result = await handleIncomingMessage(phone, "yes"); // confirm
+  const last = result.messages.join("\n"); // the current-listings text isn't always the very last message (a one-time channel-preference nudge can follow it)
+  assert.doesNotMatch(last, /don.t see any/i, "a listing with no recorded dial and only a region-level location must still be shown, not treated as a conflict");
+  assert.match(last, /116500LN/);
+});
+
 test("current inventory compares formatted references canonically", async (t) => {
   const phone = "15550002015"; resetState(phone);
   const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");

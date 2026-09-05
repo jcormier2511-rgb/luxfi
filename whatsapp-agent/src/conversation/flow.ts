@@ -22,7 +22,7 @@ import { logSearchRequest } from "../postings/analytics";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
-import { detectCurrency } from "../matching/currency";
+import { detectCurrency, convertMoneyToUsd, CurrencyCode } from "../matching/currency";
 
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
@@ -568,7 +568,20 @@ function formatCurrentInventory(listings: InventoryListing[], requestLabel: stri
 async function handleCurrentInventoryCommand(state: ConversationState, text: string): Promise<string> {
   const explicitReference = extractReference(text);
   let active: import("../postings/postingsStore").PostingRow[] = [];
-  let context: { type: "FS" | "WTB"; brand?: string | null; model?: string | null; reference?: string | null } | undefined;
+  let context:
+    | {
+        type: "FS" | "WTB";
+        brand?: string | null;
+        model?: string | null;
+        reference?: string | null;
+        price?: number | string | null; // PendingSellIntake/PostingRow name their stated figure "price"
+        budget?: number | string | null; // PendingBuyIntake names the same concept "budget"
+        currency?: string | null;
+        location?: string | null;
+        dial?: string | null; // PostingRow
+        dialColor?: string | null; // PendingBuyIntake/PendingSellIntake
+      }
+    | undefined;
 
   if (explicitReference) {
     context = { type: state.pendingSellIntake ? "FS" : "WTB", reference: explicitReference };
@@ -589,7 +602,7 @@ async function handleCurrentInventoryCommand(state: ConversationState, text: str
   const terms = (explicitReference ? [] : [context.brand, context.model]).filter((value): value is string => Boolean(value)).map((value) => value.toLowerCase());
   const all = await getActiveListings(desiredType);
   const seen = new Set<string>();
-  const relevant = all.filter((listing) => {
+  const candidates = all.filter((listing) => {
     if (listing.source !== "WF" || (!listing.ref && !listing.brand && !listing.item)) return false;
     if (listing.contactPhone && listing.contactPhone === state.phone) return false;
     if (requestedReference && !listing.ref) return false;
@@ -599,7 +612,52 @@ async function handleCurrentInventoryCommand(state: ConversationState, text: str
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).slice(0, 5);
+  });
+
+  // A stated price is a real monetary constraint, same as findMatches/findMatchesHybrid — this
+  // step is showing what's ALREADY available for the request the buyer/seller just confirmed,
+  // so ignoring the budget/ask they just gave (a real reported bug: a stated $25,000 budget
+  // still surfaced $29,500-$31,000 listings) is worse than showing fewer results. Currency-aware
+  // so a stated USD figure isn't compared against a raw EUR/GBP one.
+  const statedAmount = context.budget ?? context.price;
+  const statedNumber = statedAmount !== null && statedAmount !== undefined ? Number(statedAmount) : undefined;
+  let priceFiltered = candidates;
+  if (statedNumber !== undefined && Number.isFinite(statedNumber)) {
+    const statedUsd = await convertMoneyToUsd({ amount: statedNumber, currency: (context.currency as CurrencyCode) || "USD" });
+    const withPrice = await Promise.all(
+      candidates.map(async (listing) => {
+        if (!listing.price || /^ask$/i.test(listing.price)) return null; // unverifiable against a stated constraint
+        const listingUsd = await convertMoneyToUsd({
+          amount: Number(listing.price),
+          currency: (listing.nativeCurrency || listing.priceCurrency || "USD") as CurrencyCode,
+        });
+        if (statedUsd === null || listingUsd === null) return null;
+        // Buyer context (WTB) browsing FS: only show asks at or under the stated budget.
+        // Seller context (FS) browsing WTB: only show requests whose budget meets the ask.
+        const withinConstraint = context!.type === "WTB" ? listingUsd <= statedUsd : listingUsd >= statedUsd;
+        return withinConstraint ? listing : null;
+      })
+    );
+    priceFiltered = withPrice.filter((l): l is InventoryListing => l !== null);
+  }
+
+  // Dial/location are informational only, not exclusionary — same reasoning as
+  // matching/engine.ts's softPreferenceScore: WatchFacts data is often sparse (no dial_color) or
+  // only continent-level (region, not city), so treating a mismatch there as disqualifying would
+  // drop otherwise-relevant listings over nothing but missing/coarse data.
+  const statedDial = (context.dialColor ?? context.dial ?? "").trim().toLowerCase();
+  const statedLocation = (context.location ?? "").trim().toLowerCase();
+  const relevant = priceFiltered
+    .map((listing) => {
+      let score = 0;
+      if (statedDial && `${listing.description} ${listing.item}`.toLowerCase().includes(statedDial)) score += 1;
+      const listingLocation = (listing.location ?? "").trim().toLowerCase();
+      if (statedLocation && listingLocation && (listingLocation.includes(statedLocation) || statedLocation.includes(listingLocation))) score += 1;
+      return { listing, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((r) => r.listing)
+    .slice(0, 5);
   const label = [context.brand, context.model, explicitReference || context.reference].filter(Boolean).join(" ") || "this request";
   return formatCurrentInventory(relevant, label);
 }
