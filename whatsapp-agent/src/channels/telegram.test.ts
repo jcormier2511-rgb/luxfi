@@ -101,6 +101,14 @@ test("extractIncomingMessages resolves a photo's file_id to a downloadable URL v
   assert.equal(msg.imageUrl, "https://api.telegram.org/file/bottest-bot-token-123/photos/file_1.jpg");
 });
 
+test("required regression: a document (e.g. a .psd) with no caption is no longer silently dropped — it got zero reply at all during an active step, indistinguishable from the bot being stuck", async () => {
+  const update = privateMessage({ document: { file_id: "doc1", file_name: "Untitled-1.psd", mime_type: "image/vnd.adobe.photoshop" } } as Partial<{ text: string; caption: string; photo: { file_id: string }[] }>);
+  const [msg] = await telegram.extractIncomingMessages(update);
+  assert.ok(msg, "a document must still produce a message so the active flow's own fallback can respond");
+  assert.equal(msg.text, "", "we don't know how to extract text from an arbitrary document type");
+  assert.equal(msg.imageUrl, undefined, "not treated as a photo — most document types genuinely aren't one");
+});
+
 test("extractIncomingMessages returns [] for an update with neither a text/caption nor a photo", async () => {
   const update = { update_id: 3, message: { message_id: 1, chat: { id: 1, type: "private" } } };
   const messages = await telegram.extractIncomingMessages(update);

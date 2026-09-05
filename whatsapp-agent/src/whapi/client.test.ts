@@ -44,6 +44,15 @@ test("a from_me image (the bot's own outgoing message echoed back) is still igno
   assert.equal(messages.length, 0);
 });
 
+test("required regression: a document (or any other non-text/non-image message type) is no longer silently dropped — a .psd sent during an active step got zero reply at all, indistinguishable from the bot being stuck", () => {
+  const [msg] = extractIncomingMessages(
+    webhook([{ id: "m6", from_me: false, type: "document", chat_id: "15551234567", from: "15551234567" }])
+  );
+  assert.ok(msg, "a document must still produce a message so the active flow's own fallback can respond");
+  assert.equal(msg.text, "", "we don't know how to extract text from an arbitrary document type");
+  assert.equal(msg.imageUrl, undefined, "not treated as a photo — most document types genuinely aren't one");
+});
+
 test("plain text messages are unaffected by the image-filter change", () => {
   const [msg] = extractIncomingMessages(
     webhook([{ id: "m5", from_me: false, type: "text", chat_id: "15551234567", from: "15551234567", text: { body: "buy: Rolex Daytona" } }])

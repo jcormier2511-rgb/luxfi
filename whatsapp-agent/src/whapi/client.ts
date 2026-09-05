@@ -141,13 +141,24 @@ export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[
     // often sends bare, uncaptioned images. An uncaptioned image just carries empty `text`,
     // which is a safe no-op everywhere else that reads it (e.g. group-monitor's
     // classifyGroupPost("") already returns null and ingests nothing).
-    .filter((m) => !m.from_me && ((m.type === "text" && m.text?.body) || (m.type === "image" && m.image?.link)))
+    //
+    // Real reported bug: any OTHER message type (document, video, voice, sticker, ...) was
+    // silently dropped here entirely — e.g. a document sent during an active step (sell-intake's
+    // "attach a photo?") got zero reply at all, indistinguishable from the bot being stuck. It
+    // carries no imageUrl (most document types genuinely aren't a usable photo), but same as an
+    // uncaptioned image, it must still reach the conversation flow as a real, if content-less,
+    // message so the active flow's own "I didn't understand that" fallback can respond.
+    .filter(
+      (m) =>
+        !m.from_me &&
+        (m.type === "text" ? Boolean(m.text?.body) : m.type === "image" ? Boolean(m.image?.link) : true)
+    )
     .map((m) => {
       const isGroup = (m.chat_id ?? "").includes("@g.us");
       return {
         id: m.id,
         phone: digitsOnly(isGroup ? m.from : m.chat_id || m.from),
-        text: m.type === "image" ? m.image?.caption ?? "" : m.text!.body,
+        text: m.type === "image" ? m.image?.caption ?? "" : m.type === "text" ? m.text!.body : "",
         isGroup,
         groupId: isGroup ? digitsOnly(m.chat_id) : undefined,
         senderName: m.from_name,

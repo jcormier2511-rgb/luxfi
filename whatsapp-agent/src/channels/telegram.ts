@@ -52,6 +52,7 @@ interface TelegramUpdate {
     text?: string;
     caption?: string;
     photo?: { file_id: string; file_size?: number }[];
+    document?: { file_id: string; file_name?: string; mime_type?: string };
   };
 }
 
@@ -75,7 +76,15 @@ export async function extractIncomingMessages(update: TelegramUpdate): Promise<N
   const message = update.message;
   if (!message || message.chat.type !== "private") return [];
   const text = message.text ?? message.caption ?? "";
-  if (!text && (!message.photo || message.photo.length === 0)) return [];
+  const hasPhoto = Boolean(message.photo && message.photo.length > 0);
+  // Real reported bug: a document (a .psd, a PDF, any file Telegram didn't compress into a
+  // `photo`) sent with no caption during an active step (e.g. sell-intake's "attach a photo?")
+  // was silently dropped here entirely — the recipient saw no reply at all, indistinguishable
+  // from the bot being stuck. It carries no imageUrl (most document types genuinely aren't a
+  // usable photo), but it must still reach the conversation flow as a real, if content-less,
+  // message — same as an already-supported uncaptioned photo, which passes through with empty
+  // text below and lets the active flow's own "I didn't understand that" fallback respond.
+  if (!text && !hasPhoto && !message.document) return [];
 
   let imageUrl: string | undefined;
   if (message.photo && message.photo.length > 0) {
