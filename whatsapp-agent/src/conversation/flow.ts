@@ -1948,7 +1948,14 @@ async function persistSellIntake(state: ConversationState, pending: PendingSellI
  *  found a live buyer, rather than a blanket "not wired up yet" caveat. */
 async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingSellIntake!; const suppliedPhoto = Boolean(imageUrl); if(imageUrl)p.imageUrl=imageUrl;
-  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound)); state.pendingSellIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
+  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
+    // Same principle as the buy side just below: show what WatchFacts already has for this
+    // exact request rather than making the seller ask a second time. Real reported gap — only
+    // the buy side ever did this; a seller got just a bare match COUNT (formatActiveAcknowledgment
+    // above), never the actual current WTB listings/links a buyer gets shown. Runs before the
+    // draft is cleared, so the search is scoped to the request just confirmed.
+    messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
+    state.pendingSellIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;

@@ -141,6 +141,27 @@ test("required: confirmation creates a direct FS posting and immediately matches
   assert.ok(sent.some((m)=>m.phone==="19991110000" && /Potential Match/.test(m.message)));
 });
 
+test("required regression: FS confirmation also shows current matching WTB listings on WatchFacts, same as buy confirmation already does for FS listings", async (t) => {
+  const phone = "19992220008"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests(); mockSends(t);
+  t.mock.method(inventoryDb, "getActiveListings", async (type?: "FS" | "WTB") =>
+    type === "WTB"
+      ? [{
+          id: "wtb-wf-1", type: "WTB" as const, category: "watches", item: "Daytona", brand: "Rolex", ref: "116500LN",
+          condition: "Any", price: "30000", location: "USA", contactName: "Buyer Co", contactPhone: "1",
+          source: "WF", rating: "", description: "Rolex Daytona 116500LN wanted",
+        }]
+      : []
+  );
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "FS Rolex Daytona 116500LN pre-owned in USA for $25,000");
+  await handleIncomingMessage(phone, "any"); // dial
+  await handleIncomingMessage(phone, "no photo");
+  const result = await handleIncomingMessage(phone, "confirm");
+  const text = result.messages.join("\n");
+  assert.match(text, /current WatchFacts listing/i, "a seller must also see what's already on WatchFacts for their exact item, same as a buyer does");
+  assert.match(text, /Rolex.*116500LN|Daytona/i);
+});
+
 test('"cancel" mid-intake clears it without unsubscribing', async () => {
   const phone="19992220005"; resetState(phone); await inventoryDb._resetDbForTests(); await handleIncomingMessage(phone,"hi");
   const start=await handleIncomingMessage(phone,"I want to sell a watch"); assert.ok(start.state.pendingSellIntake);
