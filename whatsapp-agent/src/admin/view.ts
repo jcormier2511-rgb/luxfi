@@ -27,41 +27,120 @@ function formatUptime(totalSeconds: number): string {
 }
 
 const PAGE_STYLES = `
-:root { color-scheme: light dark; }
-* { box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f5f6f8; color: #1a1a1a; }
-@media (prefers-color-scheme: dark) {
-  body { background: #14161a; color: #e6e6e6; }
-  .card, form.login { background: #1e2126 !important; border-color: #2c2f36 !important; }
-  input, button { background: #20242b !important; color: #e6e6e6 !important; border-color: #3a3f47 !important; }
+:root {
+  color-scheme: light dark;
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f8f9fb;
+  --border: #e2e4e8;
+  --text: #16181d;
+  --text-muted: #6b7280;
+  --text-faint: #9aa1ac;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-bg: #eef2ff;
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --danger-bg: #fee2e2;
+  --danger-text: #991b1b;
+  --ok-bg: #dcfce7;
+  --ok-text: #166534;
+  --unknown-bg: #e5e7eb;
+  --unknown-text: #374151;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(16,24,40,.04), 0 2px 8px rgba(16,24,40,.05);
 }
-header { padding: 18px 28px; border-bottom: 1px solid #d8dade; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-header h1 { font-size: 17px; margin: 0; }
-header a { color: #4b5563; text-decoration: none; font-size: 13px; }
-header nav { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-main { max-width: 1000px; margin: 0 auto; padding: 22px 28px 50px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
-.card { background: #fff; border: 1px solid #e2e4e8; border-radius: 10px; padding: 16px 18px; }
-.card h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
-.card dl { margin: 8px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 13px; }
-.card dt { color: #6b7280; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101115;
+    --surface: #1a1c22;
+    --surface-2: #212329;
+    --border: #2c2f37;
+    --text: #e8e9ec;
+    --text-muted: #9aa1ac;
+    --text-faint: #6b7280;
+    --accent: #818cf8;
+    --accent-hover: #a5b4fc;
+    --accent-bg: #23253a;
+    --danger: #f87171;
+    --danger-hover: #fca5a5;
+    --danger-bg: #3a1e1e;
+    --danger-text: #fca5a5;
+    --ok-bg: #133523;
+    --ok-text: #4ade80;
+    --unknown-bg: #2a2d34;
+    --unknown-text: #c7cad1;
+    --shadow: 0 1px 2px rgba(0,0,0,.4);
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: var(--bg); color: var(--text); line-height: 1.45; }
+h1, h2, h3 { font-weight: 600; }
+a { color: var(--accent); }
+header { position: sticky; top: 0; z-index: 10; padding: 14px 28px; border-bottom: 1px solid var(--border); background: var(--surface); display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; letter-spacing: -.01em; }
+header nav { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+header nav a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 999px; transition: background-color .12s, color .12s; }
+header nav a:hover { background: var(--surface-2); color: var(--text); }
+header nav a[href="/admin/logout"] { color: var(--text-faint); }
+main { max-width: 1080px; margin: 0 auto; padding: 24px 28px 56px; display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+main.stack { display: block; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; box-shadow: var(--shadow); overflow-x: auto; }
+.card h2 { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); }
+.card h2 + p.muted { margin-top: 2px; }
+.card > h2:not(:first-child) { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.card dl { margin: 12px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 7px 14px; font-size: 13px; }
+.card dt { color: var(--text-muted); }
 .card dd { margin: 0; word-break: break-word; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; margin-right: 6px; }
-.badge.ok { background: #dcfce7; color: #166534; }
-.badge.bad { background: #fee2e2; color: #991b1b; }
-.badge.unknown { background: #e5e7eb; color: #374151; }
-ul.plain, ol.plain { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+.badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; margin: 6px 6px 0 0; }
+.badge.ok { background: var(--ok-bg); color: var(--ok-text); }
+.badge.bad { background: var(--danger-bg); color: var(--danger-text); }
+.badge.unknown { background: var(--unknown-bg); color: var(--unknown-text); }
+ul.plain, ol.plain { margin: 10px 0 0; padding-left: 20px; font-size: 13px; }
+ul.plain li, ol.plain li { margin-bottom: 3px; }
 .full { grid-column: 1 / -1; }
-.card table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
-.card th, .card td { text-align: left; padding: 5px 6px; border-bottom: 1px solid #e5e7eb; }
-form.login { max-width: 340px; margin: 90px auto; padding: 26px; border: 1px solid #e2e4e8; border-radius: 10px; background: #fff; }
-form.login h1 { font-size: 15px; margin: 0 0 16px; font-weight: 600; }
-form.login input { width: 100%; padding: 9px 10px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
-form.login button, .card button { padding: 8px 14px; border-radius: 6px; border: 1px solid #d1d5db; background: #111827; color: #fff; font-size: 13px; cursor: pointer; }
-form.login button { width: 100%; }
-.error { color: #991b1b; font-size: 13px; margin-bottom: 12px; }
-.muted { color: #6b7280; font-size: 12px; margin-top: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+.card table { font-size: 12px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+thead th { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; background: var(--surface-2); }
+tbody tr:hover { background: var(--surface-2); }
+.field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 160px; }
+.field label { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.field.checkbox { flex-direction: row; align-items: center; gap: 6px; min-width: auto; }
+.field.checkbox label { font-size: 13px; font-weight: 500; color: var(--text); }
+label.inline { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); white-space: nowrap; }
+input, select, textarea { padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font-size: 13px; font-family: inherit; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); }
+button { padding: 9px 16px; border-radius: var(--radius-sm); border: 1px solid var(--accent); background: var(--accent); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: background-color .12s, border-color .12s, opacity .12s; }
+button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button:active { opacity: .85; }
+button.btn-outline { background: transparent; color: var(--text); border-color: var(--border); }
+button.btn-outline:hover { background: var(--surface-2); border-color: var(--text-faint); }
+button.btn-danger { background: var(--danger); border-color: var(--danger); }
+button.btn-danger:hover { background: var(--danger-hover); border-color: var(--danger-hover); }
+button.btn-danger.btn-outline { background: transparent; color: var(--danger); border-color: var(--danger-bg); }
+button.btn-danger.btn-outline:hover { background: var(--danger-bg); }
+.toolbar { display: flex; gap: 10px; margin-bottom: 14px; align-items: flex-end; flex-wrap: wrap; }
+.toolbar input, .toolbar select { flex: 1; min-width: 140px; }
+form.login { max-width: 360px; margin: 100px auto; padding: 30px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+form.login h1 { font-size: 16px; margin: 0 0 18px; font-weight: 600; }
+form.login .field { margin-bottom: 12px; }
+form.login input { width: 100%; padding: 10px 12px; font-size: 14px; }
+form.login button { width: 100%; padding: 10px 14px; }
+.error { color: var(--danger-text); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: 13px; padding: 0; margin: 0; }
+.error:not(:empty) { padding: 9px 12px; margin-bottom: 12px; }
+pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+pre:not(.error):not(:empty) { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 12px; margin-top: 10px; }
+.muted { color: var(--text-muted); font-size: 12px; margin-top: 8px; }
 input[type=file] { font-size: 13px; margin-top: 8px; }
-footer { text-align: center; color: #9ca3af; font-size: 11px; padding: 10px 0 30px; }
+footer { text-align: center; color: var(--text-faint); font-size: 11px; padding: 14px 0 32px; }
+@media (max-width: 640px) {
+  header { padding: 12px 16px; }
+  main { padding: 16px 16px 40px; }
+  .card { padding: 16px; }
+}
 `;
 
 /** Never repopulates credentials and always uses generic errors to avoid account discovery. */
@@ -78,8 +157,14 @@ export function renderLoginPage(error?: string): string {
   <form class="login" method="post" action="/admin/login" autocomplete="off">
     <h1>LuxFi WhatsApp Agent — Admin</h1>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
-    <input type="text" name="username" placeholder="Username" autocomplete="username" autofocus required>
-    <input type="password" name="password" placeholder="Password" autocomplete="current-password" required>
+    <div class="field">
+      <label for="login-username">Username</label>
+      <input id="login-username" type="text" name="username" placeholder="Username" autocomplete="username" autofocus required>
+    </div>
+    <div class="field">
+      <label for="login-password">Password</label>
+      <input id="login-password" type="password" name="password" placeholder="Password" autocomplete="current-password" required>
+    </div>
     <button type="submit">Sign in</button>
   </form>
 </body>
@@ -90,35 +175,35 @@ const GROUP_FORM = `<section class="card" id="group-form-card">
   <h2 id="group-form-title">Add group</h2>
   <p class="muted">The chat ID is platform-specific: a WhatsApp group's digits, or a Telegram group/supergroup's numeric chat id (negative, e.g. -1001234567890) — grab it from the server logs after Fi is added and someone posts, or GET /admin/group-listings. Wildcards are never accepted.</p>
   <div class="toolbar">
-    <input id="gf-name" placeholder="Group name">
-    <select id="gf-platform"><option value="whatsapp">WhatsApp</option><option value="telegram">Telegram</option></select>
-    <input id="gf-chatid" placeholder="Chat ID">
+    <div class="field"><label for="gf-name">Group name</label><input id="gf-name" placeholder="e.g. Miami Dealers"></div>
+    <div class="field"><label for="gf-platform">Platform</label><select id="gf-platform"><option value="whatsapp">WhatsApp</option><option value="telegram">Telegram</option></select></div>
+    <div class="field"><label for="gf-chatid">Chat ID</label><input id="gf-chatid" placeholder="Group chat id"></div>
   </div>
   <div class="toolbar">
-    <select id="gf-status"><option value="active">active</option><option value="inactive">inactive</option></select>
-    <label><input type="checkbox" id="gf-monitoring" checked> Monitoring enabled</label>
-    <label><input type="checkbox" id="gf-fs" checked> Monitor FS</label>
-    <label><input type="checkbox" id="gf-wtb" checked> Monitor WTB</label>
+    <div class="field"><label for="gf-status">Status</label><select id="gf-status"><option value="active">active</option><option value="inactive">inactive</option></select></div>
+    <label class="inline"><input type="checkbox" id="gf-monitoring" checked> Monitoring enabled</label>
+    <label class="inline"><input type="checkbox" id="gf-fs" checked> Monitor FS</label>
+    <label class="inline"><input type="checkbox" id="gf-wtb" checked> Monitor WTB</label>
   </div>
   <div class="toolbar">
-    <input id="gf-country" placeholder="Country (optional)">
-    <input id="gf-notes" placeholder="Notes (optional)">
+    <div class="field"><label for="gf-country">Country (optional)</label><input id="gf-country" placeholder="e.g. USA"></div>
+    <div class="field"><label for="gf-notes">Notes (optional)</label><input id="gf-notes" placeholder="Anything worth remembering"></div>
   </div>
   <div class="toolbar">
     <button onclick="groupSave()" id="gf-save">Save group</button>
-    <button onclick="groupReset()">Clear / new</button>
+    <button onclick="groupReset()" class="btn-outline">Clear / new</button>
   </div>
   <pre id="gf-error" class="error"></pre>
 </section>`;
 
 export function renderManagementPage(kind:"users"|"groups"|"administrators"|"coverage"):string {
-  const title=kind==="users"?"Approved Users":kind==="groups"?"GROUP MANAGEMENT":kind==="coverage"?"WTB Coverage / Dealer Specialists":"Administrators";
+  const title=kind==="users"?"Approved Users":kind==="groups"?"Group Management":kind==="coverage"?"WTB Coverage / Dealer Specialists":"Administrators";
   const empty=kind==="groups"?"No approved groups yet. Add one below.":`No ${title.toLowerCase()} found.`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}.toolbar{display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to</p><h2>Push Groups</h2><p class="muted">Groups Fi may actively post into (configured independently under listing settings)</p>':''}<div class="toolbar"><input id="q" placeholder="Search"><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to</p><h2>Push Groups</h2><p class="muted">Groups Fi may actively post into (configured independently under listing settings)</p>':''}<div class="toolbar"><div class="field"><label for="q">Search</label><input id="q" placeholder="Search"></div><div class="field"><label for="status">Status</label><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select></div><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
   const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='', lastRows=[];
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   async function ensureCsrf(){if(csrf)return csrf;const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';return csrf}
-  async function load(){await ensureCsrf();const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];lastRows=rows;document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));const cols=kind==='groups'?[...keys,'actions']:keys;table.querySelector('thead').innerHTML='<tr>'+cols.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+(kind==='groups'?'<td><button onclick="groupEdit('+r.id+')">Edit</button> <button onclick="groupDelete('+r.id+')">Delete</button></td>':'')+'</tr>').join('')}
+  async function load(){await ensureCsrf();const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];lastRows=rows;document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));const cols=kind==='groups'?[...keys,'actions']:keys;table.querySelector('thead').innerHTML='<tr>'+cols.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+(kind==='groups'?'<td><button class="btn-outline" onclick="groupEdit('+r.id+')">Edit</button> <button class="btn-danger btn-outline" onclick="groupDelete('+r.id+')">Delete</button></td>':'')+'</tr>').join('')}
   load().catch(e=>document.querySelector('#error').textContent=e.message);
   ${kind==='groups'?`
   let gfEditId=null;
@@ -150,12 +235,12 @@ export function renderManagementPage(kind:"users"|"groups"|"administrators"|"cov
  * once signed in, with CSRF on the destructive action.
  */
 export function renderToolsPage(): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Tools</title><style>${PAGE_STYLES} main{display:block;max-width:1000px}.toolbar{display:flex;gap:8px;margin-bottom:14px}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px;flex:1}table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}.card{margin-bottom:18px}</style></head><body><header><h1>Tools</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Tools</title><style>${PAGE_STYLES} main{display:block;max-width:1000px}.card{margin-bottom:18px}</style></head><body><header><h1>Tools</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>
 
 <section class="card">
   <h2>Market Guide debug</h2>
   <p class="muted">Every raw comparable row behind a reference's Market Guide — raw price, raw currency, inferred currency, USD conversion.</p>
-  <div class="toolbar"><input id="mg-ref" placeholder="Reference, e.g. 116500LN"><button onclick="mgLookup()">Look up</button></div>
+  <div class="toolbar"><div class="field"><label for="mg-ref">Reference</label><input id="mg-ref" placeholder="e.g. 116500LN"></div><button onclick="mgLookup()">Look up</button></div>
   <div id="mg-empty" class="muted"></div>
   <table id="mg-table" hidden><thead></thead><tbody></tbody></table>
   <pre id="mg-error" class="error"></pre>
@@ -164,7 +249,7 @@ export function renderToolsPage(): string {
 <section class="card">
   <h2>Inventory search</h2>
   <p class="muted">Searches WatchFacts inventory (ref/item/description, active AND inactive rows).</p>
-  <div class="toolbar"><input id="inv-q" placeholder="Search term, e.g. 116500"><button onclick="invLookup()">Search</button></div>
+  <div class="toolbar"><div class="field"><label for="inv-q">Search term</label><input id="inv-q" placeholder="e.g. 116500"></div><button onclick="invLookup()">Search</button></div>
   <div id="inv-empty" class="muted"></div>
   <table id="inv-table" hidden><thead></thead><tbody></tbody></table>
   <pre id="inv-error" class="error"></pre>
@@ -173,7 +258,7 @@ export function renderToolsPage(): string {
 <section class="card">
   <h2>Full account reset</h2>
   <p class="muted">Closes every active listing and clears conversation state + notification preference for every identity linked to the given one (e.g. both halves of a linked WhatsApp/Telegram pair). Cannot be undone. Requires administrator or owner role.</p>
-  <div class="toolbar"><input id="reset-id" placeholder="Identity, e.g. telegram:5703391972 or 13053897000"><button onclick="resetAccount()">Reset account</button></div>
+  <div class="toolbar"><div class="field"><label for="reset-id">Identity</label><input id="reset-id" placeholder="e.g. telegram:5703391972 or 13053897000"></div><button class="btn-danger" onclick="resetAccount()">Reset account</button></div>
   <pre id="reset-result"></pre>
   <pre id="reset-error" class="error"></pre>
 </section>
@@ -181,20 +266,20 @@ export function renderToolsPage(): string {
 <section class="card">
   <h2>Membership / entitlement</h2>
   <p class="muted">The only way to unlock further approvals or assign a paid plan — no live payment processor exists, so this is never self-service and never a real charge. Granting an override or plan requires administrator or owner role.</p>
-  <div class="toolbar"><input id="ent-phone" placeholder="Phone (digits only, no +), e.g. 13053897000"><button onclick="entLookup()">Look up</button></div>
+  <div class="toolbar"><div class="field"><label for="ent-phone">Phone</label><input id="ent-phone" placeholder="Digits only, no +, e.g. 13053897000"></div><button onclick="entLookup()">Look up</button></div>
   <pre id="ent-result"></pre>
   <pre id="ent-error" class="error"></pre>
   <div class="toolbar">
     <button onclick="entOverride(true)">Grant unlimited override</button>
-    <button onclick="entOverride(false)">Revoke override</button>
+    <button class="btn-danger btn-outline" onclick="entOverride(false)">Revoke override</button>
   </div>
   <div class="toolbar">
-    <select id="ent-plan">
+    <div class="field"><label for="ent-plan">Plan</label><select id="ent-plan">
       <option value="tier1">Tier 1 — $50/month, 5/week</option>
       <option value="tier2">Tier 2 — $150/month, 20/week</option>
       <option value="tier3">Tier 3 — $300/month, unlimited</option>
       <option value="none">No plan (locked)</option>
-    </select>
+    </select></div>
     <button onclick="entSetPlan()">Set plan</button>
   </div>
 </section>
