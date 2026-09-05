@@ -5,7 +5,7 @@ import { fetchAllFlashSales, isActive, mapToInventoryListings, resolveListingDet
 import { openSourceDb, SourceDb } from "./sourceDb";
 import { upsertListings, markMissingInactive, recordSyncAttempt, recordTypeSyncSuccess, recordTypeSyncError, saveAiEnrichment } from "./inventoryDb";
 import { enrichAndSplitListings } from "./aiEnrich";
-import { ingestApiFsSync } from "../postings/ingest";
+import { ingestApiFsSync, ingestApiWtbSync } from "../postings/ingest";
 import { ApiFsListing } from "../postings/postingsStore";
 import { ListingType } from "../types";
 
@@ -153,19 +153,23 @@ async function processRawSales(raw: RawFlashSale[], type: ListingType, now: Date
       }
     }
 
-    // Fi Build Spec v4: mirrors FS into the `postings` table and reverse-matches any new or
-    // materially-changed listing against active chat-originated WTB monitors (see
-    // ingestApiFsSync / src/postings/matching.ts) — the same matching engine chat ingestion
+    // Fi Build Spec v4: mirrors this side into the `postings` table and reverse-matches any new
+    // or materially-changed listing against active opposite-side postings (see ingestApiFsSync/
+    // ingestApiWtbSync / src/postings/matching.ts) — the same matching engine chat ingestion
     // uses, not a second one. Gated behind ENABLE_V4_POSTINGS (off by default) until its
     // migrations/tests/notification behavior are verified; never blocks or fails the
     // existing, already-tested inventory_listings write above if this additive step errors.
-    if (type === "FS" && config.postingsV4.enabled) {
+    //
+    // WTB was missing here entirely until this fix — a real WatchFacts dealer's buy request only
+    // ever showed up in read-only displays (Market Pulse/Guide, "show current listings"), and
+    // could never actually be matched/notified against a chat-originated seller's FS posting.
+    if (config.postingsV4.enabled) {
       try {
         // Recomputed per-sale (rather than reusing the flattened `listings` above) so each
         // sub-listing can be zipped back to its own frontImage via resolveListingDetails'
         // guaranteed matching order/length.
-        const apiFsListings: ApiFsListing[] = dedupedRaw.flatMap((s) => {
-          const subListings = mapToInventoryListings(s, "FS");
+        const apiListings: ApiFsListing[] = dedupedRaw.flatMap((s) => {
+          const subListings = mapToInventoryListings(s, type);
           const images = resolveListingDetails(s).map((d) => d?.frontImage ?? null);
           return subListings.map((l, i) => ({
             id: l.id,
@@ -185,9 +189,10 @@ async function processRawSales(raw: RawFlashSale[], type: ListingType, now: Date
             imageUrl: images[i] ?? null,
           }));
         });
-        await ingestApiFsSync(apiFsListings);
+        if (type === "FS") await ingestApiFsSync(apiListings);
+        else await ingestApiWtbSync(apiListings);
       } catch (err) {
-        console.error("[watchfacts] postings mirror/reverse-match failed (inventory_listings sync itself succeeded):", err);
+        console.error(`[watchfacts] postings mirror/reverse-match failed for ${type} (inventory_listings sync itself succeeded):`, err);
       }
     }
 

@@ -298,14 +298,20 @@ export interface MirrorFsResult {
 }
 
 /**
- * Mirrors one live WatchFacts API FS listing into `postings`, reporting whether this is a
- * brand-new listing or a materially-changed one (spec: "every successful sync must trigger
- * reverse matching of new or materially updated FS listings") — an unchanged re-sync of an
- * already-known listing must NOT re-trigger matching/notifications. Read-then-write (rather
- * than a single upsert) so the "old" values are available to diff against, mirroring
- * ingestChatPosting's own materialChange pattern above.
+ * Mirrors one live WatchFacts API listing (FS or WTB) into `postings`, reporting whether this is
+ * a brand-new listing or a materially-changed one (spec: "every successful sync must trigger
+ * reverse matching of new or materially updated listings against all active opposite-side
+ * postings") — an unchanged re-sync of an already-known listing must NOT re-trigger matching/
+ * notifications. Read-then-write (rather than a single upsert) so the "old" values are available
+ * to diff against, mirroring ingestChatPosting's own materialChange pattern above.
+ *
+ * Originally FS-only (mirrorApiFsPosting) — WatchFacts-sourced WTB demand (real dealer buy
+ * requests) never went through this at all, so a chat-originated seller's FS posting could never
+ * actually be matched/notified against it, only shown in read-only displays (Market Pulse/Guide,
+ * "show current listings"). Parametrized by `type` so both sides share the one mirroring path
+ * into the one `postings` table runImmediateMatch already searches both directions over.
  */
-export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorFsResult> {
+export async function mirrorApiPosting(listing: ApiFsListing, type: PostingType): Promise<MirrorFsResult> {
   const priceNum = Number(listing.price.replace(/[^0-9.]/g, ""));
   const price = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
   const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
@@ -313,8 +319,8 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
 
   const result = await withSchema(async (pool) => {
     const existing = await pool.query<PostingRow>(
-      `SELECT * FROM postings WHERE source_platform='watchfacts_api' AND type='FS' AND external_listing_id=$1 AND source_type='api'`,
-      [listing.id]
+      `SELECT * FROM postings WHERE source_platform='watchfacts_api' AND type=$2 AND external_listing_id=$1 AND source_type='api'`,
+      [listing.id, type]
     );
 
     if (existing.rows.length === 0) {
@@ -322,9 +328,9 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
         `INSERT INTO postings
            (source_platform, source_type, external_listing_id, type, original_text, brand, model, reference, dial, year, box_papers, condition,
             price, location, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
-         VALUES ('watchfacts_api','api',$1,'FS',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',$15, now())
+         VALUES ('watchfacts_api','api',$1,$16,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',$15, now())
          RETURNING *`,
-        [listing.id, originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt]
+        [listing.id, originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt, type]
       );
       return { posting: insert.rows[0], created: true, materialChange: true };
     }
@@ -354,14 +360,19 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
   return result;
 }
 
-/** Mirrors markMissingInactive for the API-mirrored postings — only called after a fully successful FS sync. */
-export async function markApiPostingsInactive(seenExternalIds: string[]): Promise<void> {
+/** Back-compat name for the FS-only call site — same function, FS fixed. */
+export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorFsResult> {
+  return mirrorApiPosting(listing, "FS");
+}
+
+/** Mirrors markMissingInactive for the API-mirrored postings — only called after a fully successful FS/WTB sync. */
+export async function markApiPostingsInactive(type: PostingType, seenExternalIds: string[]): Promise<void> {
   if (seenExternalIds.length === 0) return;
   await withSchema((pool) =>
     pool.query(
       `UPDATE postings SET status='source_inactive', updated_at=now()
-       WHERE source_type='api' AND type='FS' AND status='active' AND external_listing_id <> ALL($1::text[])`,
-      [seenExternalIds]
+       WHERE source_type='api' AND type=$2 AND status='active' AND external_listing_id <> ALL($1::text[])`,
+      [seenExternalIds, type]
     )
   );
 }

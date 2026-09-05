@@ -157,7 +157,7 @@ test("markApiPostingsInactive deactivates only API FS rows absent from the lates
   await mirrorApiFsPosting({ id: "keep", item: "keep", ...base });
   await mirrorApiFsPosting({ id: "drop", item: "drop", ...base });
 
-  await markApiPostingsInactive(["keep"]);
+  await markApiPostingsInactive("FS", ["keep"]);
 
   const rows = await db.withSchema((pool) =>
     pool.query(`SELECT external_listing_id, status FROM postings WHERE source_type='api' ORDER BY external_listing_id`)
@@ -184,7 +184,7 @@ test("markApiPostingsInactive with an empty seen list is a no-op (never wipes ev
     contactPhone: "1",
     description: "",
   });
-  await markApiPostingsInactive([]);
+  await markApiPostingsInactive("FS", []);
   const rows = await db.withSchema((pool) => pool.query(`SELECT status FROM postings WHERE external_listing_id='a'`));
   assert.equal(rows.rows[0].status, "active");
 });

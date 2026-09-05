@@ -1,7 +1,7 @@
 import {
   ingestChatPosting,
   ChatPostingInput,
-  mirrorApiFsPosting,
+  mirrorApiPosting,
   markApiPostingsInactive,
   ApiFsListing,
   createDirectPosting,
@@ -89,7 +89,7 @@ export async function ingestApiFsSync(listings: ApiFsListing[]): Promise<void> {
   const started = Date.now();
   let materialChanges = 0;
   for (let i = 0; i < listings.length; i++) {
-    const { posting, materialChange } = await mirrorApiFsPosting(listings[i]);
+    const { posting, materialChange } = await mirrorApiPosting(listings[i], "FS");
     if (materialChange) {
       materialChanges++;
       await runImmediateMatch(posting);
@@ -98,6 +98,34 @@ export async function ingestApiFsSync(listings: ApiFsListing[]): Promise<void> {
       console.log(`[postings] ingestApiFsSync: ${i + 1}/${listings.length} (${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s elapsed)`);
     }
   }
-  await markApiPostingsInactive(listings.map((l) => l.id));
+  await markApiPostingsInactive("FS", listings.map((l) => l.id));
   console.log(`[postings] ingestApiFsSync: done — ${listings.length} listings, ${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s total`);
+}
+
+/**
+ * WTB counterpart to ingestApiFsSync above — same reasoning, same shared runImmediateMatch
+ * engine, just the other direction: a new or materially-changed WatchFacts dealer buy request
+ * mirrored into `postings` is tested against every active chat-originated (and API-mirrored) FS
+ * posting, so a real seller can actually be matched/notified against real WatchFacts demand
+ * instead of that demand only ever showing up in read-only displays (Market Pulse/Guide, "show
+ * current listings"). Deliberately does NOT also run fulfillment/service.ts's fulfillWtb — that
+ * additionally pushes an outbound "can you fulfill this?" message to every covering dealer, which
+ * would mean auto-messaging real third-party dealers on every routine sync; that's a materially
+ * bigger, separate decision than "let existing matching notice this demand," left for later.
+ */
+export async function ingestApiWtbSync(listings: ApiFsListing[]): Promise<void> {
+  const started = Date.now();
+  let materialChanges = 0;
+  for (let i = 0; i < listings.length; i++) {
+    const { posting, materialChange } = await mirrorApiPosting(listings[i], "WTB");
+    if (materialChange) {
+      materialChanges++;
+      await runImmediateMatch(posting);
+    }
+    if ((i + 1) % 500 === 0) {
+      console.log(`[postings] ingestApiWtbSync: ${i + 1}/${listings.length} (${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s elapsed)`);
+    }
+  }
+  await markApiPostingsInactive("WTB", listings.map((l) => l.id));
+  console.log(`[postings] ingestApiWtbSync: done — ${listings.length} listings, ${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s total`);
 }

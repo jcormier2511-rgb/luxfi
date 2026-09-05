@@ -114,6 +114,33 @@ test("requirement: a WatchFacts FS sync (new listing) triggers a match against a
   assert.ok(matchMsg, "a fresh FS sync must reverse-match against the already-active chat WTB monitor");
 });
 
+test("required regression: a WatchFacts WTB sync (real dealer buy request) triggers a match against an existing chat FS listing — the gap where WatchFacts demand never reached real matching at all", async (t) => {
+  await db._resetDbForTests();
+  const sent = mockSends(t);
+
+  await ingestAndMatch(watchFs({ senderIdentity: "seller-1" }));
+  sent.length = 0; // clear the "monitoring" acknowledgment noise from the line above
+
+  await ingestModule.ingestApiWtbSync([
+    apiFsListing({ id: "wf-wtb-1", contactName: "WatchFacts Dealer", contactPhone: "20000000000", price: "$30,000" }),
+  ]);
+
+  const matchMsg = sent.find((s) => s.phone === "seller-1" && /Potential Match/.test(s.message));
+  assert.ok(matchMsg, "a fresh WTB sync must reverse-match against the already-active chat FS listing");
+});
+
+test("required regression: a chat FS listing already in postings is immediately matched when a WatchFacts WTB sync runs, mirroring the existing chat-WTB-vs-WatchFacts-FS requirement above", async (t) => {
+  await db._resetDbForTests();
+  const sent = mockSends(t);
+
+  await ingestModule.ingestApiWtbSync([apiFsListing({ id: "wf-wtb-2", contactName: "WatchFacts Dealer", contactPhone: "20000000001", price: "$30,000" })]); // simulates a completed WatchFacts WTB sync
+
+  await ingestAndMatch(watchFs({ senderIdentity: "seller-2" }));
+
+  const matchMsg = sent.find((s) => s.phone === "seller-2" && /Potential Match/.test(s.message));
+  assert.ok(matchMsg, "the seller should be notified of a match against the live WatchFacts WTB demand");
+});
+
 test("requirement: chat FS and chat WTB match each other directly, with no API listing involved", async (t) => {
   await db._resetDbForTests();
   const sent = mockSends(t);
