@@ -478,6 +478,7 @@ const FI_MENU = [
   '"approve <number>" — connect with a match',
   '"photos <number>" — privately ask the seller for photos',
   '"pass <number>" — skip a match',
+  '"market pulse <reference>" or "what\'s the market for <reference>" — current asking-price range and active buyer/seller counts for a reference',
   '"cancel" — clear your current matches',
   '"status" — check your account status',
   '"listings" — see your approved matches, pending matches, or your own WTB/FS listings',
@@ -2559,7 +2560,10 @@ export async function handleIncomingMessage(phone: string, text: string, contact
           ? 'Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.'
           : GREETING.test(text.trim())
             ? `Hi ${firstName}, how can I help you today?`
-            : 'Try "buy: Rolex Daytona" or "selling: Hermes Birkin".';
+            // Live-reported: this is the true "nothing matched at all" case, but it jumped
+            // straight to examples with no acknowledgment that the message wasn't understood —
+            // reading as if Fi ignored what was typed rather than that it didn't parse.
+            : 'I\'m not sure I understood that. Try "buy: Rolex Daytona" or "selling: Hermes Birkin", or say "help" to see everything I can do.';
       const aiReply = isAiChatEnabled() ? await generateGeneralChatReply(text, unresolvedCount) : null;
       messages.push(aiReply ?? canned);
     }

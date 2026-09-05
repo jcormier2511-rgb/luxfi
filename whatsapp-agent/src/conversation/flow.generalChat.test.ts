@@ -53,6 +53,16 @@ test("required regression: when AI is unavailable, the test phone still falls ba
   assert.ok(result.messages.some((m) => m.includes('Try "buy:')), "an AI failure must never leave the user with no reply at all");
 });
 
+test('required regression: a message Fi genuinely could not parse says so, rather than jumping straight to examples with no acknowledgment', async (t) => {
+  resetState(TEST_PHONE);
+  t.mock.method(chatReplyModule, "generateGeneralChatReply", async () => null);
+
+  await handleIncomingMessage(TEST_PHONE, "hi");
+  const result = await handleIncomingMessage(TEST_PHONE, "asdkfj not a real command");
+  assert.match(result.messages.join("\n"), /not sure I understood/i);
+  assert.match(result.messages.join("\n"), /"help"/, "must also point at how to see everything Fi can do");
+});
+
 test("general chat uses natural language for a non-test phone when AI is enabled", async (t) => {
   resetState(OTHER_PHONE);
   const spy = t.mock.method(chatReplyModule, "generateGeneralChatReply", async () => "Here’s a quick summary of your open matches.");

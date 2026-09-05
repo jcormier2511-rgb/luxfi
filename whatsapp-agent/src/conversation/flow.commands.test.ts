@@ -52,6 +52,7 @@ test('required: "help" shows the Fi menu', async () => {
   assert.match(result.messages[0], /here's what I can do/i);
   assert.match(result.messages[0], /"cancel"/);
   assert.match(result.messages[0], /"status"/);
+  assert.match(result.messages[0], /market pulse/i, "required regression: market research must be discoverable from the help menu");
 });
 
 test('required: "/help" shows the Fi menu and never gets replaced by onboarding', async () => {
