@@ -89,11 +89,98 @@ export function renderLoginPage(error?: string): string {
 export function renderManagementPage(kind:"users"|"groups"|"administrators"|"coverage"):string {
   const title=kind==="users"?"Approved Users":kind==="groups"?"GROUP MANAGEMENT":kind==="coverage"?"WTB Coverage / Dealer Specialists":"Administrators";
   const empty=kind==="groups"?"No approved groups yet. Add the exact WhatsApp chat ID after the number is restored; wildcards are never accepted.":`No ${title.toLowerCase()} found.`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}.toolbar{display:flex;gap:8px;margin-bottom:14px}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/logout">Sign out</a></nav></header><main><section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to</p><h2>Push Groups</h2><p class="muted">Groups Fi may actively post into (configured independently under listing settings)</p>':''}<div class="toolbar"><input id="q" placeholder="Search"><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}.toolbar{display:flex;gap:8px;margin-bottom:14px}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main><section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to</p><h2>Push Groups</h2><p class="muted">Groups Fi may actively post into (configured independently under listing settings)</p>':''}<div class="toolbar"><input id="q" placeholder="Search"><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
   const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='';
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   async function load(){const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));table.querySelector('thead').innerHTML='<tr>'+keys.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+'</tr>').join('')}
   load().catch(e=>document.querySelector('#error').textContent=e.message);
+  </script></body></html>`;
+}
+
+/**
+ * Panel-session UI for the testing tools that previously only existed as curl-only, token-gated
+ * endpoints (/admin/market-guide/debug, /admin/inventory-search, /admin/user/reset) — same
+ * underlying logic (see server.ts's /admin/api/tools/* routes), just reachable from the browser
+ * once signed in, with CSRF on the destructive action.
+ */
+export function renderToolsPage(): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Tools</title><style>${PAGE_STYLES} main{display:block;max-width:1000px}.toolbar{display:flex;gap:8px;margin-bottom:14px}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px;flex:1}table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}.card{margin-bottom:18px}</style></head><body><header><h1>Tools</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>
+
+<section class="card">
+  <h2>Market Guide debug</h2>
+  <p class="muted">Every raw comparable row behind a reference's Market Guide — raw price, raw currency, inferred currency, USD conversion.</p>
+  <div class="toolbar"><input id="mg-ref" placeholder="Reference, e.g. 116500LN"><button onclick="mgLookup()">Look up</button></div>
+  <div id="mg-empty" class="muted"></div>
+  <table id="mg-table" hidden><thead></thead><tbody></tbody></table>
+  <pre id="mg-error" class="error"></pre>
+</section>
+
+<section class="card">
+  <h2>Inventory search</h2>
+  <p class="muted">Searches WatchFacts inventory (ref/item/description, active AND inactive rows).</p>
+  <div class="toolbar"><input id="inv-q" placeholder="Search term, e.g. 116500"><button onclick="invLookup()">Search</button></div>
+  <div id="inv-empty" class="muted"></div>
+  <table id="inv-table" hidden><thead></thead><tbody></tbody></table>
+  <pre id="inv-error" class="error"></pre>
+</section>
+
+<section class="card">
+  <h2>Full account reset</h2>
+  <p class="muted">Closes every active listing and clears conversation state + notification preference for every identity linked to the given one (e.g. both halves of a linked WhatsApp/Telegram pair). Cannot be undone. Requires administrator or owner role.</p>
+  <div class="toolbar"><input id="reset-id" placeholder="Identity, e.g. telegram:5703391972 or 13053897000"><button onclick="resetAccount()">Reset account</button></div>
+  <pre id="reset-result"></pre>
+  <pre id="reset-error" class="error"></pre>
+</section>
+
+</main><script>
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  let csrf='';
+  async function ensureCsrf(){if(csrf)return csrf;const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';return csrf}
+  function renderTable(prefix,rows){
+    document.querySelector('#'+prefix+'-error').textContent='';
+    document.querySelector('#'+prefix+'-empty').textContent=rows.length?'':'No rows found.';
+    const table=document.querySelector('#'+prefix+'-table');table.hidden=!rows.length;if(!rows.length)return;
+    const keys=Object.keys(rows[0]);
+    table.querySelector('thead').innerHTML='<tr>'+keys.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';
+    table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(r[k])+'</td>').join('')+'</tr>').join('');
+  }
+  async function mgLookup(){
+    document.querySelector('#mg-error').textContent='';
+    const reference=document.querySelector('#mg-ref').value.trim();if(!reference)return;
+    try{
+      await ensureCsrf();
+      const res=await fetch('/admin/api/tools/market-guide-debug?reference='+encodeURIComponent(reference));
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#mg-error').textContent=data.error||'Lookup failed';return}
+      renderTable('mg',data.rows||[]);
+    }catch(e){document.querySelector('#mg-error').textContent=e.message}
+  }
+  async function invLookup(){
+    document.querySelector('#inv-error').textContent='';
+    const q=document.querySelector('#inv-q').value.trim();if(!q)return;
+    try{
+      await ensureCsrf();
+      const res=await fetch('/admin/api/tools/inventory-search?q='+encodeURIComponent(q));
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#inv-error').textContent=data.error||'Search failed';return}
+      renderTable('inv',data.results||[]);
+    }catch(e){document.querySelector('#inv-error').textContent=e.message}
+  }
+  async function resetAccount(){
+    document.querySelector('#reset-error').textContent='';document.querySelector('#reset-result').textContent='';
+    const identity=document.querySelector('#reset-id').value.trim();if(!identity)return;
+    if(!confirm('Reset '+identity+'? This closes every active listing and clears conversation state for every identity linked to it. This cannot be undone.'))return;
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/tools/user-reset',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify({identity})});
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#reset-error').textContent=data.error||'Reset failed';return}
+      document.querySelector('#reset-result').textContent=JSON.stringify(data,null,2);
+    }catch(e){document.querySelector('#reset-error').textContent=e.message}
+  }
   </script></body></html>`;
 }
 
@@ -378,7 +465,7 @@ export function renderDashboard(data: AdminDashboardData): string {
 <body>
   <header>
     <h1>LuxFi Admin</h1>
-    <nav><a href="#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/logout">Sign out</a></nav>
+    <nav><a href="#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav>
   </header>
   <main>
     ${renderWhapiCard(data.whapi)}

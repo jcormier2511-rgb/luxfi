@@ -837,13 +837,25 @@ function handleCancelCommand(state: ConversationState, messages: string[]): void
 export interface FlowResult {
   state: ConversationState;
   messages: string[];
+  /**
+   * Live-reported UX ask: when a seller has attached a photo, Fi's review ("I have: FS —
+   * ... MARKET GUIDE ...") arrived as a plain text bubble AFTER the seller's own photo, instead
+   * of the review reading as that photo's caption. `caption` is always the exact string already
+   * present in `messages` (never separate content) — the dispatch layer sends every other entry
+   * as plain text, and this one specific entry as an image with that text as its caption.
+   */
+  photoReply?: { imageUrl: string; caption: string };
 }
 
 const MARKET_COMMAND = /^(?:market pulse|market briefing|market update|market for my listing|market on my watch|price pulse|how is the market|show market data)\s*[?.!]*$/i;
 const MARKET_BRIEFING_COMMAND = /^(?:market briefing|market update)\s*[?.!]*$/i;
 /** The whole monitored network, independent of what this account happens to be listing. */
 const MARKET_OVERVIEW_COMMAND = /^(?:market overview|overall market|whole market|network market|market snapshot|how(?:'s| is) the whole market)\s*[?.!]*$/i;
-const MARKET_REFERENCE_COMMAND = /^(?:market\s+pulse|price\s+pulse|market\s+price|market\s+data|market\s+check|market|pulse)\s+(?:on\s+|for\s+)?(.+)$/i;
+// Live-reported: "what's the market for rolex 1680 subs" fell through entirely — the command
+// only ever recognized a message STARTING with the market keyword itself ("market pulse X"),
+// never the at-least-as-natural "what's the market for X" phrasing a person actually asks with.
+const MARKET_REFERENCE_COMMAND =
+  /^(?:(?:what'?s|what\s+is|how'?s|how\s+is)\s+the\s+)?(?:market\s+pulse|price\s+pulse|market\s+price|market\s+data|market\s+check|market|pulse)\s+(?:on\s+|for\s+)?(.+)$/i;
 
 /**
  * "market pulse 116500LN", "market pulse Rolex 116500LN", "market 116500LN", "price pulse
@@ -858,17 +870,27 @@ const MARKET_REFERENCE_COMMAND = /^(?:market\s+pulse|price\s+pulse|market\s+pric
  * The argument has to BE a reference and nothing else, which is what keeps the existing
  * context-scoped phrasings ("market for my listing", "market briefing") out of this branch.
  */
+// Narrow, explicit, and deliberately tiny (same "narrow and defensible" bar as
+// REFERENCE_ALIAS_GROUPS) — a trader's bare-reference market question routinely tacks on a
+// well-known nickname ("what's the market for rolex 1680 subs"), which is still unambiguously
+// a request about the reference alone, never a second identifying detail to preserve.
+const BARE_REFERENCE_NICKNAMES = new Set(["sub", "subs", "submariner"]);
+
 function parseMarketReferenceCommand(text: string): { reference: string; brand?: string } | null {
   const m = text.trim().replace(/\s*[?.!]+$/, "").match(MARKET_REFERENCE_COMMAND);
   if (!m) return null;
   const { brand, rest } = splitLeadingBrand(m[1]);
   const candidate = rest.replace(/^(?:the\s+)?(?:ref(?:erence)?\.?\s*)?/i, "").trim();
-  if (!/^[A-Za-z0-9][A-Za-z0-9./-]*$/.test(candidate)) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9./ -]*$/.test(candidate)) return null;
   const reference = extractReference(candidate);
+  if (!reference) return null;
   // extractReference finds a reference ANYWHERE in its input; require that it consumed the whole
-  // argument, so "market pulse daytona" isn't silently treated as a reference lookup.
-  if (!reference || normalizeReference(reference) !== normalizeReference(candidate)) return null;
-  return { reference, ...(brand ? { brand } : {}) };
+  // argument (allowing a trailing bare-reference nickname, see above), so "market pulse daytona"
+  // isn't silently treated as a reference lookup.
+  if (normalizeReference(reference) === normalizeReference(candidate)) return { reference, ...(brand ? { brand } : {}) };
+  const leftover = candidate.replace(new RegExp(reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), "").trim().toLowerCase();
+  if (leftover && BARE_REFERENCE_NICKNAMES.has(leftover)) return { reference, ...(brand ? { brand } : {}) };
+  return null;
 }
 
 interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "reference" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB"; indices?: number[]; all?: boolean }
@@ -2000,6 +2022,20 @@ async function persistSellIntake(state: ConversationState, pending: PendingSellI
   );
 }
 
+/** Whenever the seller's review ("I have: FS — ... MARKET GUIDE ...") is showing and a photo is
+ *  already attached, that review should read as the photo's caption rather than a separate text
+ *  bubble after it (live-reported: the two arrived as two messages). `p.step==="confirm"` is
+ *  exactly the point nextSell sets once the review is the one thing left to show — never true
+ *  while still asking for a missing field, and never true again post-confirmation, where
+ *  pendingSellIntake is cleared entirely and a plain acknowledgment is correct as-is. */
+function photoReplyForSell(state: ConversationState, messages: string[]): FlowResult["photoReply"] {
+  const p = state.pendingSellIntake;
+  if (p?.step === "confirm" && p.imageUrl && messages.length > 0) {
+    return { imageUrl: p.imageUrl, caption: messages[messages.length - 1] };
+  }
+  return undefined;
+}
+
 /** Walks details -> price -> photo, one question at a time, then acknowledges — never loops
  *  back to re-ask a step; whatever's given (including nothing) is accepted and it moves on,
  *  same "ask once" principle as the rest of this file's collectors. The final "photo" step both
@@ -2441,7 +2477,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   if (state.pendingSellIntake) {
     await handleSellIntakeAnswer(state, text, imageUrl, messages, contact);
     saveState(state);
-    return { state, messages };
+    return { state, messages, photoReply: photoReplyForSell(state, messages) };
   }
 
   if (state.pendingBuyIntake) {
@@ -2578,7 +2614,7 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   if (parsed[0].action === "sell") {
     await startSellIntake(state, parsed[0], messages, text, imageUrl);
     saveState(state);
-    return { state, messages };
+    return { state, messages, photoReply: photoReplyForSell(state, messages) };
   }
   await startBuyIntake(state, parsed[0], messages, text);
   saveState(state);

@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import { config, isConciergeAdminPhone } from "./config";
 import { extractIncomingMessages, IncomingWebhook } from "./whapi/client";
-import { sendText, NormalizedIncomingMessage } from "./channels";
+import { sendText, sendBannerImage, NormalizedIncomingMessage } from "./channels";
 import { platformForIdentity } from "./channels/identity";
 import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
 import { verifyTwilioSignature, extractIncomingMessage as extractSmsMessage } from "./channels/sms";
@@ -71,7 +71,7 @@ import {
 } from "./admin/session";
 import { Administrator, authenticate, deleteGroup, deleteUser, exportUsersCsv, getAdministrator, importUsersCsv, initAdminSchema, listAdministrators, listGroups, listUsers, resetAdministratorPassword, saveAdministrator, saveGroup, saveUser, USER_CSV_SAMPLE } from "./admin/store";
 import { buildAdminDashboardData } from "./admin/dashboard";
-import { renderDashboard, renderLoginPage, renderManagementPage } from "./admin/view";
+import { renderDashboard, renderLoginPage, renderManagementPage, renderToolsPage } from "./admin/view";
 import { getListingLimits, listPushGroups, savePushGroup, setListingLimits } from "./postings/listingConfig";
 import { getLifecycleSettings, recordInboundActivity, setLifecycleSettings } from "./lifecycle";
 
@@ -216,8 +216,21 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
       }
 
       const contact = getTierABContacts().find((c) => c.phone === message.phone);
-      const { messages } = await handleIncomingMessage(message.phone, message.text, contact, message.imageUrl);
-      for (const reply of messages) await sendText(message.phone, reply);
+      const { messages, photoReply } = await handleIncomingMessage(message.phone, message.text, contact, message.imageUrl);
+      for (const reply of messages) {
+        // Live-reported: the seller's review arrived as a separate text bubble after their own
+        // photo, instead of reading as that photo's caption. photoReply names the exact string
+        // (by reference to what handleIncomingMessage already decided) that should go out as an
+        // image instead of plain text — every other entry is unaffected. Telegram hard-caps a
+        // photo caption at 1024 characters (WhatsApp's own limit is looser but still finite);
+        // a long review (extra fields, a wide Market Guide) falls back to plain text rather
+        // than risk the provider silently truncating or rejecting an oversized caption.
+        if (photoReply && reply === photoReply.caption && reply.length <= 1000) {
+          await sendBannerImage(message.phone, photoReply.imageUrl, reply);
+          continue;
+        }
+        await sendText(message.phone, reply);
+      }
     } catch (err) {
       console.error(`[webhook] failed handling message from ${message.phone}:`, err);
     }
@@ -297,6 +310,32 @@ export async function handleAuthorizeNetWebhookEvent(event: AuthorizeNetWebhookE
     await cancelMembership(phone);
     console.log(`[webhook/authorizenet] canceled membership for phone=${phone} (subscriptionId=${subscriptionId})`);
   }
+}
+
+/**
+ * The "make this account look brand new" action for testing — shared by the token-gated
+ * /admin/user/reset (curl) and the session-authenticated admin panel tool below, so the two
+ * surfaces can never drift into different behavior. See /admin/user/reset's own comment for why
+ * this resets every identity linked to the canonical user, not just the one named.
+ */
+async function resetUserAccount(identity: string): Promise<{
+  identity: string;
+  canonicalUserId: number;
+  identitiesReset: string[];
+  closedPostings: { id: number; type: string; brand: string; model: string; reference: string }[];
+}> {
+  const userId = await getOrCreateCanonicalUser(platformForIdentity(identity), identity);
+  const linked = await getLinkedIdentities(userId);
+  const active = await getActivePostingsForUser(userId);
+  for (const posting of active) await closePosting(posting.id, "admin_closed");
+  for (const { identity: linkedIdentity } of linked) resetState(linkedIdentity);
+  await resetNotificationPreference(userId);
+  return {
+    identity,
+    canonicalUserId: userId,
+    identitiesReset: linked.map((l) => l.identity),
+    closedPostings: active.map((p) => ({ id: p.id, type: p.type, brand: p.brand, model: p.model, reference: p.reference })),
+  };
 }
 
 function verifyWhatsAppSignature(rawBody: Buffer, signature: string | undefined): boolean {
@@ -390,6 +429,30 @@ export function createServer() {
     res.json(await runFiReturningCampaign({dryRun,testRecipient}));
   },true));
   app.put("/admin/api/listing-settings/push-groups/:groupId",api(async(req,res)=>res.json(await savePushGroup({...req.body,group_id:req.params.groupId})),true));
+
+  // Panel-session versions of the curl-only testing tools above (/admin/user/reset,
+  // /admin/market-guide/debug, /admin/inventory-search) — same underlying logic, gated by the
+  // signed-in session + CSRF instead of a token in the URL. The reset action is destructive
+  // (closes real listings, wipes conversation state) so it's held to the same bar as the
+  // fi-returning campaign send above: read_only AND support are blocked, not just read_only.
+  app.get("/admin/api/tools/market-guide-debug",api(async(req,res)=>{
+    const reference=String(req.query.reference??"").trim();
+    if(!reference)return res.status(400).json({error:"?reference=<reference> is required"});
+    res.json({ok:true,...(await debugMarketGuideComparables(reference))});
+  }));
+  app.get("/admin/api/tools/inventory-search",api(async(req,res)=>{
+    const q=String(req.query.q??"").trim();
+    if(!q)return res.status(400).json({error:"?q=<search term> is required"});
+    res.json({ok:true,results:await searchListingsForDiagnostics(q)});
+  }));
+  app.post("/admin/api/tools/user-reset",api(async(req,res,ctx)=>{
+    if(ctx.admin.role==='support')return res.status(403).json({error:"administrator or owner role required"});
+    const identity=typeof req.body?.identity==="string"?req.body.identity.trim():"";
+    if(!identity)return res.status(400).json({error:"identity is required (e.g. telegram:5703391972 or 13053897000)"});
+    res.json({ok:true,...(await resetUserAccount(identity))});
+  },true));
+
+  app.get("/admin/tools",async(req,res)=>{const ctx=await adminContext(req).catch(()=>null);if(!ctx)return res.status(401).type('html').send(renderLoginPage());res.type('html').send(renderToolsPage())});
 
   app.get("/admin/logout", (req, res) => {
     res.setHeader("Set-Cookie", buildLogoutCookieHeader(isHttpsRequest(req)));
@@ -795,19 +858,7 @@ export function createServer() {
     }
     const identity = String(req.query.phone ?? "").trim();
     if (!identity) return res.status(400).json({ error: "?phone=<identity> required (e.g. telegram:5703391972 or 13053897000)" });
-    const userId = await getOrCreateCanonicalUser(platformForIdentity(identity), identity);
-    const linked = await getLinkedIdentities(userId);
-    const active = await getActivePostingsForUser(userId);
-    for (const posting of active) await closePosting(posting.id, "admin_closed");
-    for (const { identity: linkedIdentity } of linked) resetState(linkedIdentity);
-    await resetNotificationPreference(userId);
-    res.json({
-      ok: true,
-      identity,
-      canonicalUserId: userId,
-      identitiesReset: linked.map((l) => l.identity),
-      closedPostings: active.map((p) => ({ id: p.id, type: p.type, brand: p.brand, model: p.model, reference: p.reference })),
-    });
+    res.json({ ok: true, ...(await resetUserAccount(identity)) });
   });
 
   /**

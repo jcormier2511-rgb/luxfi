@@ -157,6 +157,27 @@ test("photo remains optional and can be attached before confirmation", async (t)
   assert.equal(withPhoto.state.pendingSellIntake?.imageUrl, "https://cdn.example/patek.jpg");
 });
 
+test("required regression: once a photo is attached, the review reads as that photo's caption instead of a separate text message", async (t) => {
+  const phone = "19992220024"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests(); mockSends(t);
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "FS Patek 5711/1A $85,000 pre-owned in USA");
+  const withPhoto = await handleIncomingMessage(phone, "here it is", undefined, "https://cdn.example/patek.jpg");
+  assert.deepEqual(withPhoto.photoReply, { imageUrl: "https://cdn.example/patek.jpg", caption: withPhoto.messages.at(-1) });
+
+  // Once confirmed, the acknowledgment is a fresh plain-text message, not the photo's caption again.
+  const confirmed = await handleIncomingMessage(phone, "confirm");
+  assert.equal(confirmed.photoReply, undefined, "the post-confirmation acknowledgment is not re-attached to the photo");
+});
+
+test("required regression: no photo attached means no photoReply at all — the review stays plain text", async (t) => {
+  const phone = "19992220025"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests(); mockSends(t);
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "FS Patek 5711/1A $85,000 pre-owned in USA");
+  const noPhoto = await handleIncomingMessage(phone, "no photo");
+  assert.match(noPhoto.messages.at(-1)!, /Photo: none/);
+  assert.equal(noPhoto.photoReply, undefined);
+});
+
 test("required: confirmation creates a direct FS posting and immediately matches live WTB demand", async (t) => {
   const phone = "19992220007"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests(); const sent = mockSends(t);
   const { ingestAndMatch } = require("../postings/ingest") as typeof import("../postings/ingest");

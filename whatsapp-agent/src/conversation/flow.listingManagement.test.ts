@@ -367,6 +367,11 @@ const MARKET_REFERENCE_COMMANDS = [
   "market pulse Rolex 116500LN",
   "market 116500LN",
   "price pulse 116500LN",
+  // Required regression: "what's the market for X" fell through entirely — the command only
+  // ever recognized a message STARTING with the market keyword itself, never this at-least-as-
+  // natural phrasing.
+  "what's the market for 116500LN",
+  "what is the market for Rolex 116500LN",
 ];
 
 for (const command of MARKET_REFERENCE_COMMANDS) {
@@ -388,6 +393,17 @@ for (const command of MARKET_REFERENCE_COMMANDS) {
     assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), draftBefore, "the WTB draft must be untouched");
   });
 }
+
+test('required regression: "what\'s the market for rolex 1680 subs" — the exact live-reported phrasing, trailing nickname included — resolves to reference 1680', async () => {
+  const phone = freshPhone();
+  await makeListing(phone, "FS", "1680", 12000);
+  await makeListing("telegram:5559000002", "FS", "1680", 17000);
+
+  const reply = await handleIncomingMessage(phone, "what's the market for rolex 1680 subs");
+  const text = reply.messages.join("\n");
+  assert.match(text, /Market Pulse — (?:Rolex )?1680/);
+  assert.match(text, /FS: 2 active listings/);
+});
 
 test("a bare market command still uses listing context, and prose forms are not read as references", async () => {
   const phone = freshPhone();
