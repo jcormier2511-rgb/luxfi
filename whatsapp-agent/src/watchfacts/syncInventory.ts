@@ -54,7 +54,10 @@ interface AuctionRow {
  * server-side status filter — a full sync means paging through the ENTIRE historical
  * catalogue (auctions has ~1.5M rows; only ~38k are `status='open'`) — so this is both far
  * cheaper and, since it doesn't depend on a WatchFacts login session staying valid mid-sync,
- * far more reliable. `type` here is the same value api.ts's `auctionType` used ("sale" for FS).
+ * far more reliable. `type` here is the same column api.ts's `auctionType` filtered on for the
+ * browser path — confirmed against production: `SELECT type, status, COUNT(*) ... GROUP BY
+ * type, status` shows exactly two values, "sale" (FS) and "search" (WTB), each with real `open`
+ * rows (26,939 and 10,550 respectively at the time of that check).
  *
  * Each row maps 1:1 to a single-listing RawFlashSale — this table has no bundle/multi-watch
  * sub-listings structure (unlike the API's nested `listings[]`, used for a dealer's one
@@ -233,18 +236,35 @@ async function syncFsFromDb(db: SourceDb, now: Date): Promise<{ count: number; e
   }
 }
 
+/** WTB via direct database access — same table, same connection, just auctions.type='search'
+ *  instead of 'sale'. See fetchOpenAuctionsFromDb's docs for how that value was confirmed.
+ *  Exported for the same reason as fetchOpenAuctionsFromDb: direct test coverage without
+ *  needing to fake a whole Playwright page/browser session. */
+export async function syncWtbFromDb(db: SourceDb, now: Date): Promise<{ count: number; error?: string }> {
+  try {
+    const raw = await fetchOpenAuctionsFromDb(db, "search");
+    return await processRawSales(raw, "WTB", now);
+  } catch (err) {
+    const message = (err as Error).message;
+    await recordTypeSyncError("WTB", message);
+    return { count: 0, error: message };
+  }
+}
+
 // Shared across the scheduler (index.ts) and the manual /admin/sync-inventory trigger, so
 // two overlapping runs can never open two logged-in browser sessions (or two DB syncs) at once.
 let syncRunning = false;
 
 /**
- * Pulls both sides of the Trading Floor. FS is read directly from WatchFacts' own database
- * when WATCHFACTS_DB_URL is configured (see fetchOpenAuctionsFromDb) — no browser, no login,
- * no pagination through a 1.5M-row historical catalogue. Without it, FS falls back to the
- * original browser-login + HTTP API path, same as WTB always uses (WTB's auction_type isn't
- * confirmed against a DB column yet, and it's off by default regardless). FS and WTB are
- * synced independently (see processRawSales): one side failing never touches the other side's
- * data or masks that it succeeded. Only throws if BOTH sides fail outright.
+ * Pulls both sides of the Trading Floor. Both are read directly from WatchFacts' own database
+ * when WATCHFACTS_DB_URL is configured (see fetchOpenAuctionsFromDb — same table, same open
+ * connection, just auctions.type='sale' vs 'search') — no browser, no login, no pagination
+ * through a 1.5M-row historical catalogue. Without a source DB, both fall back to the original
+ * browser-login + HTTP API path instead (WTB's own auction_type there is still resolved by
+ * probing candidates — see resolveWtbAuctionType — since that path never had a DB column to
+ * confirm it against). FS and WTB are synced independently (see processRawSales): one side
+ * failing never touches the other side's data or masks that it succeeded. Only throws if BOTH
+ * sides fail outright.
  */
 export async function runInventorySync(): Promise<SyncResult> {
   if (syncRunning) {
@@ -253,7 +273,7 @@ export async function runInventorySync(): Promise<SyncResult> {
   syncRunning = true;
   await recordSyncAttempt();
 
-  const useDbForFs = !!config.watchfacts.sourceDbUrl;
+  const useDb = !!config.watchfacts.sourceDbUrl;
   const wtbEnabled = config.watchfacts.enableWtbSync;
 
   let db: SourceDb | undefined;
@@ -273,7 +293,7 @@ export async function runInventorySync(): Promise<SyncResult> {
     const now = new Date();
 
     let fs: { count: number; error?: string };
-    if (useDbForFs) {
+    if (useDb) {
       db = await openSourceDb();
       fs = await syncFsFromDb(db, now);
     } else {
@@ -281,9 +301,11 @@ export async function runInventorySync(): Promise<SyncResult> {
     }
 
     // When disabled, WTB is never fetched at all: no request, no error recorded, nothing touched.
-    const wtb = wtbEnabled
-      ? await syncOneSide(await ensureBrowserLoggedIn(), "WTB", () => resolveWtbAuctionType(page!), now)
-      : { count: 0 };
+    const wtb = !wtbEnabled
+      ? { count: 0 }
+      : useDb
+      ? await syncWtbFromDb(db!, now)
+      : await syncOneSide(await ensureBrowserLoggedIn(), "WTB", () => resolveWtbAuctionType(page!), now);
 
     if (fs.error && wtbEnabled && wtb.error) {
       throw new Error(`Both FS and WTB failed — FS: ${fs.error} | WTB: ${wtb.error}`);

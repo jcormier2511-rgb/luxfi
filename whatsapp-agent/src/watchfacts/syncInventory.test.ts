@@ -16,7 +16,7 @@ const api = require("./api") as typeof import("./api");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("./inventoryDb") as typeof import("./inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { syncOneSide, fetchOpenAuctionsFromDb } = require("./syncInventory") as typeof import("./syncInventory");
+const { syncOneSide, fetchOpenAuctionsFromDb, syncWtbFromDb } = require("./syncInventory") as typeof import("./syncInventory");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require("../postings/db") as typeof import("../postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -223,4 +223,63 @@ test("fetchOpenAuctionsFromDb leaves frontImage null when auctions.front_image i
   assert.equal(nullImage.listings[0].frontImage, null);
   const [absoluteImage] = await fetchOpenAuctionsFromDb(fakeDb, "sale");
   assert.equal(absoluteImage.listings[0].frontImage, "https://cdn.example.com/already-full.jpg");
+});
+
+test("required regression: fetchOpenAuctionsFromDb queries auctions.type='search' for WTB, not the FS 'sale' value — confirmed against production (a type/status breakdown showed exactly two values, 'sale' and 'search', with 10,550 open 'search' rows)", async () => {
+  const calls: unknown[][] = [];
+  const fakeDb: SourceDb = {
+    dialect: "mysql",
+    tls: "off",
+    query: async (_sql: string, params?: unknown[]) => {
+      calls.push(params ?? []);
+      return [];
+    },
+    close: async () => undefined,
+  } as unknown as SourceDb;
+
+  await fetchOpenAuctionsFromDb(fakeDb, "search");
+  assert.deepEqual(calls[0], ["search"]);
+});
+
+test("required regression: the WTB side of a DB-direct sync reaches inventory_listings (getActiveListings('WTB')), the same shared pipeline the FS side already uses", async () => {
+  await inventoryDb._resetDbForTests();
+  const fakeDb: SourceDb = {
+    dialect: "mysql",
+    tls: "off",
+    query: async () => [
+      {
+        id: "wtb-search-1",
+        number: 555,
+        is_bundle: 0,
+        title: "Looking for 116500LN black dial",
+        status: "open",
+        price: "24000.00",
+        deadline: "2999-01-01 00:00:00",
+        brand: "Rolex",
+        model: "Daytona",
+        reference: "116500LN",
+        normalized_reference: "116500LN",
+        condition_id: null,
+        front_image: null,
+        box: null,
+        papers: null,
+        dial_color: "Black",
+        from_name: "Buyer X",
+        from_number: "15551230000",
+        dealer_rating: null,
+        region: "North America",
+      },
+    ],
+    close: async () => undefined,
+  } as unknown as SourceDb;
+
+  const result = await syncWtbFromDb(fakeDb, new Date());
+  assert.equal(result.count, 1);
+  assert.equal(result.error, undefined);
+
+  const active = await inventoryDb.getActiveListings("WTB");
+  assert.ok(
+    active.some((l) => l.ref === "116500LN" && l.source === "WF"),
+    "the WTB listing must reach the same inventory_listings table the FS side already writes to"
+  );
 });
