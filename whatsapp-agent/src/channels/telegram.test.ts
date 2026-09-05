@@ -81,13 +81,44 @@ test("two different chats' first messages (both message_id 1) get distinct norma
   assert.notEqual(msgA.id, msgB.id, "the shared alreadyProcessed dedup store must never see these two as the same message");
 });
 
-test("extractIncomingMessages drops group/channel chats entirely — group monitoring stays WhatsApp-only", async () => {
+test("extractIncomingMessages normalizes a group message into the group-monitoring shape", async () => {
   const groupUpdate = {
     update_id: 2,
-    message: { message_id: 1, from: { id: 1 }, chat: { id: -100123, type: "group" }, text: "FS Rolex 116500LN" },
+    message: { message_id: 1, from: { id: 555, first_name: "Dana" }, chat: { id: -100123, type: "group" }, text: "FS Rolex 116500LN" },
   };
-  const messages = await telegram.extractIncomingMessages(groupUpdate);
-  assert.equal(messages.length, 0);
+  const [msg] = await telegram.extractIncomingMessages(groupUpdate);
+  assert.ok(msg);
+  assert.equal(msg.isGroup, true);
+  assert.equal(msg.groupId, "-100123", "the group chat id, not the sender's");
+  assert.equal(msg.phone, "telegram:555", "the individual sender's identity, not the group's — chat.id only equals from.id in a private chat");
+  assert.equal(msg.text, "FS Rolex 116500LN");
+  assert.equal(msg.senderName, "Dana");
+});
+
+test("extractIncomingMessages treats a supergroup the same as a group", async () => {
+  const update = {
+    update_id: 3,
+    message: { message_id: 1, from: { id: 555 }, chat: { id: -100987654321, type: "supergroup" }, text: "WTB Daytona" },
+  };
+  const [msg] = await telegram.extractIncomingMessages(update);
+  assert.ok(msg);
+  assert.equal(msg.isGroup, true);
+  assert.equal(msg.groupId, "-100987654321");
+});
+
+test("extractIncomingMessages drops a group message with no text (nothing to classify) and no attributable sender", async () => {
+  const noText = { update_id: 4, message: { message_id: 1, from: { id: 1 }, chat: { id: -1, type: "group" } } };
+  assert.equal((await telegram.extractIncomingMessages(noText)).length, 0);
+
+  // An anonymous-group-admin post carries `sender_chat` instead of `from` — no individual to
+  // attribute a listing to, so there's nothing safe to capture.
+  const noFrom = { update_id: 5, message: { message_id: 1, chat: { id: -1, type: "group" }, text: "FS Rolex 116500LN" } };
+  assert.equal((await telegram.extractIncomingMessages(noFrom)).length, 0);
+});
+
+test("extractIncomingMessages still drops a channel post (no individual sender, not a group)", async () => {
+  const channelUpdate = { update_id: 6, message: { message_id: 1, chat: { id: -100, type: "channel" }, text: "Announcement" } };
+  assert.equal((await telegram.extractIncomingMessages(channelUpdate)).length, 0);
 });
 
 test("extractIncomingMessages resolves a photo's file_id to a downloadable URL via getFile", async (t) => {

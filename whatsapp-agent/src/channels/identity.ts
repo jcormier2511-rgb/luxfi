@@ -6,8 +6,8 @@
  * unchanged — only the messaging send/receive edges (src/channels/*, src/server.ts) need to
  * know a platform prefix exists at all.
  *
- * Scope: group-chat monitoring (conversation/groupMonitor.ts) stays WhatsApp-only for this
- * pass — Telegram/SMS support 1:1 conversational messaging only.
+ * Scope: group-chat monitoring (conversation/groupMonitor.ts) supports WhatsApp and Telegram
+ * groups/supergroups — SMS has no group concept, so it stays 1:1 conversational messaging only.
  */
 export type ChannelPlatform = "whatsapp" | "telegram" | "sms";
 

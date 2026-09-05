@@ -6,6 +6,7 @@ import { ingestAndMatch } from "../postings/ingest";
 import { normalizeText, classifyText } from "../postings/normalize";
 import { enrichListingText } from "../ai/enrichment";
 import { isPostingMonitoringEnabled } from "../admin/store";
+import { platformForIdentity } from "../channels/identity";
 
 const GROUP_LISTINGS_HEADER =
   "id,type,category,item,brand,ref,condition,price,location,contact_name,contact_phone,source,rating,description\n";
@@ -62,6 +63,7 @@ async function buildGroupRows(
   type: ListingType,
   text: string
 ): Promise<InventoryListing[]> {
+  const source = platformForIdentity(senderPhone) === "telegram" ? "TG-Group" : "WA-Group";
   if (config.aiMatching.enrichmentEnabled) {
     const enrichment = await enrichListingText(text);
     if (enrichment.length > 1) {
@@ -77,7 +79,7 @@ async function buildGroupRows(
         location: e.location || "",
         contactName: senderName || senderPhone,
         contactPhone: senderPhone,
-        source: "WA-Group",
+        source,
         rating: "",
         description: e.evidence,
       }));
@@ -103,7 +105,7 @@ async function buildGroupRows(
       location: "",
       contactName: senderName || senderPhone,
       contactPhone: senderPhone,
-      source: "WA-Group",
+      source,
       rating: "",
       description: text,
     },
@@ -111,10 +113,13 @@ async function buildGroupRows(
 }
 
 /**
- * Silently parses a WhatsApp group message for a WTB/FS-style post. Never sends a reply into
- * the group — group monitoring is read-only by design (matches the "Fi never posts, only
- * reads" promise on the landing page). Not yet validated against a real dealer group; add one
- * this channel's WhatsApp number is a participant of and watch the logs / GET
+ * Silently parses a WhatsApp OR Telegram group message for a WTB/FS-style post. Never sends a
+ * reply into the group — group monitoring is read-only by design (matches the "Fi never posts,
+ * only reads" promise on the landing page). Platform is derived from senderPhone's own prefix
+ * (channels/identity.ts's opaque identity convention — bare digits for WhatsApp, "telegram:<id>"
+ * for Telegram) rather than threaded through as a separate parameter, so every existing
+ * WhatsApp-only call site keeps working unchanged. Not yet validated against a real dealer
+ * group; add one this channel's bot/number is a participant of and watch the logs / GET
  * /admin/group-listings to confirm posts are actually being captured and classified correctly.
  *
  * Dual-writes on purpose: the CSV path (via appendGroupListing, below) keeps feeding the
@@ -131,6 +136,7 @@ export async function handleGroupMessage(
   text: string,
   imageUrl?: string
 ): Promise<void> {
+  const platform = platformForIdentity(senderPhone);
   // Dealer-group jargon, distinct from the 1:1 flow's classify() (which expects first-person
   // phrasing like "buy: X"). Shares the same rule as v4's structured ingestion (postings/
   // normalize.ts) so a group post is never classified one way for the legacy CSV capture below
@@ -161,7 +167,7 @@ export async function handleGroupMessage(
 
   try {
     await ingestAndMatch({
-      platform: "whatsapp",
+      platform,
       chatId: groupId,
       messageId,
       senderIdentity: senderPhone,

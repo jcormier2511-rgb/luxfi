@@ -66,25 +66,39 @@ async function resolveFileUrl(fileId: string): Promise<string> {
 /**
  * Normalizes a Telegram Bot API update into the same shape whapi/client.ts's
  * extractIncomingMessages produces, so server.ts's shared message-processing pipeline doesn't
- * need to know which channel a message came from. Group/channel chats are dropped entirely
- * (return []) rather than misrouted into the WhatsApp-only group-monitoring pipeline — see the
- * scope note in channels/identity.ts. A photo carries only a file_id, so resolving it to a
- * downloadable URL needs an extra getFile call (Telegram's convention; there's no direct photo
- * URL in the update itself).
+ * need to know which channel a message came from. Group/supergroup chats are routed into the
+ * same group-monitoring pipeline WhatsApp groups use (conversation/groupMonitor.ts derives the
+ * platform from the sender identity's own prefix, so no separate Telegram-specific handling is
+ * needed downstream) — channel posts (no `message`, e.g. a broadcast channel) are still dropped
+ * entirely, since there's no individual sender to attribute a listing to. A photo carries only a
+ * file_id, so resolving it to a downloadable URL needs an extra getFile call (Telegram's
+ * convention; there's no direct photo URL in the update itself).
  */
 export async function extractIncomingMessages(update: TelegramUpdate): Promise<NormalizedIncomingMessage[]> {
   const message = update.message;
-  if (!message || message.chat.type !== "private") return [];
+  if (!message) return [];
+  const isGroup = message.chat.type === "group" || message.chat.type === "supergroup";
+  if (!isGroup && message.chat.type !== "private") return [];
+
   const text = message.text ?? message.caption ?? "";
   const hasPhoto = Boolean(message.photo && message.photo.length > 0);
-  // Real reported bug: a document (a .psd, a PDF, any file Telegram didn't compress into a
-  // `photo`) sent with no caption during an active step (e.g. sell-intake's "attach a photo?")
-  // was silently dropped here entirely — the recipient saw no reply at all, indistinguishable
-  // from the bot being stuck. It carries no imageUrl (most document types genuinely aren't a
-  // usable photo), but it must still reach the conversation flow as a real, if content-less,
-  // message — same as an already-supported uncaptioned photo, which passes through with empty
-  // text below and lets the active flow's own "I didn't understand that" fallback respond.
-  if (!text && !hasPhoto && !message.document) return [];
+
+  if (isGroup) {
+    // Group monitoring only ever acts on text it can classify as FS/WTB (see classifyText in
+    // groupMonitor.ts) — unlike the private-chat path below, there's no active conversational
+    // flow with an "I didn't understand" fallback to forward a content-less message to, so a
+    // sticker/bare photo/anonymous-admin post (no `from`) is simply nothing to capture.
+    if (!text || !message.from) return [];
+  } else if (!text && !hasPhoto && !message.document) {
+    // Real reported bug: a document (a .psd, a PDF, any file Telegram didn't compress into a
+    // `photo`) sent with no caption during an active step (e.g. sell-intake's "attach a photo?")
+    // was silently dropped here entirely — the recipient saw no reply at all, indistinguishable
+    // from the bot being stuck. It carries no imageUrl (most document types genuinely aren't a
+    // usable photo), but it must still reach the conversation flow as a real, if content-less,
+    // message — same as an already-supported uncaptioned photo, which passes through with empty
+    // text below and lets the active flow's own "I didn't understand that" fallback respond.
+    return [];
+  }
 
   let imageUrl: string | undefined;
   if (message.photo && message.photo.length > 0) {
@@ -102,9 +116,13 @@ export async function extractIncomingMessages(update: TelegramUpdate): Promise<N
       // not globally -- the shared alreadyProcessed dedup store needs a namespaced id or two
       // different users' first messages (both id "1") collide, silently dropping the second.
       id: `telegram:${message.chat.id}:${message.message_id}`,
-      phone: telegramIdentity(String(message.chat.id)),
+      // A group message's "phone" is the individual sender's own identity (same as WhatsApp's
+      // whapi/client.ts: `phone` is always the poster, `groupId` is the group) — chat.id only
+      // equals from.id for a private 1:1 chat.
+      phone: telegramIdentity(String(isGroup ? message.from!.id : message.chat.id)),
       text,
-      isGroup: false,
+      isGroup,
+      groupId: isGroup ? String(message.chat.id) : undefined,
       senderName: message.from?.first_name ?? message.from?.username,
       imageUrl,
     },

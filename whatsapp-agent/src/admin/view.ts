@@ -86,14 +86,60 @@ export function renderLoginPage(error?: string): string {
 </html>`;
 }
 
+const GROUP_FORM = `<section class="card" id="group-form-card">
+  <h2 id="group-form-title">Add group</h2>
+  <p class="muted">The chat ID is platform-specific: a WhatsApp group's digits, or a Telegram group/supergroup's numeric chat id (negative, e.g. -1001234567890) — grab it from the server logs after Fi is added and someone posts, or GET /admin/group-listings. Wildcards are never accepted.</p>
+  <div class="toolbar">
+    <input id="gf-name" placeholder="Group name">
+    <select id="gf-platform"><option value="whatsapp">WhatsApp</option><option value="telegram">Telegram</option></select>
+    <input id="gf-chatid" placeholder="Chat ID">
+  </div>
+  <div class="toolbar">
+    <select id="gf-status"><option value="active">active</option><option value="inactive">inactive</option></select>
+    <label><input type="checkbox" id="gf-monitoring" checked> Monitoring enabled</label>
+    <label><input type="checkbox" id="gf-fs" checked> Monitor FS</label>
+    <label><input type="checkbox" id="gf-wtb" checked> Monitor WTB</label>
+  </div>
+  <div class="toolbar">
+    <input id="gf-country" placeholder="Country (optional)">
+    <input id="gf-notes" placeholder="Notes (optional)">
+  </div>
+  <div class="toolbar">
+    <button onclick="groupSave()" id="gf-save">Save group</button>
+    <button onclick="groupReset()">Clear / new</button>
+  </div>
+  <pre id="gf-error" class="error"></pre>
+</section>`;
+
 export function renderManagementPage(kind:"users"|"groups"|"administrators"|"coverage"):string {
   const title=kind==="users"?"Approved Users":kind==="groups"?"GROUP MANAGEMENT":kind==="coverage"?"WTB Coverage / Dealer Specialists":"Administrators";
-  const empty=kind==="groups"?"No approved groups yet. Add the exact WhatsApp chat ID after the number is restored; wildcards are never accepted.":`No ${title.toLowerCase()} found.`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}.toolbar{display:flex;gap:8px;margin-bottom:14px}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main><section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to</p><h2>Push Groups</h2><p class="muted">Groups Fi may actively post into (configured independently under listing settings)</p>':''}<div class="toolbar"><input id="q" placeholder="Search"><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
-  const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='';
+  const empty=kind==="groups"?"No approved groups yet. Add one below.":`No ${title.toLowerCase()} found.`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}.toolbar{display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap}input,select{padding:8px;border:1px solid #d1d5db;border-radius:6px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e5e7eb}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to</p><h2>Push Groups</h2><p class="muted">Groups Fi may actively post into (configured independently under listing settings)</p>':''}<div class="toolbar"><input id="q" placeholder="Search"><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
+  const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='', lastRows=[];
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  async function load(){const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));table.querySelector('thead').innerHTML='<tr>'+keys.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+'</tr>').join('')}
+  async function ensureCsrf(){if(csrf)return csrf;const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';return csrf}
+  async function load(){await ensureCsrf();const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];lastRows=rows;document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));const cols=kind==='groups'?[...keys,'actions']:keys;table.querySelector('thead').innerHTML='<tr>'+cols.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+(kind==='groups'?'<td><button onclick="groupEdit('+r.id+')">Edit</button> <button onclick="groupDelete('+r.id+')">Delete</button></td>':'')+'</tr>').join('')}
   load().catch(e=>document.querySelector('#error').textContent=e.message);
+  ${kind==='groups'?`
+  let gfEditId=null;
+  function groupReset(){gfEditId=null;document.querySelector('#group-form-title').textContent='Add group';document.querySelector('#gf-name').value='';document.querySelector('#gf-platform').value='whatsapp';document.querySelector('#gf-chatid').value='';document.querySelector('#gf-status').value='active';document.querySelector('#gf-monitoring').checked=true;document.querySelector('#gf-fs').checked=true;document.querySelector('#gf-wtb').checked=true;document.querySelector('#gf-country').value='';document.querySelector('#gf-notes').value='';document.querySelector('#gf-error').textContent=''}
+  function groupEdit(id){const r=lastRows.find(x=>x.id===id);if(!r)return;gfEditId=id;document.querySelector('#group-form-title').textContent='Edit group #'+id;document.querySelector('#gf-name').value=r.group_name||'';document.querySelector('#gf-platform').value=r.platform||'whatsapp';document.querySelector('#gf-chatid').value=r.whatsapp_chat_id||'';document.querySelector('#gf-status').value=r.status||'active';document.querySelector('#gf-monitoring').checked=!!r.monitoring_enabled;document.querySelector('#gf-fs').checked=r.monitor_fs!==false;document.querySelector('#gf-wtb').checked=r.monitor_wtb!==false;document.querySelector('#gf-country').value=r.country||'';document.querySelector('#gf-notes').value=r.notes||'';document.querySelector('#gf-error').textContent='';window.scrollTo(0,0)}
+  async function groupDelete(id){if(!confirm('Delete group #'+id+'? This cannot be undone.'))return;try{const token=await ensureCsrf();const res=await fetch('/admin/api/groups/'+id,{method:'DELETE',headers:{'X-CSRF-Token':token}});if(res.status===403){location.href='/admin';return}if(!res.ok){const data=await res.json().catch(()=>({}));document.querySelector('#error').textContent=data.error||'Delete failed';return}load()}catch(e){document.querySelector('#error').textContent=e.message}}
+  async function groupSave(){
+    document.querySelector('#gf-error').textContent='';
+    const body={group_name:document.querySelector('#gf-name').value.trim(),platform:document.querySelector('#gf-platform').value,whatsapp_chat_id:document.querySelector('#gf-chatid').value.trim(),status:document.querySelector('#gf-status').value,monitoring_enabled:document.querySelector('#gf-monitoring').checked,monitor_fs:document.querySelector('#gf-fs').checked,monitor_wtb:document.querySelector('#gf-wtb').checked,country:document.querySelector('#gf-country').value.trim(),notes:document.querySelector('#gf-notes').value.trim()};
+    if(!body.group_name||!body.whatsapp_chat_id){document.querySelector('#gf-error').textContent='Group name and chat ID are required';return}
+    try{
+      const token=await ensureCsrf();
+      const url=gfEditId?'/admin/api/groups/'+gfEditId:'/admin/api/groups';
+      const res=await fetch(url,{method:gfEditId?'PUT':'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify(body)});
+      if(res.status===403){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#gf-error').textContent=data.error||'Save failed';return}
+      groupReset();load();
+    }catch(e){document.querySelector('#gf-error').textContent=e.message}
+  }
+  `:''}
   </script></body></html>`;
 }
 
