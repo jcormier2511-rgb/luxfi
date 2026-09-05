@@ -5,7 +5,7 @@
  * that risk entirely for the MVP rather than needing to firewall an AI call's output.
  */
 
-const WTB_KEYWORDS = /\b(wtb|iso|lf|looking\s+for|in\s+search\s+of|ntq|wanted|need|buying)\b/i;
+const WTB_KEYWORDS = /\b(wtb|iso|lf|looking\s+for|looking\s+to\s+buy|in\s+search\s+of|ntq|wanted|need|buying)\b/i;
 // "ready stock"/"in stock"/"available" are dealer-inventory shorthand — a group post announcing
 // what's on hand is a FS signal exactly like "for sale" is, just phrased as availability rather
 // than an offer to sell.
@@ -157,15 +157,31 @@ export type PostingType = "FS" | "WTB";
  * Explicit buying language ALWAYS wins, checked before FS — a post naming WTB/wanted/looking
  * for/need/buying/ISO is a buyer's request even if stock/for-sale language also appears
  * somewhere in the same message (dealer-group chatter is messy; the buyer's own signal is what
- * actually describes what they want). Absent any explicit keyword either way, a message that
- * names an actual price or reference number still classifies as FS rather than being silently
- * dropped — most unstructured trading-group chatter IS exactly this (a dealer's stock/price
- * list with no "for sale" spelled out), and genuine non-listing chatter ("hey how's it going",
- * "thanks!") never has a price or reference to trigger this fallback on.
+ * actually describes what they want). Only ever an explicit keyword hit, never a guess from a
+ * bare price or reference — exported separately from classifyText below so a caller that
+ * already has a known, usually-reliable type (e.g. a source system's own FS/WTB field) can use
+ * this to catch an unambiguous contradiction without also inheriting classifyText's "no keyword
+ * but there's a price, so assume FS" fallback, which is only safe when the type is genuinely
+ * unknown from scratch (chat ingestion) — applied to an already-classified row it would wrongly
+ * flip a real WTB post that happens to state a budget number but no WTB keyword.
  */
-export function classifyText(text: string): PostingType | null {
+export function classifyTextKeyword(text: string): PostingType | null {
   if (WTB_KEYWORDS.test(text)) return "WTB";
   if (FS_KEYWORDS.test(text)) return "FS";
+  return null;
+}
+
+/**
+ * Absent any explicit keyword either way, a message that names an actual price or reference
+ * number still classifies as FS rather than being silently dropped — most unstructured
+ * trading-group chatter IS exactly this (a dealer's stock/price list with no "for sale" spelled
+ * out), and genuine non-listing chatter ("hey how's it going", "thanks!") never has a price or
+ * reference to trigger this fallback on. Only safe when the type is being determined from
+ * scratch (chat ingestion) — see classifyTextKeyword above for the narrower, override-safe check.
+ */
+export function classifyText(text: string): PostingType | null {
+  const keyword = classifyTextKeyword(text);
+  if (keyword) return keyword;
   if (distinctPriceValues(text).size > 0 || extractReference(text) !== null) return "FS";
   return null;
 }

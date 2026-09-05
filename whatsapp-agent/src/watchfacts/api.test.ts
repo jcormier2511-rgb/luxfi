@@ -303,3 +303,28 @@ test("mapToInventoryListings falls back to one empty-detail entry when a sale ha
   assert.equal(listings[0].ref, "");
   assert.equal(listings[0].id, "sale-1");
 });
+
+test('required regression: a listing titled "WTB ..."/"LOOKING TO BUY ..."/"Ntq ..." is classified as WTB even when WatchFacts\' own type says "sale" — a buyer\'s budget must never be counted as a seller\'s ask', () => {
+  for (const title of [
+    "WTB 116500LN Black Oyster 2020 NEW CARD",
+    "LOOKING TO BUY 228235 olive",
+    "Ntq 116500ln black complete",
+    "ISO Rolex 116610LV",
+  ]) {
+    const [listing] = mapToInventoryListings(sale({ title, listings: [] }), "FS");
+    assert.equal(listing.type, "WTB", `"${title}" must be reclassified as WTB despite the source system saying FS`);
+  }
+});
+
+test('required regression: a listing titled "FS ..."/"for sale" is classified as FS even when WatchFacts\' own type says "search" (the WTB side)', () => {
+  const [listing] = mapToInventoryListings(sale({ title: "FS Rolex 116500LN full set", listings: [] }), "WTB");
+  assert.equal(listing.type, "FS");
+});
+
+test("mapToInventoryListings never overrides a title with no explicit WTB/FS keyword — a bare price/reference must not flip an already-known type", () => {
+  // classifyText (used elsewhere for chat ingestion, where the type is unknown from scratch)
+  // would call this FS purely because it names a price -- that fallback must NOT apply here,
+  // where WatchFacts already told us this is a WTB row.
+  const [listing] = mapToInventoryListings(sale({ title: "Rolex 116500LN budget 25000", listings: [] }), "WTB");
+  assert.equal(listing.type, "WTB", "no WTB/FS keyword in the title means the given type is trusted as-is");
+});

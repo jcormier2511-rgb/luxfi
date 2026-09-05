@@ -1,6 +1,6 @@
 import type { Page } from "playwright";
 import { InventoryListing, ListingType } from "../types";
-import { extractReference, extractUnambiguousPrice } from "../postings/normalize";
+import { extractReference, extractUnambiguousPrice, classifyTextKeyword } from "../postings/normalize";
 import { extractNativePrice } from "../fx/currency";
 import { config } from "../config";
 
@@ -141,9 +141,20 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
       [detail?.box ? `Box: ${detail.box}` : null, detail?.papers ? `Papers: ${detail.papers}` : null]
         .filter((v): v is string => v !== null)
         .join(", ") || undefined;
+    // Real reported bug: WatchFacts' own site listed several dealer posts titled "WTB
+    // 116500LN...", "LOOKING TO BUY...", "Ntq 116500ln..." under its "sale" listing type — the
+    // structured `type` this function is called with (from auctions.type) isn't always right,
+    // and trusting it blindly would count a BUYER's budget as a SELLER's ask, corrupting every
+    // downstream FS pricing statistic (Market Guide/Market Pulse). classifyTextKeyword's WTB/FS
+    // keyword check on the listing's own title is the same deterministic classifier chat-ingested
+    // postings already trust for exactly this judgment — reused here as a cross-check, not a
+    // second, independently-tuned classifier. Keyword-only (never classifyText's bare-price-
+    // implies-FS fallback), so a real WTB post that states a budget but no WTB keyword can never
+    // get flipped the other way by this override.
+    const effectiveType: ListingType = classifyTextKeyword(title) ?? type;
     return {
       id: isBundleOfMultiple ? `${sale.id}-${detail?.id ?? i}` : sale.id,
-      type,
+      type: effectiveType,
       category: "watches",
       item: title,
       brand: detail?.brand ?? "",

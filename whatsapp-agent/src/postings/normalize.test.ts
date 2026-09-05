@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   classifyText,
+  classifyTextKeyword,
   normalizeText,
   normalizeReference,
   extractReference,
@@ -31,6 +32,16 @@ test("classifyText recognizes WTB keywords", () => {
 test("classifyText returns null for plain chatter", () => {
   assert.equal(classifyText("hey how's it going"), null);
   assert.equal(classifyText("thanks!"), null);
+});
+
+test('required regression: classifyText/classifyTextKeyword recognize "looking to buy" as a WTB keyword', () => {
+  assert.equal(classifyText("LOOKING TO BUY 228235 olive"), "WTB");
+  assert.equal(classifyTextKeyword("LOOKING TO BUY 228235 olive"), "WTB");
+});
+
+test("required regression: classifyTextKeyword never falls back to a bare-price/reference guess — only an explicit WTB/FS keyword, unlike classifyText", () => {
+  assert.equal(classifyTextKeyword("Rolex 116500LN $28,000"), null, "a price alone is not a keyword hit");
+  assert.equal(classifyText("Rolex 116500LN $28,000"), "FS", "classifyText's own bare-price fallback is unaffected");
 });
 
 test("required regression: explicit buying language wins even when stock/for-sale language also appears in the same message", () => {
