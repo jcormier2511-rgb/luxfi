@@ -57,6 +57,13 @@ export async function setFallbackEnabled(canonicalUserId: number, enabled: boole
   );
 }
 
+/** Drops the row entirely rather than writing back defaults, so a subsequent
+ *  getNotificationPreference reads exactly as it would for a canonical user that has never set
+ *  one — used by the admin full-account reset (server.ts's /admin/user/reset). */
+export async function resetNotificationPreference(canonicalUserId: number): Promise<void> {
+  await withSchema((pool) => pool.query(`DELETE FROM canonical_notification_preferences WHERE canonical_user_id=$1`, [canonicalUserId]));
+}
+
 export async function getLinkedIdentities(canonicalUserId: number): Promise<LinkedIdentity[]> {
   return withSchema(async (pool) => {
     const r = await pool.query(`SELECT platform, identity FROM linked_identities WHERE canonical_user_id=$1 ORDER BY id`, [canonicalUserId]);

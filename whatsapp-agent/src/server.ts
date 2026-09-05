@@ -44,6 +44,7 @@ import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, form
 import { runCheckoutReconciliation, activateClaimedCheckout } from "./billing/checkoutReconciliation";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
+import { getLinkedIdentities, resetNotificationPreference } from "./postings/notificationPreferences";
 import { getPosting, extendPosting, getOwnPostingForMatch, getActivePostingsForUser, closePosting } from "./postings/postingsStore";
 import { getV4OperationalStatus } from "./postings/status";
 import { initSchema } from "./postings/db";
@@ -777,6 +778,35 @@ export function createServer() {
     const active = await getActivePostingsForUser(userId);
     for (const posting of active) await closePosting(posting.id, "admin_closed");
     res.json({ ok: true, identity, closed: active.map((p) => ({ id: p.id, type: p.type, brand: p.brand, model: p.model, reference: p.reference })) });
+  });
+
+  /**
+   * The "make this account look brand new" action for testing — combines what purge and
+   * reset-state each do alone, plus notification preferences (neither existing endpoint
+   * touches those), and does it for EVERY identity linked to the canonical user the given one
+   * resolves to, not just the one named — so hitting this once with either half of an already-
+   * linked WhatsApp/Telegram pair resets both channels' conversation state in one call. Scoped
+   * to one canonical user by design, same reasoning as purge: no "reset everyone".
+   */
+  app.post("/admin/user/reset", async (req, res) => {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const identity = String(req.query.phone ?? "").trim();
+    if (!identity) return res.status(400).json({ error: "?phone=<identity> required (e.g. telegram:5703391972 or 13053897000)" });
+    const userId = await getOrCreateCanonicalUser(platformForIdentity(identity), identity);
+    const linked = await getLinkedIdentities(userId);
+    const active = await getActivePostingsForUser(userId);
+    for (const posting of active) await closePosting(posting.id, "admin_closed");
+    for (const { identity: linkedIdentity } of linked) resetState(linkedIdentity);
+    await resetNotificationPreference(userId);
+    res.json({
+      ok: true,
+      identity,
+      canonicalUserId: userId,
+      identitiesReset: linked.map((l) => l.identity),
+      closedPostings: active.map((p) => ({ id: p.id, type: p.type, brand: p.brand, model: p.model, reference: p.reference })),
+    });
   });
 
   /**
