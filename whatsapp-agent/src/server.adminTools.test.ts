@@ -160,3 +160,50 @@ test("POST /admin/api/tools/user-reset requires CSRF and blocks read_only and su
   assert.equal(body.ok, true);
   assert.equal(body.closedPostings.length, 1);
 });
+
+test("GET /admin/api/tools/entitlement returns the account's plan/override state for any signed-in role", async () => {
+  const readOnlyId = await seedAdmin("read_only");
+  const res = await fetch(`${baseUrl}/admin/api/tools/entitlement?phone=15550005001`, { headers: { Cookie: cookieFor(readOnlyId) } });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { ok: boolean; entitlement: { phone: string; plan: string | null; manualOverrideEnabled: boolean } };
+  assert.equal(body.ok, true);
+  assert.equal(body.entitlement.phone, "15550005001");
+  assert.equal(body.entitlement.plan, null);
+  assert.equal(body.entitlement.manualOverrideEnabled, false);
+});
+
+test("POST /admin/api/tools/entitlement/override grants and revokes the unlimited override, blocked for support", async () => {
+  const phone = "15550005002";
+  const supportId = await seedAdmin("support");
+  const supportCookie = cookieFor(supportId);
+  const supportCsrf = await csrfFor(supportCookie);
+  const blocked = await fetch(`${baseUrl}/admin/api/tools/entitlement/override`, { method: "POST", headers: { Cookie: supportCookie, "Content-Type": "application/json", "X-CSRF-Token": supportCsrf }, body: JSON.stringify({ phone, enabled: true }) });
+  assert.equal(blocked.status, 403);
+
+  const ownerId = await seedAdmin("owner");
+  const ownerCookie = cookieFor(ownerId);
+  const ownerCsrf = await csrfFor(ownerCookie);
+  const granted = await fetch(`${baseUrl}/admin/api/tools/entitlement/override`, { method: "POST", headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf }, body: JSON.stringify({ phone, enabled: true }) });
+  assert.equal(granted.status, 200);
+  assert.equal((await granted.json()).entitlement.manualOverrideEnabled, true);
+
+  const revoked = await fetch(`${baseUrl}/admin/api/tools/entitlement/override`, { method: "POST", headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf }, body: JSON.stringify({ phone, enabled: false }) });
+  assert.equal((await revoked.json()).entitlement.manualOverrideEnabled, false);
+});
+
+test("POST /admin/api/tools/entitlement/plan assigns and clears a plan, rejects an invalid plan key", async () => {
+  const phone = "15550005003";
+  const ownerId = await seedAdmin("owner");
+  const ownerCookie = cookieFor(ownerId);
+  const ownerCsrf = await csrfFor(ownerCookie);
+
+  const assigned = await fetch(`${baseUrl}/admin/api/tools/entitlement/plan`, { method: "POST", headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf }, body: JSON.stringify({ phone, plan: "tier2" }) });
+  assert.equal(assigned.status, 200);
+  assert.equal((await assigned.json()).entitlement.plan, "tier2");
+
+  const invalid = await fetch(`${baseUrl}/admin/api/tools/entitlement/plan`, { method: "POST", headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf }, body: JSON.stringify({ phone, plan: "not-a-real-plan" }) });
+  assert.equal(invalid.status, 400);
+
+  const cleared = await fetch(`${baseUrl}/admin/api/tools/entitlement/plan`, { method: "POST", headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf }, body: JSON.stringify({ phone, plan: "none" }) });
+  assert.equal((await cleared.json()).entitlement.plan, null);
+});

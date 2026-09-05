@@ -452,6 +452,33 @@ export function createServer() {
     res.json({ok:true,...(await resetUserAccount(identity))});
   },true));
 
+  // Panel-session versions of the curl-only /admin/entitlement* endpoints (Fi Build Spec v4
+  // §11: the ONLY way to unlock further approvals or assign a paid plan — no live payment
+  // processor exists, so this is never self-service and never a real charge). Held to the same
+  // administrator/owner bar as user-reset, since granting unlimited access or a paid tier is
+  // just as consequential.
+  app.get("/admin/api/tools/entitlement",api(async(req,res)=>{
+    const phone=String(req.query.phone??"").trim();
+    if(!phone)return res.status(400).json({error:"?phone=<identity> is required"});
+    res.json({ok:true,entitlement:await getEntitlement(phone)});
+  }));
+  app.post("/admin/api/tools/entitlement/override",api(async(req,res,ctx)=>{
+    if(ctx.admin.role==='support')return res.status(403).json({error:"administrator or owner role required"});
+    const phone=typeof req.body?.phone==="string"?req.body.phone.trim():"";
+    if(!phone)return res.status(400).json({error:"phone is required"});
+    const enabled=req.body?.enabled!==false;
+    res.json({ok:true,entitlement:await setManualOverride(phone,enabled)});
+  },true));
+  app.post("/admin/api/tools/entitlement/plan",api(async(req,res,ctx)=>{
+    if(ctx.admin.role==='support')return res.status(403).json({error:"administrator or owner role required"});
+    const phone=typeof req.body?.phone==="string"?req.body.phone.trim():"";
+    if(!phone)return res.status(400).json({error:"phone is required"});
+    const planParam=String(req.body?.plan??"");
+    if(planParam==="none")return res.json({ok:true,entitlement:await setPlan(phone,null)});
+    if(!isPlanKey(planParam))return res.status(400).json({error:"plan must be one of tier1, tier2, tier3, or none"});
+    res.json({ok:true,entitlement:await setPlan(phone,planParam)});
+  },true));
+
   app.get("/admin/tools",async(req,res)=>{const ctx=await adminContext(req).catch(()=>null);if(!ctx)return res.status(401).type('html').send(renderLoginPage());res.type('html').send(renderToolsPage())});
 
   app.get("/admin/logout", (req, res) => {

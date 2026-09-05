@@ -132,6 +132,27 @@ export function renderToolsPage(): string {
   <pre id="reset-error" class="error"></pre>
 </section>
 
+<section class="card">
+  <h2>Membership / entitlement</h2>
+  <p class="muted">The only way to unlock further approvals or assign a paid plan — no live payment processor exists, so this is never self-service and never a real charge. Granting an override or plan requires administrator or owner role.</p>
+  <div class="toolbar"><input id="ent-phone" placeholder="Phone (digits only, no +), e.g. 13053897000"><button onclick="entLookup()">Look up</button></div>
+  <pre id="ent-result"></pre>
+  <pre id="ent-error" class="error"></pre>
+  <div class="toolbar">
+    <button onclick="entOverride(true)">Grant unlimited override</button>
+    <button onclick="entOverride(false)">Revoke override</button>
+  </div>
+  <div class="toolbar">
+    <select id="ent-plan">
+      <option value="tier1">Tier 1 — $50/month, 5/week</option>
+      <option value="tier2">Tier 2 — $150/month, 20/week</option>
+      <option value="tier3">Tier 3 — $300/month, unlimited</option>
+      <option value="none">No plan (locked)</option>
+    </select>
+    <button onclick="entSetPlan()">Set plan</button>
+  </div>
+</section>
+
 </main><script>
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let csrf='';
@@ -180,6 +201,46 @@ export function renderToolsPage(): string {
       if(!res.ok){document.querySelector('#reset-error').textContent=data.error||'Reset failed';return}
       document.querySelector('#reset-result').textContent=JSON.stringify(data,null,2);
     }catch(e){document.querySelector('#reset-error').textContent=e.message}
+  }
+  function entPhone(){return document.querySelector('#ent-phone').value.trim()}
+  async function entLookup(){
+    document.querySelector('#ent-error').textContent='';
+    const phone=entPhone();if(!phone)return;
+    try{
+      await ensureCsrf();
+      const res=await fetch('/admin/api/tools/entitlement?phone='+encodeURIComponent(phone));
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#ent-error').textContent=data.error||'Lookup failed';return}
+      document.querySelector('#ent-result').textContent=JSON.stringify(data.entitlement,null,2);
+    }catch(e){document.querySelector('#ent-error').textContent=e.message}
+  }
+  async function entOverride(enabled){
+    document.querySelector('#ent-error').textContent='';
+    const phone=entPhone();if(!phone)return;
+    if(!confirm((enabled?'Grant':'Revoke')+' the unlimited-approvals override for '+phone+'?'))return;
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/tools/entitlement/override',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify({phone,enabled})});
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#ent-error').textContent=data.error||'Failed';return}
+      document.querySelector('#ent-result').textContent=JSON.stringify(data.entitlement,null,2);
+    }catch(e){document.querySelector('#ent-error').textContent=e.message}
+  }
+  async function entSetPlan(){
+    document.querySelector('#ent-error').textContent='';
+    const phone=entPhone();if(!phone)return;
+    const plan=document.querySelector('#ent-plan').value;
+    if(!confirm('Set plan for '+phone+' to '+plan+'? This is not a real charge — billing is not automated.'))return;
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/tools/entitlement/plan',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify({phone,plan})});
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#ent-error').textContent=data.error||'Failed';return}
+      document.querySelector('#ent-result').textContent=JSON.stringify(data.entitlement,null,2);
+    }catch(e){document.querySelector('#ent-error').textContent=e.message}
   }
   </script></body></html>`;
 }
