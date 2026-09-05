@@ -307,3 +307,17 @@ test("a four-letter reference suffix is a reference: 126710BLRO is the GMT-Maste
   assert.deepEqual(identityForReference("116500"), { brand: "rolex", model: "Daytona" });
   assert.equal(identityForReference("5712G"), null, "an unknown reference implies nothing rather than a guess");
 });
+
+test("required regression: a year stated before the reference is not mistaken for the reference itself", () => {
+  const { extractReference } = require("./normalize") as typeof import("./normalize");
+  assert.equal(
+    extractReference("Sell my 2022 Rolex Daytona 116500LN black dial, pre-owned, full set for $24,500, Miami"),
+    "116500LN",
+    "the leading year token is itself reference-shaped (4 bare digits) and must not win over the real reference"
+  );
+  assert.equal(extractReference("I've got a 2022 Daytona black dial full set."), null, "no actual reference is stated here, so none should be invented from the year");
+  assert.equal(extractReference("FS 116500LN black 2022 preowned full set 24.5k Miami"), "116500LN");
+  // A bare year-shaped token IS still the reference when it's the only reference-shaped thing in
+  // the message — vintage Rolex references (e.g. 1016, the Explorer) genuinely look like a year.
+  assert.equal(extractReference("Rolex 1016 for sale"), "1016");
+});

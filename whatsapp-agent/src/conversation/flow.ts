@@ -31,6 +31,7 @@ import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
 import { formatMarketPulse, getScopedMarketPulse, getNetworkMarketSnapshot, formatNetworkMarketSnapshot } from "../postings/marketPulse";
+import { getMarketGuide, formatMarketGuide } from "../postings/marketGuide";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -1791,10 +1792,30 @@ function applyScopedBuyAnswer(p: PendingBuyIntake, text: string): boolean {
   if (p.step === "details" && looksLikePriceAnswer(text)) return false;
   return applyBuySlots(p, text);
 }
-function nextSell(p: PendingSellIntake): string | null {
+/**
+ * Spec: "If seller gives a reference but no asking price, still show MARKET GUIDE ... Then ask
+ * 'What would you like to ask?' Do NOT automatically choose the seller's price." So the guide is
+ * generated (from current dealer data only — no sellerAsk to compare against yet, hence no
+ * Market position line) before price is ever collected, not after.
+ */
+async function sellPriceQuestion(p: PendingSellIntake): Promise<string> {
+  if (!p.reference) return SELL_PRICE_QUESTION;
+  const guide = await getMarketGuide({
+    brand: p.brand,
+    model: p.model,
+    reference: p.reference,
+    dial: p.dialColor,
+    condition: p.condition,
+    year: p.year,
+    boxPapers: p.boxPapers,
+  });
+  return `${formatMarketGuide(guide)}\n\nWhat would you like to ask?`;
+}
+
+async function nextSell(p: PendingSellIntake): Promise<string | null> {
   if (!p.brand && !p.reference) { p.step="details"; return SELL_DETAILS_QUESTION; }
   if (!p.reference && !p.referenceSkipped) { p.step="details"; return "Do you have the reference number? You can reply skip if you don't know it."; }
-  if (p.price === undefined) { p.step="price"; return SELL_PRICE_QUESTION; }
+  if (p.price === undefined) { p.step="price"; return sellPriceQuestion(p); }
   if (dialRelevant(p.reference) && !p.dialColor) { p.step="dial"; return "Is it the black dial, white dial, or another color?"; }
   if (!p.condition) { p.step="condition"; return CONDITION_INTAKE_QUESTION; }
   if (!p.location) { p.step="location"; return SELL_LOCATION_QUESTION; }
@@ -1856,7 +1877,8 @@ const identityLine=(p:PendingSellIntake|PendingBuyIntake)=>[displayBrand(p.brand
 // start monitoring?" twice. Fields the customer did not give are simply absent; a model they
 // explicitly waived ("any") is said, because that is a decision, not a gap.
 const capitalize=(s:string)=>s.charAt(0).toUpperCase()+s.slice(1);
-const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{
+const CONFIRM_QUESTION_BLOCK = ["", "Should I start monitoring?", "Reply CONFIRM to start monitoring, or send a correction."];
+const reviewLines=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number): string[] => {
   const anyModel="modelSkipped" in p&&p.modelSkipped&&!p.model;
   return [
     "I have:",
@@ -1868,13 +1890,38 @@ const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>{
     p.boxPapers&&`Box/Papers: ${p.boxPapers}`,
     p.year&&`Year: ${p.year}`,
     `Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}`,
-    "",
-    "Should I start monitoring?",
-    "Reply CONFIRM to start monitoring, or send a correction.",
-  ].filter((line): line is string => typeof line === "string").join("\n");
+  ].filter((line): line is string => typeof line === "string");
 };
+const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>
+  [...reviewLines(type,p,price), ...CONFIRM_QUESTION_BLOCK].join("\n");
 const sellSummary = (p: PendingSellIntake) => review("FS",p,p.price!);
 const buySummary = (p: PendingBuyIntake) => review("WTB",p,p.budget!);
+
+/**
+ * Fi's automatic seller-facing Market Guide (spec: "FI AUTOMATIC MARKET GUIDE FOR SELLERS") —
+ * shown at the SAME review step sellSummary already shows, between the listing facts and the
+ * "Should I start monitoring?" question, never as a separate message and never as its own
+ * activation step: generating the guide must not activate the listing (that still only happens
+ * on a later, explicit CONFIRM). Requires a reference — with none, there is nothing in
+ * postings/inventory_listings to look up, so this silently falls back to the plain summary
+ * rather than showing an empty/misleading guide.
+ */
+async function sellSummaryWithMarketGuide(p: PendingSellIntake): Promise<string> {
+  if (!p.reference) return sellSummary(p);
+  const guide = await getMarketGuide({
+    brand: p.brand,
+    model: p.model,
+    reference: p.reference,
+    dial: p.dialColor,
+    condition: p.condition,
+    year: p.year,
+    boxPapers: p.boxPapers,
+    askingPrice: p.price,
+    currency: p.currency,
+  });
+  const guideText = formatMarketGuide(guide, p.price !== undefined ? { amount: p.price, currency: p.currency ?? "USD" } : undefined);
+  return [...reviewLines("FS", p, p.price!), "", guideText, ...CONFIRM_QUESTION_BLOCK].join("\n");
+}
 
 /**
  * A "sell" request has no live automatic buyer-matching wired up yet — there's nothing to
@@ -1892,7 +1939,7 @@ async function startSellIntake(state: ConversationState, request: ItemRequest, m
     ...(suppliedLocation !== undefined ? { location: suppliedLocation } : {}),
     ...(imageUrl !== undefined ? { imageUrl } : {}),
   };
-  applySellSlots(p, originalText); state.pendingSellIntake=p; messages.push(nextSell(p) ?? sellSummary(p));
+  applySellSlots(p, originalText); state.pendingSellIntake=p; messages.push((await nextSell(p)) ?? await sellSummaryWithMarketGuide(p));
 }
 
 async function startBuyIntake(state: ConversationState, request: ItemRequest, messages: string[], originalText: string, suppliedCondition?: string, suppliedLocation?: string): Promise<void> {
@@ -1959,7 +2006,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
-  if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your listing draft open."); messages.push(nextSell(p)??sellSummary(p)); return; }
+  if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your listing draft open."); messages.push((await nextSell(p))??await sellSummaryWithMarketGuide(p)); return; }
   // The scoped answer runs FIRST, and free-text location is only the fallback for what it did
   // not claim. Computing them independently meant a message the scoped answer had already
   // handled was ALSO stored as the location: "change my price to 32000", sent while the draft
@@ -1971,7 +2018,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   const changed=scopedChange || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open."); }
-  messages.push(nextSell(p)??sellSummary(p));
+  messages.push((await nextSell(p))??await sellSummaryWithMarketGuide(p));
 }
 
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<void> {

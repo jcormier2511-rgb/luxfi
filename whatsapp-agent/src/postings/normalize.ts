@@ -331,14 +331,35 @@ export function hasMultipleDistinctPrices(text: string): boolean {
   return distinctPriceValues(text).size > 1;
 }
 
+/** A bare 4-digit token in the 1900-2099 range is exactly as shaped as a watch reference — the
+ *  only thing that tells them apart in free text is context, and a real reference nearby in the
+ *  same message is the strongest signal available. */
+const BARE_YEAR = /^(?:19|20)\d{2}$/;
+
 /** Shared by v3 (matching/engine.ts) and v4 (this file) — one reference-extraction rule, not two hand-synced copies. */
 export function extractReference(text: string): string | null {
   // Remove every recognized price token before looking for a reference. A symbol-prefixed
   // amount such as "€100000" has the same numeric shape as a watch reference once the symbol is
   // ignored, so a dollar-only lookbehind cannot safely protect the newly supported currencies.
   const withoutPrices = priceTokens(text).reduce((remaining, token) => remaining.replace(token, " "), text);
-  const m = withoutPrices.match(REFERENCE_PATTERN);
-  return m ? m[1].toUpperCase() : null;
+  // Find every reference-shaped token rather than just the first: a stated year ("Sell my 2022
+  // Rolex Daytona 116500LN...") is itself reference-shaped (4 bare digits), and matching only the
+  // first occurrence silently returned "2022" as the reference — which then failed to canonicalize
+  // against anything, producing wrong FS/WTB counts and a Market Guide with no data.
+  const matches = [...withoutPrices.matchAll(new RegExp(REFERENCE_PATTERN.source, "gi"))];
+  // A bare year immediately followed by a capitalized word ("2022 Rolex", "2022 Daytona") is
+  // stated as a production year leading into the brand/model, never as the reference itself — a
+  // real reference is never followed directly by a proper-noun-shaped word. Dropped from the
+  // candidate pool entirely (not just deprioritized), so it can't win by default when nothing
+  // else is present either ("I've got a 2022 Daytona black dial full set" names no reference at
+  // all, and must not silently become one).
+  const isYearBeforeProperNoun = (m: RegExpMatchArray): boolean =>
+    BARE_YEAR.test(m[1]) && m.index !== undefined && /^\s+[A-Z]/.test(withoutPrices.slice(m.index + m[0].length));
+  const candidates = matches.filter((m) => !isYearBeforeProperNoun(m));
+  // Otherwise, a bare year-shaped token is treated as the reference only when nothing better is
+  // present, since a vintage reference (e.g. Rolex 1016) can legitimately look exactly like one.
+  const preferred = candidates.find((m) => !BARE_YEAR.test(m[1])) ?? candidates[0];
+  return preferred ? preferred[1].toUpperCase() : null;
 }
 
 /**

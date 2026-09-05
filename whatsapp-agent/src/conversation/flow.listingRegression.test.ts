@@ -225,7 +225,7 @@ test("reference and price remain independent through price and reference correct
 test("a bare price answer updates only price and a price-shaped reference answer is rejected", async () => {
   const phone = "15550002009"; resetState(phone);
   const pricePrompt = await handleIncomingMessage(phone, "FS Rolex Daytona 126500LN");
-  assert.match(pricePrompt.messages.at(-1)!, /asking price/i);
+  assert.match(pricePrompt.messages.at(-1)!, /what would you like to ask/i);
   const priced = await handleIncomingMessage(phone, "38000");
   assert.equal(priced.state.pendingSellIntake?.reference, "126500LN");
   assert.equal(priced.state.pendingSellIntake?.price, 38000);
@@ -248,7 +248,7 @@ test("a common six-digit numeric manufacturer reference remains valid", async ()
   await handleIncomingMessage(phone, "FS Rolex Daytona");
   const referenced = await handleIncomingMessage(phone, "116500");
   assert.equal(referenced.state.pendingSellIntake?.reference, "116500");
-  assert.match(referenced.messages.at(-1)!, /asking price/i);
+  assert.match(referenced.messages.at(-1)!, /what would you like to ask/i);
 });
 
 test("confirmation-time brand and model corrections preserve price and reference", async () => {
