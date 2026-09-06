@@ -135,6 +135,18 @@ export interface IncomingMessage {
 }
 
 export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[] {
+  // Diagnostic only: real reported bug (still under investigation) -- every genuine text message
+  // from WhatsApp arrives alongside a SECOND webhook delivery, same phone, same instant, a
+  // different id, with no text and no image -- which the existing document/sticker catch-all
+  // (see below) lets through as a real, if content-less, message, producing a spurious "I kept
+  // your request draft open." right after a correct reply. `type`/`from_me` aren't in
+  // IncomingMessage's own shape below, so logging the RAW message here is the only way to see
+  // what that companion actually is before deciding how (or whether) to exclude it.
+  for (const m of body.messages ?? []) {
+    console.log(
+      `[whapi] raw id=${m.id} type=${m.type} from_me=${m.from_me} text=${JSON.stringify(m.text?.body ?? null)} hasImage=${Boolean(m.image?.link)}`
+    );
+  }
   return (body.messages ?? [])
     // An image message no longer needs a caption to be picked up — a seller answering Fi's own
     // private "please reply with 3-6 clear photos" request (see matching/photoRequests.ts) very
