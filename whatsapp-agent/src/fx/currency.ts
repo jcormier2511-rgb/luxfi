@@ -65,6 +65,16 @@ export interface NativePrice {
   currency: string;
   /** The verbatim substring this was read from, e.g. "HK$850,000". */
   originalText: string;
+  /**
+   * True only for a bare "$" with no other currency signal at all — `currency` above is then
+   * just config.fx.baseCurrency (USD), a guess, not a confirmed read. Callers that also know the
+   * listing's region (e.g. watchfacts/api.ts) should treat this the same as "no currency
+   * detected" and let inferCurrency's location-based fallback decide instead of locking in USD —
+   * real reported bug: an Asia-based dealer's bare "$228,500" got stored and later averaged as a
+   * confirmed USD price, immune to inferCurrency's Hong-Kong-etc. region defaults because a
+   * truthy (if wrong) currency was already on record by the time that runs.
+   */
+  ambiguousCurrency: boolean;
 }
 
 /**
@@ -81,12 +91,12 @@ function canonicalCurrencyCode(raw: string): string {
   return code === "RMB" ? "CNY" : code;
 }
 
-function parseNativePriceToken(token: string): { amount: number; currency: string } | null {
+function parseNativePriceToken(token: string): { amount: number; currency: string; ambiguousCurrency: boolean } | null {
   const trimmed = token.trim();
   for (const [symbol, currency] of SYMBOL_TO_CURRENCY) {
     if (trimmed.toUpperCase().startsWith(symbol.toUpperCase())) {
       const amount = normalizePriceShorthand(trimmed.slice(symbol.length));
-      return amount === null ? null : { amount, currency };
+      return amount === null ? null : { amount, currency, ambiguousCurrency: false };
     }
   }
   if (trimmed.startsWith("$")) {
@@ -96,17 +106,17 @@ function parseNativePriceToken(token: string): { amount: number; currency: strin
       : trimmed.slice(1);
     const amount = normalizePriceShorthand(amountText);
     const currency = trailingCode ? canonicalCurrencyCode(trailingCode) : config.fx.baseCurrency;
-    return amount === null ? null : { amount, currency };
+    return amount === null ? null : { amount, currency, ambiguousCurrency: !trailingCode };
   }
   const codeBefore = trimmed.match(new RegExp(`^(${CODE_GROUP})`, "i"));
   if (codeBefore) {
     const amount = normalizePriceShorthand(trimmed.slice(codeBefore[0].length));
-    return amount === null ? null : { amount, currency: canonicalCurrencyCode(codeBefore[1]) };
+    return amount === null ? null : { amount, currency: canonicalCurrencyCode(codeBefore[1]), ambiguousCurrency: false };
   }
   const codeAfter = trimmed.match(new RegExp(`(${CODE_GROUP})$`, "i"));
   if (codeAfter) {
     const amount = normalizePriceShorthand(trimmed.slice(0, trimmed.length - codeAfter[0].length));
-    return amount === null ? null : { amount, currency: canonicalCurrencyCode(codeAfter[1]) };
+    return amount === null ? null : { amount, currency: canonicalCurrencyCode(codeAfter[1]), ambiguousCurrency: false };
   }
   return null;
 }

@@ -170,7 +170,12 @@ export function mapToInventoryListings(sale: RawFlashSale, type: ListingType): I
       detailUrl: `https://watchfacts.com/flash-sales/${sale.publicId ?? sale.id}`,
       imageUrl: detail?.frontImage || undefined,
       nativePriceAmount: native?.amount,
-      nativeCurrency: native?.currency,
+      // A bare "$" in the title (native.ambiguousCurrency) is a guess, not a confirmed currency —
+      // storing it as-is would permanently lock in USD for e.g. an Asia-region dealer's local-
+      // currency listing, immune to inferCurrency's region-based defaults at read time (which only
+      // ever run when no currency is already on record). Left undefined instead, exactly like "no
+      // currency detected at all", so that region-aware inference actually gets a chance to run.
+      nativeCurrency: native?.ambiguousCurrency ? undefined : native?.currency,
       originalPriceText: native?.originalText,
       dial: detail?.dialColor ?? undefined,
       model: detail?.model ?? undefined,

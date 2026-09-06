@@ -154,6 +154,21 @@ test("mapToInventoryListings still uses the structured sale.price when the title
   assert.equal(listing.price, "28500");
 });
 
+test("required regression: a bare $ price in the title never locks in nativeCurrency=USD — leaves it undefined so inferCurrency's own region-aware fallback (Hong Kong, Singapore, etc.) gets to run instead", () => {
+  // Real reported bug: an Asia-region listing titled with just "$228,500" (no HK$/SGD/etc. code)
+  // got stored as native_currency='USD' — a confirmed-looking value that permanently blocked
+  // inferCurrency's location-based fallback (it only ever runs when no currency is on record at
+  // all), inflating Market Pulse's average for a reference that actually trades far lower.
+  const [listing] = mapToInventoryListings(saleWithListingTitle("NOS 116500LN white 2019 / white card / full links $228,500", { region: "Hong Kong" }), "FS");
+  assert.equal(listing.nativePriceAmount, 228500, "the amount itself is still read");
+  assert.equal(listing.nativeCurrency, undefined, "the currency must be left for inferCurrency(null, 'Hong Kong') to resolve, not locked to USD here");
+});
+
+test("mapToInventoryListings still trusts an EXPLICIT currency code/symbol in the title as nativeCurrency, even from a non-USD region", () => {
+  const [listing] = mapToInventoryListings(saleWithListingTitle("NOS 116500LN white 2019 HKD228,500", { region: "Hong Kong" }), "FS");
+  assert.equal(listing.nativeCurrency, "HKD", "an explicit code is a real, confirmed signal — never overridden");
+});
+
 test("mapToInventoryListings falls back to the title's own price when the structured field is 0/missing", () => {
   const [listing] = mapToInventoryListings(saleWithListingTitle("Rolex Daytona 116500LN asking $28,500", { price: 0 }), "FS");
   assert.equal(listing.price, "28500");

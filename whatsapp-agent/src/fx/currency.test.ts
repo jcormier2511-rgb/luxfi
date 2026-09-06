@@ -9,7 +9,7 @@ const { extractNativePrice, formatCurrency, inferCurrency } = require("./currenc
 
 test("required regression: extractNativePrice reads a currency-code-prefixed amount (HKD)", () => {
   const result = extractNativePrice("Rolex Daytona 116500LN, HKD850,000, box and papers");
-  assert.deepEqual(result, { amount: 850000, currency: "HKD", originalText: "HKD850,000" });
+  assert.deepEqual(result, { amount: 850000, currency: "HKD", originalText: "HKD850,000", ambiguousCurrency: false });
 });
 
 test("required regression: extractNativePrice reads the HK$ symbol as HKD, never swallowed by the bare $ pattern", () => {
@@ -23,38 +23,39 @@ test("extractNativePrice binds a trailing ISO code to a bare-dollar amount", () 
     amount: 100000,
     currency: "CAD",
     originalText: "$100k CAD",
+    ambiguousCurrency: false,
   });
 });
 
 test("extractNativePrice reads EUR and GBP", () => {
-  assert.deepEqual(extractNativePrice("AP Royal Oak, EUR95,000"), { amount: 95000, currency: "EUR", originalText: "EUR95,000" });
-  assert.deepEqual(extractNativePrice("Submariner, GBP 8,000"), { amount: 8000, currency: "GBP", originalText: "GBP 8,000" });
+  assert.deepEqual(extractNativePrice("AP Royal Oak, EUR95,000"), { amount: 95000, currency: "EUR", originalText: "EUR95,000", ambiguousCurrency: false });
+  assert.deepEqual(extractNativePrice("Submariner, GBP 8,000"), { amount: 8000, currency: "GBP", originalText: "GBP 8,000", ambiguousCurrency: false });
 });
 
 test("extractNativePrice distinguishes JPY and CNY symbols", () => {
   assert.deepEqual(extractNativePrice("Patek 5712G ¥15,000,000"), {
-    amount: 15000000, currency: "JPY", originalText: "¥15,000,000",
+    amount: 15000000, currency: "JPY", originalText: "¥15,000,000", ambiguousCurrency: false,
   });
   assert.deepEqual(extractNativePrice("Patek 5712G CN¥700,000"), {
-    amount: 700000, currency: "CNY", originalText: "CN¥700,000",
+    amount: 700000, currency: "CNY", originalText: "CN¥700,000", ambiguousCurrency: false,
   });
 });
 
 test("extractNativePrice canonicalizes RMB to CNY", () => {
   assert.deepEqual(extractNativePrice("Patek 5712G RMB 900000"), {
-    amount: 900000, currency: "CNY", originalText: "RMB 900000",
+    amount: 900000, currency: "CNY", originalText: "RMB 900000", ambiguousCurrency: false,
   });
 });
 
 test("extractNativePrice consumes repeated dot thousands groups", () => {
   assert.deepEqual(extractNativePrice("Patek 5712G €1.250.000"), {
-    amount: 1250000, currency: "EUR", originalText: "€1.250.000",
+    amount: 1250000, currency: "EUR", originalText: "€1.250.000", ambiguousCurrency: false,
   });
 });
 
-test("required regression: a bare $ with no other currency signal resolves to the configured base currency (USD)", () => {
+test("required regression: a bare $ with no other currency signal resolves to the configured base currency (USD), flagged as a guess (ambiguousCurrency)", () => {
   const result = extractNativePrice("Rolex Daytona 116500LN $28,500");
-  assert.deepEqual(result, { amount: 28500, currency: "USD", originalText: "$28,500" });
+  assert.deepEqual(result, { amount: 28500, currency: "USD", originalText: "$28,500", ambiguousCurrency: true });
 });
 
 test("required regression: comma-formatted amounts parse correctly", () => {
@@ -63,7 +64,7 @@ test("required regression: comma-formatted amounts parse correctly", () => {
 });
 
 test("required regression: k-notation amounts parse correctly, currency-tagged", () => {
-  assert.deepEqual(extractNativePrice("SGD145k full set"), { amount: 145000, currency: "SGD", originalText: "SGD145k" });
+  assert.deepEqual(extractNativePrice("SGD145k full set"), { amount: 145000, currency: "SGD", originalText: "SGD145k", ambiguousCurrency: false });
   assert.equal(extractNativePrice("$28.5k")?.amount, 28500);
 });
 
