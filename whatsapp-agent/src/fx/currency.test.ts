@@ -5,7 +5,7 @@ process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { extractNativePrice, formatCurrency, inferCurrency } = require("./currency") as typeof import("./currency");
+const { extractNativePrice, formatCurrency, inferCurrency, UNKNOWN_CURRENCY } = require("./currency") as typeof import("./currency");
 
 test("required regression: extractNativePrice reads a currency-code-prefixed amount (HKD)", () => {
   const result = extractNativePrice("Rolex Daytona 116500LN, HKD850,000, box and papers");
@@ -111,8 +111,12 @@ test("required regression: inferCurrency never overrides an explicit detected cu
   assert.equal(inferCurrency("EUR", "Hong Kong"), "EUR");
 });
 
-test('required regression: inferCurrency defaults to USD for a broad region ("Asia", spanning several distinct currencies) rather than guessing', () => {
-  assert.equal(inferCurrency(null, "Asia"), "USD");
+test('required regression: inferCurrency reports a broad, multi-currency-spanning region ("Asia"/"Europe") as unconvertible rather than guessing USD -- real reported bug: several 116500LN listings with region="Asia" and no currency signal defaulted to USD and were averaged in at face value ($228,500/$192,500/$347,000), inflating "Avg FS ask" from ~$29k to $125k+, none of them caught as IQR outliers because there were enough to shift the sample\'s own quartiles', () => {
+  assert.equal(inferCurrency(null, "Asia"), UNKNOWN_CURRENCY);
+  assert.equal(inferCurrency(null, "Europe"), UNKNOWN_CURRENCY);
+});
+
+test("required regression: inferCurrency still defaults a truly location-less price to USD -- unlike a STATED-but-unmappable region, there is equally nothing to go on either way, so this remains the least-wrong default rather than dropping every listing with no location at all", () => {
   assert.equal(inferCurrency(null, "North America"), "USD");
   assert.equal(inferCurrency(null, null), "USD");
 });

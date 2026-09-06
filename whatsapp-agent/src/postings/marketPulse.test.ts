@@ -220,6 +220,39 @@ test('required regression: a WatchFacts listing with no detected native currency
   }
 });
 
+test('required regression: several listings all showing location="Asia" with no currency of their own must never be averaged in as USD -- the actual live-reported pattern (dozens of Asia-region rows at $188k-$351k for a 116500LN that trades $27k-$31k), where IQR alone did not catch them because there were enough of them to shift the sample\'s own quartiles', async () => {
+  const normalPrices = [27000, 27500, 28000, 28500, 29000, 29500, 30000, 30500, 31000];
+  await db.withSchema((pool) =>
+    Promise.all(
+      normalPrices.map((price, i) =>
+        pool.query(
+          `INSERT INTO postings (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,location,status,expires_at)
+           VALUES ('whatsapp','chat','g',$1,NULL,'FS','normal','116500LN',$2,'USD','North America','active',now()+interval '1 day')`,
+          [`normal-${i}`, price]
+        )
+      )
+    )
+  );
+  const asiaPrices = [188500, 219000, 265000, 351000, 205000, 208000];
+  await db.withSchema((pool) =>
+    Promise.all(
+      asiaPrices.map((price, i) =>
+        pool.query(
+          `INSERT INTO postings (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,location,status,expires_at)
+           VALUES ('whatsapp','chat','g',$1,NULL,'FS','asia','116500LN',$2,'','Asia','active',now()+interval '1 day')`,
+          [`asia-${i}`, price]
+        )
+      )
+    )
+  );
+
+  const pulse = await getMarketPulse("116500LN");
+  assert.equal(pulse.fsCount, 15, "every listing still counts as an active listing");
+  assert.equal(Math.round(pulse.averageFsAsk!), 29000, "the average reflects only the real $27k-$31k market, never the Asia rows guessed as USD");
+  assert.deepEqual(pulse.averageBasis, { converted: 9, skipped: 6, outliers: 0 });
+  assert.match(formatMarketPulse(pulse), /from 9 of 15 FS listings, converted to USD — 6 had no usable price or FX rate/);
+});
+
 test("a listing Fi cannot convert is reported as skipped rather than guessed at", async () => {
   rates._setRatesForTests({ base: "USD", rates: { USD: 1 }, fetchedAt: new Date() });
   try {

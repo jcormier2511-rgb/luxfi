@@ -187,8 +187,30 @@ const REGION_CURRENCY_DEFAULT: ReadonlyMap<string, string> = new Map([
   ["switzerland", "CHF"],
 ]);
 
+/**
+ * Continent-scale buckets a real WatchFacts listing's own `region` field can actually hold —
+ * spanning several distinct currencies (HKD/JPY/CNY/SGD for "Asia"; EUR/GBP/CHF for "Europe"),
+ * so no single one can be assumed. Real reported bug: several 116500LN listings all carried
+ * region="Asia" with no other currency signal, defaulted to USD (the same fallback a genuinely
+ * blank location gets), and got averaged in at face value — $228,500/$192,500/$347,000
+ * "listings" for a reference that trades $27-31k, none of them caught as IQR outliers because
+ * there were enough of them to shift the sample's own quartiles. Unlike a truly blank location
+ * (nothing stated at all, where USD remains the least-wrong default), a STATED-but-unmappable
+ * region is a real, known-ambiguous signal — reporting it as unconvertible (skipped from the
+ * average, not silently priced in) is honest about that, where guessing USD was not.
+ */
+const AMBIGUOUS_MULTI_CURRENCY_REGIONS = new Set(["asia", "europe"]);
+
+/** Never a real ISO 4217 code — convertAmount already treats any code absent from the live
+ *  rates table as unconvertible, so this reliably reports as "skipped" everywhere a converted
+ *  USD figure is computed, with no changes needed outside inferCurrency itself. */
+export const UNKNOWN_CURRENCY = "UNKNOWN_CURRENCY";
+
 export function inferCurrency(rawCurrency: string | null, location: string | null): string {
   if (rawCurrency) return rawCurrency;
   const region = (location ?? "").trim().toLowerCase();
-  return REGION_CURRENCY_DEFAULT.get(region) ?? "USD";
+  const mapped = REGION_CURRENCY_DEFAULT.get(region);
+  if (mapped) return mapped;
+  if (AMBIGUOUS_MULTI_CURRENCY_REGIONS.has(region)) return UNKNOWN_CURRENCY;
+  return "USD";
 }

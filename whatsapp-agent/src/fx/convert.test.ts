@@ -66,6 +66,12 @@ test("required regression: an unknown/unsupported currency returns null rather t
   assert.equal(await convertAmount(1000, "USD", "XYZ"), null);
 });
 
+test("required: fx/currency.ts's UNKNOWN_CURRENCY sentinel (inferCurrency's answer for a broad, unmappable region like \"Asia\") is treated exactly like any other unrecognized code -- unconvertible, never guessed", async () => {
+  const { UNKNOWN_CURRENCY } = require("./currency") as typeof import("./currency");
+  _setRatesForTests(FRESH_RATES);
+  assert.equal(await convertAmount(228500, UNKNOWN_CURRENCY, "USD"), null);
+});
+
 test("required regression: a failed rates fetch (never mocked to succeed) resolves to null, never throws", async (t) => {
   _resetRatesForTests();
   // No rates ever seeded — getRates() will try an actual fetch. Mocked here to fail exactly
