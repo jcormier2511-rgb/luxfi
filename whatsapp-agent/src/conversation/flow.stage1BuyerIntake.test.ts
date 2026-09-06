@@ -27,7 +27,7 @@ process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 const db = require("../postings/db") as typeof import("../postings/db");
 const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 const { handleIncomingMessage, parseItemRequests } = require("./flow") as typeof import("./flow");
-const { resetState, getState } = require("./stateStore") as typeof import("./stateStore");
+const { resetState, getState, _resetContentDedupeForTests } = require("./stateStore") as typeof import("./stateStore");
 const { getActivePostingsForUser, createDirectPosting } = require("../postings/postingsStore") as typeof import("../postings/postingsStore");
 const { getOrCreateCanonicalUser } = require("../postings/identity") as typeof import("../postings/identity");
 const { platformForIdentity } = require("../channels/identity") as typeof import("../channels/identity");
@@ -195,4 +195,35 @@ test("old listings and an unfinished draft do not contaminate a new complete req
   assert.ok(draft, "a draft for the NEW request exists");
   for (const [field, value] of Object.entries(EXPECTED)) assert.equal((draft as unknown as Record<string, unknown>)[field], value, field);
   assert.equal(draft!.step, "confirm");
+});
+
+/**
+ * Real reported bug: a single "Hi, I want to join LuxFi network" produced THREE replies —
+ * "What would you like to buy? Please include the brand and model." (a fresh buy-intake draft
+ * opened), then "I kept your request draft open." followed by the very same question again. The
+ * message-id dedup (alreadyProcessed) never caught it because the two deliveries carried
+ * DIFFERENT ids for what was, to the sender, one message (a WhatsApp multi-device echo / a
+ * provider retry with a new id) -- so the whole pipeline ran twice: the first pass created the
+ * draft and asked the question, the second pass then answered that just-created, still-empty
+ * draft with "kept your request draft open" plus the same question again.
+ */
+test("required regression: a duplicate delivery of the same message under a DIFFERENT id is processed once, not twice", async (t) => {
+  const sendTextSpy = t.mock.method(whapi, "sendText", async () => {});
+  _resetContentDedupeForTests();
+  const phone = fresh("15550779").replace(/[^\d]/g, "");
+  resetState(phone);
+
+  // No brand/reference named -- the exact shape of the live message ("Hi, I want to join LuxFi
+  // network") that opened a brand-new, still-empty buy-intake draft and asked its first question.
+  const text = "I need help, can you assist";
+  await server.processIncomingMessages([{ id: "dup-a", phone, text, isGroup: false }]);
+  const repliesFromFirstDelivery = sendTextSpy.mock.callCount();
+  assert.ok(repliesFromFirstDelivery > 0, "the first, real delivery gets at least one reply");
+  assert.ok(getState(phone).pendingBuyIntake, "precondition: it opened a fresh buy-intake draft");
+
+  // Same phone, same text, a DIFFERENT id -- exactly what alreadyProcessed(id) cannot catch (a
+  // WhatsApp multi-device echo / provider retry delivers the SAME real message under a new id).
+  await server.processIncomingMessages([{ id: "dup-b", phone, text, isGroup: false }]);
+  assert.equal(sendTextSpy.mock.callCount(), repliesFromFirstDelivery,
+    "the duplicate delivery must add ZERO further replies -- without this fix it answered the just-created draft a second time (\"I kept your request draft open.\" plus the same question again)");
 });

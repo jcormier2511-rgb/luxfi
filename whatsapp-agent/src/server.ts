@@ -8,7 +8,7 @@ import { sendText, sendBannerImage, NormalizedIncomingMessage } from "./channels
 import { platformForIdentity } from "./channels/identity";
 import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
 import { verifyTwilioSignature, extractIncomingMessage as extractSmsMessage } from "./channels/sms";
-import { alreadyProcessed, getState, resetState, markPendingEscrowOffer } from "./conversation/stateStore";
+import { alreadyProcessed, alreadyProcessedContent, getState, resetState, markPendingEscrowOffer } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
@@ -185,7 +185,7 @@ export async function tryHandleV4Extend(phone: string, text: string): Promise<st
  * same normalized shape (channels/types.ts's NormalizedIncomingMessage) before calling this.
  */
 export async function processIncomingMessages(incoming: NormalizedIncomingMessage[]): Promise<void> {
-  const filtered = incoming.filter((m) => !alreadyProcessed(m.id));
+  const filtered = incoming.filter((m) => !alreadyProcessed(m.id) && !alreadyProcessedContent(m.phone, m.text, m.imageUrl));
 
   for (const message of filtered) {
     try {

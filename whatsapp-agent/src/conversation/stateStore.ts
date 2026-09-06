@@ -73,3 +73,40 @@ export function alreadyProcessed(messageId: string | undefined): boolean {
   fs.writeFileSync(processedIdsPath, JSON.stringify(trimmed));
   return false;
 }
+
+/** How long a repeat of the exact same (phone, text, image) is treated as a duplicate delivery
+ *  rather than a second, deliberate message. Short on purpose -- long enough to absorb a
+ *  same-instant duplicate webhook, short enough that a person who impatiently retypes the same
+ *  word because Fi hasn't replied yet (a real, separately reported complaint) still gets through. */
+const DUPLICATE_CONTENT_WINDOW_MS = 5_000;
+let recentContent: { key: string; at: number }[] = [];
+
+/**
+ * De-dupes a genuine duplicate delivery that `alreadyProcessed` above cannot catch because it
+ * arrives under a DIFFERENT message id for the same real message -- observed live: WhatsApp
+ * multi-device echoes / a Whapi retry delivered one real "Hi, I want to join LuxFi network" as
+ * two distinct ids, milliseconds apart. Each passed the id-based check, so it was processed
+ * twice: the first pass opened a fresh buy-intake draft and asked "What would you like to buy?",
+ * the second pass then answered that just-created (still-empty) draft with "I kept your request
+ * draft open." followed by the same question again -- three replies to one message. Keyed on
+ * phone (so two different senders' identical text, e.g. two people both typing "yes" in a group,
+ * never collide) plus text plus image, and windowed rather than permanent, so it only ever
+ * suppresses a true near-instant repeat.
+ */
+export function alreadyProcessedContent(phone: string, text: string, imageUrl?: string): boolean {
+  // A genuinely content-less message (a document/sticker with no caption -- see whapi/client.ts)
+  // has nothing to compare: two real, distinct ones would collide on the same empty key. Only
+  // id-based dedup (alreadyProcessed above) applies to those.
+  if (!text.trim() && !imageUrl) return false;
+  const now = Date.now();
+  recentContent = recentContent.filter((r) => now - r.at < DUPLICATE_CONTENT_WINDOW_MS);
+  const key = `${phone}:${text.trim().toLowerCase()}:${imageUrl ?? ""}`;
+  if (recentContent.some((r) => r.key === key)) return true;
+  recentContent.push({ key, at: now });
+  return false;
+}
+
+/** Test-only -- clears the in-memory content-dedup window between tests. */
+export function _resetContentDedupeForTests(): void {
+  recentContent = [];
+}
