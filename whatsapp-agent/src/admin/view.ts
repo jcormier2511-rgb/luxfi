@@ -84,6 +84,10 @@ header nav { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 header nav a { color: var(--text-muted); text-decoration: none; font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 999px; transition: background-color .12s, color .12s; }
 header nav a:hover { background: var(--surface-2); color: var(--text); }
 header nav a[href="/admin/logout"] { color: var(--text-faint); }
+header nav a.active { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+.jumpnav { display: flex; gap: 6px; flex-wrap: wrap; margin: -6px 0 18px; grid-column: 1 / -1; }
+.jumpnav a { font-size: 12.5px; font-weight: 500; color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); padding: 5px 11px; border-radius: 999px; text-decoration: none; transition: background-color .12s, color .12s; }
+.jumpnav a:hover { background: var(--surface-2); color: var(--text); }
 main { max-width: 1080px; margin: 0 auto; padding: 24px 28px 56px; display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 main.stack { display: block; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; box-shadow: var(--shadow); overflow-x: auto; }
@@ -143,6 +147,11 @@ footer { text-align: center; color: var(--text-faint); font-size: 11px; padding:
 }
 `;
 
+/** Highlights whichever nav link matches the current page, so it's always visible at a glance
+ *  which of the 7 admin pages you're on — resolved against each link's own href rather than
+ *  hard-coded per page, so the same snippet works unmodified on every page that includes it. */
+const NAV_ACTIVE_SCRIPT = `(function(){var path=location.pathname.replace(/\\/$/,'')||'/';document.querySelectorAll('header nav a').forEach(function(a){var href=a.getAttribute('href');var linkPath;try{linkPath=new URL(href,location.href).pathname.replace(/\\/$/,'')||'/'}catch(e){return}if(linkPath===path)a.classList.add('active')})})();`;
+
 /** Never repopulates credentials and always uses generic errors to avoid account discovery. */
 export function renderLoginPage(error?: string): string {
   return `<!doctype html>
@@ -199,7 +208,7 @@ const GROUP_FORM = `<section class="card" id="group-form-card">
 export function renderManagementPage(kind:"users"|"groups"|"administrators"|"coverage"):string {
   const title=kind==="users"?"Approved Users":kind==="groups"?"Group Management":kind==="coverage"?"WTB Coverage / Dealer Specialists":"Administrators";
   const empty=kind==="groups"?"No approved groups yet. Add one below.":`No ${title.toLowerCase()} found.`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to (read-only — never posts here)</p>':''}<div class="toolbar"><div class="field"><label for="q">Search</label><input id="q" placeholder="Search"></div><div class="field"><label for="status">Status</label><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select></div><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><script>${NAV_ACTIVE_SCRIPT}</script><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to (read-only — never posts here)</p>':''}<div class="toolbar"><div class="field"><label for="q">Search</label><input id="q" placeholder="Search"></div><div class="field"><label for="status">Status</label><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select></div><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
   const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='', lastRows=[];
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   async function ensureCsrf(){if(csrf)return csrf;const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';return csrf}
@@ -235,7 +244,7 @@ export function renderManagementPage(kind:"users"|"groups"|"administrators"|"cov
  * delete one); this is the first browser UI for it.
  */
 export function renderPushGroupsPage(): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Push Groups</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>Push Groups</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Push Groups</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>Push Groups</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><script>${NAV_ACTIVE_SCRIPT}</script><main>
 
 <section class="card" id="pg-form-card">
   <h2 id="pg-form-title">Add push group</h2>
@@ -311,9 +320,17 @@ export function renderPushGroupsPage(): string {
  * once signed in, with CSRF on the destructive action.
  */
 export function renderToolsPage(): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Tools</title><style>${PAGE_STYLES} main{display:block;max-width:1000px}.card{margin-bottom:18px}</style></head><body><header><h1>Tools</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Tools</title><style>${PAGE_STYLES} main{display:block;max-width:1000px}.card{margin-bottom:18px}</style></head><body><header><h1>Tools</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><script>${NAV_ACTIVE_SCRIPT}</script><main>
 
-<section class="card">
+<nav class="jumpnav">
+  <a href="#mg-section">Market Guide debug</a>
+  <a href="#inv-section">Inventory search</a>
+  <a href="#reset-section">Full account reset</a>
+  <a href="#ent-section">Membership / entitlement</a>
+  <a href="#id-section">All known identities</a>
+</nav>
+
+<section class="card" id="mg-section">
   <h2>Market Guide debug</h2>
   <p class="muted">Every raw comparable row behind a reference's Market Guide — raw price, raw currency, inferred currency, USD conversion.</p>
   <div class="toolbar"><div class="field"><label for="mg-ref">Reference</label><input id="mg-ref" placeholder="e.g. 116500LN"></div><button onclick="mgLookup()">Look up</button></div>
@@ -322,7 +339,7 @@ export function renderToolsPage(): string {
   <pre id="mg-error" class="error"></pre>
 </section>
 
-<section class="card">
+<section class="card" id="inv-section">
   <h2>Inventory search</h2>
   <p class="muted">Searches WatchFacts inventory (ref/item/description, active AND inactive rows).</p>
   <div class="toolbar"><div class="field"><label for="inv-q">Search term</label><input id="inv-q" placeholder="e.g. 116500"></div><button onclick="invLookup()">Search</button></div>
@@ -331,7 +348,7 @@ export function renderToolsPage(): string {
   <pre id="inv-error" class="error"></pre>
 </section>
 
-<section class="card">
+<section class="card" id="reset-section">
   <h2>Full account reset</h2>
   <p class="muted">Closes every active listing and clears conversation state + notification preference for every identity linked to the given one (e.g. both halves of a linked WhatsApp/Telegram pair). Cannot be undone. Requires administrator or owner role.</p>
   <div class="toolbar"><div class="field"><label for="reset-id">Identity</label><input id="reset-id" placeholder="e.g. telegram:5703391972 or 13053897000"></div><button class="btn-danger" onclick="resetAccount()">Reset account</button></div>
@@ -339,7 +356,7 @@ export function renderToolsPage(): string {
   <pre id="reset-error" class="error"></pre>
 </section>
 
-<section class="card">
+<section class="card" id="ent-section">
   <h2>Membership / entitlement</h2>
   <p class="muted">The only way to unlock further approvals or assign a paid plan — no live payment processor exists, so this is never self-service and never a real charge. Granting an override or plan requires administrator or owner role.</p>
   <div class="toolbar"><div class="field"><label for="ent-phone">Phone</label><input id="ent-phone" placeholder="Digits only, no +, e.g. 13053897000"></div><button onclick="entLookup()">Look up</button></div>
@@ -360,7 +377,7 @@ export function renderToolsPage(): string {
   </div>
 </section>
 
-<section class="card">
+<section class="card" id="id-section">
   <h2>All known identities</h2>
   <p class="muted">Every phone number / Telegram ID that has ever contacted Fi at all, unfiltered — this is the raw list behind the dashboard's "Total users" and "Known unique users" figures. Both halves of an already-linked WhatsApp/Telegram pair share the same Canonical ID and each get their own row.</p>
   <div class="toolbar"><button onclick="idLookup()">Load all identities</button></div>
@@ -672,7 +689,8 @@ function renderMembershipCard(metrics: AdminDashboardData["metrics"], metricsErr
     </dl>
     <p class="muted">"Canceled" is approximated: no live cancellation event is tracked anywhere yet, so this
       counts accounts with no active plan that have approved at least one match before -- it can't
-      distinguish an actual downgrade from someone who simply never converted past their trial.</p>
+      distinguish an actual downgrade from someone who simply never converted past their trial.
+      Grant an override or assign a plan in <a href="/admin/tools#ent-section">Tools → Membership / entitlement</a>.</p>
   </section>`;
 }
 
@@ -737,7 +755,7 @@ function renderActivityCard(metrics: AdminDashboardData["metrics"]): string {
     : `<p class="muted">No user activity recorded yet.</p>`;
   return `<section class="card full">
     <h2>Activity by user — searches or approvals only (top 20, most recent first)</h2>
-    <p class="muted">Excludes anyone who has messaged Fi but never run a search or approved a match yet — those users still count toward "Total users" and "Known unique users" above, they just won't appear in this table.</p>
+    <p class="muted">Excludes anyone who has messaged Fi but never run a search or approved a match yet — those users still count toward "Total users" and "Known unique users" above, they just won't appear in this table. See every one of them, unfiltered, in <a href="/admin/tools#id-section">Tools → All known identities</a>.</p>
     ${rows}
   </section>`;
 }
@@ -756,6 +774,7 @@ export function renderDashboard(data: AdminDashboardData): string {
     <h1>LuxFi Admin</h1>
     <nav><a href="#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav>
   </header>
+  <script>${NAV_ACTIVE_SCRIPT}</script>
   <main>
     ${renderWhapiCard(data.whapi)}
     ${renderDatabaseCard(data.database)}
