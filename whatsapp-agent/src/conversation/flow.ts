@@ -875,8 +875,12 @@ const MARKET_OVERVIEW_COMMAND = /^(?:market overview|overall market|whole market
 // Live-reported: "what's the market for rolex 1680 subs" fell through entirely — the command
 // only ever recognized a message STARTING with the market keyword itself ("market pulse X"),
 // never the at-least-as-natural "what's the market for X" phrasing a person actually asks with.
+// The separator right after the keyword is [\s:–—-]+, not just \s+, so a stylistic separator
+// with no space before it ("market pulse: 116500LN") is consumed as part of THIS alternative
+// instead of forcing a backtrack to the bare "market" alternative (which would then leave a
+// stray "pulse:" stuck to the front of the argument, failing validation downstream).
 const MARKET_REFERENCE_COMMAND =
-  /^(?:(?:what'?s|what\s+is|how'?s|how\s+is)\s+the\s+)?(?:market\s+pulse|price\s+pulse|market\s+price|market\s+data|market\s+check|market|pulse)\s+(?:on\s+|for\s+)?(.+)$/i;
+  /^(?:(?:what'?s|what\s+is|how'?s|how\s+is)\s+the\s+)?(?:market\s+pulse|price\s+pulse|market\s+price|market\s+data|market\s+check|market|pulse)[\s:–—-]+(?:on\s+|for\s+)?(.+)$/i;
 
 /**
  * "market pulse 116500LN", "market pulse Rolex 116500LN", "market 116500LN", "price pulse
@@ -900,7 +904,14 @@ const BARE_REFERENCE_NICKNAMES = new Set(["sub", "subs", "submariner"]);
 function parseMarketReferenceCommand(text: string): { reference: string; brand?: string } | null {
   const m = text.trim().replace(/\s*[?.!]+$/, "").match(MARKET_REFERENCE_COMMAND);
   if (!m) return null;
-  const { brand, rest } = splitLeadingBrand(m[1]);
+  // Tolerate a stylistic separator between the command keyword and its argument -- "market pulse
+  // — 116500LN", "market pulse: 116500LN", "market pulse - 116500LN" all mean exactly what
+  // "market pulse 116500LN" does. Real reported gap: Fi's own reply header uses an em dash
+  // ("Market Pulse — 116500LN"), and a user typing (or pasting) that same style back in got the
+  // generic "I didn't understand that" instead of a real answer -- Fi's own messaging promises
+  // "talk to me normally, like texting a person"; a leading dash/colon isn't a different request.
+  const argument = m[1].replace(/^[\s:–—-]+/, "");
+  const { brand, rest } = splitLeadingBrand(argument);
   const candidate = rest.replace(/^(?:the\s+)?(?:ref(?:erence)?\.?\s*)?/i, "").trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9./ -]*$/.test(candidate)) return null;
   const reference = extractReference(candidate);

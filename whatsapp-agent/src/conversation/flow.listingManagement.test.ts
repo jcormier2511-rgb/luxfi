@@ -372,6 +372,13 @@ const MARKET_REFERENCE_COMMANDS = [
   // natural phrasing.
   "what's the market for 116500LN",
   "what is the market for Rolex 116500LN",
+  // Required regression: Fi's own reply header ("Market Pulse — 116500LN") uses an em dash, and
+  // a user typing/pasting that same style back in got "I didn't understand" instead of a real
+  // answer -- Fi's own messaging promises "talk to me normally", so a stylistic separator here
+  // must never matter, the same way case doesn't.
+  "Market Pulse — 116500LN",
+  "market pulse: 116500LN",
+  "market pulse - 116500LN",
 ];
 
 for (const command of MARKET_REFERENCE_COMMANDS) {
