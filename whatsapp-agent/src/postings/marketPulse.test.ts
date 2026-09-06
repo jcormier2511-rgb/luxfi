@@ -40,7 +40,7 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
     { reference:"126500LN", requested:"126500LN", fsCount:4, wtbCount:2, averageFsAsk:29833.33,
       // The fourth FS posting has no price at all, so it counts toward fsCount but cannot
       // contribute to the average — and the basis says so rather than leaving it invisible.
-      averageBasis:{ converted:3, skipped:1 },
+      averageBasis:{ converted:3, skipped:1, outliers:0 },
       // None of these fixtures carries a detail_url, so there is nothing to link.
       listingUrls:[] });
   // Every pulse states the scope it counted, so a brand-wide number can't be mistaken for one
@@ -64,7 +64,10 @@ test("116500 and 116500LN aggregate as one canonical bucket, in either direction
   await inventory.upsertListings([
     { id:"wf-ln", type:"FS", category:"watches", item:"Daytona", brand:"Rolex", ref:"116500LN", condition:"new", price:"$30,000", location:"NY", contactName:"A", contactPhone:"1", rating:"", description:"" },
     { id:"wf-bare", type:"FS", category:"watches", item:"Daytona", brand:"Rolex", ref:"116500", condition:"new", price:"$34,000", location:"NY", contactName:"B", contactPhone:"2", rating:"", description:"" },
-    { id:"wf-mirrored", type:"FS", category:"watches", item:"Daytona", brand:"Rolex", ref:"116500", condition:"new", price:"$50,000", location:"NY", contactName:"C", contactPhone:"3", rating:"", description:"" },
+    // Kept close to the rest of the cluster on purpose -- a value far enough out to be an IQR
+    // outlier would be excluded from the average by the outlier-filtering test below this one,
+    // which is not what this test is about.
+    { id:"wf-mirrored", type:"FS", category:"watches", item:"Daytona", brand:"Rolex", ref:"116500", condition:"new", price:"$36,000", location:"NY", contactName:"C", contactPhone:"3", rating:"", description:"" },
     { id:"wf-wtb-bare", type:"WTB", category:"watches", item:"Daytona", brand:"Rolex", ref:"116500", condition:"", price:"", location:"", contactName:"D", contactPhone:"4", rating:"", description:"" },
   ], new Date().toISOString());
 
@@ -77,12 +80,13 @@ test("116500 and 116500LN aggregate as one canonical bucket, in either direction
       ('whatsapp','chat','approved-group','g-dashed',NULL,'WTB','group WTB, punctuated reference','116500-LN',NULL,'USD','active',now()+interval '1 day'),
       -- the same underlying WatchFacts listing, mirrored under the OTHER reference form: it must
       -- be counted once, not once per form.
-      ('watchfacts_api','api',NULL,NULL,'wf-mirrored','FS','mirror of wf-mirrored','116500LN',50000,'USD','active',now()+interval '1 day'),
+      ('watchfacts_api','api',NULL,NULL,'wf-mirrored','FS','mirror of wf-mirrored','116500LN',36000,'USD','active',now()+interval '1 day'),
       ('whatsapp','chat','approved-group','g-other',NULL,'FS','a different watch entirely','116610LN',9000,'USD','active',now()+interval '1 day')
   `));
 
   // 3 inventory FS (wf-mirrored suppressed as a mirror) + 2 group FS + 1 mirrored FS posting = 5.
-  const expected = { reference:"116500LN", fsCount:5, wtbCount:2, averageFsAsk:34400 };
+  // (30000+34000+36000+32000+26000)/5 = 31600.
+  const expected = { reference:"116500LN", fsCount:5, wtbCount:2, averageFsAsk:31600 };
   for (const typed of ["116500LN", "116500", " 116500ln ", "116500-LN"]) {
     const pulse = await getMarketPulse(typed);
     const { requested, averageBasis, listingUrls, ...rest } = pulse;
@@ -146,11 +150,41 @@ test("non-USD listings are converted into the average, not dropped from it", asy
     const pulse = await getMarketPulse("116500LN");
     assert.equal(pulse.fsCount, 3);
     assert.equal(Math.round(pulse.averageFsAsk!), 30000);
-    assert.deepEqual(pulse.averageBasis, { converted: 3, skipped: 0 });
+    assert.deepEqual(pulse.averageBasis, { converted: 3, skipped: 0, outliers: 0 });
     assert.doesNotMatch(formatMarketPulse(pulse), /had no usable price/, "nothing was skipped, so nothing is disclosed");
   } finally {
     rates._resetRatesForTests();
   }
+});
+
+test('required regression: one mispriced/misconverted listing among many must never drag the average toward it — this is the actual "Avg FS ask: $125,702" bug for a reference that trades $27k-$31k, independent of what caused that one row to be wrong', async () => {
+  // 9 normal listings clustered $27k-$31k, exactly like the live-reported market, plus one wildly
+  // wrong row (a location-less listing that fell back to USD on a native amount meant to be read
+  // in a different currency — but the fix must hold regardless of WHY a row is wrong).
+  const normalPrices = [27000, 27500, 28000, 28500, 29000, 29500, 30000, 30500, 31000];
+  await db.withSchema((pool) =>
+    Promise.all(
+      normalPrices.map((price, i) =>
+        pool.query(
+          `INSERT INTO postings (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,status,expires_at)
+           VALUES ('whatsapp','chat','g',$1,NULL,'FS','normal','116500LN',$2,'USD','active',now()+interval '1 day')`,
+          [`normal-${i}`, price]
+        )
+      )
+    )
+  );
+  await db.withSchema((pool) =>
+    pool.query(
+      `INSERT INTO postings (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,status,expires_at)
+       VALUES ('whatsapp','chat','g','bad-row',NULL,'FS','misconverted','116500LN',940000,'USD','active',now()+interval '1 day')`
+    )
+  );
+
+  const pulse = await getMarketPulse("116500LN");
+  assert.equal(pulse.fsCount, 10, "the bad row still counts as an active listing");
+  assert.equal(Math.round(pulse.averageFsAsk!), 29000, "the average reflects the real $27k-$31k market, not the one bad row");
+  assert.deepEqual(pulse.averageBasis, { converted: 9, skipped: 0, outliers: 1 });
+  assert.match(formatMarketPulse(pulse), /from 9 of 10 FS listings, converted to USD — 1 excluded as statistical outlier/);
 });
 
 test('required regression: a WatchFacts listing with no detected native currency, from a Hong Kong dealer, is treated as HKD rather than silently defaulting to USD (the bug behind "Avg FS ask: $125,702" for a reference that trades around $29k)', async () => {
@@ -201,7 +235,7 @@ test("a listing Fi cannot convert is reported as skipped rather than guessed at"
     const pulse = await getMarketPulse("116500LN");
     assert.equal(pulse.fsCount, 2, "it still counts as an active listing");
     assert.equal(Math.round(pulse.averageFsAsk!), 30000, "but never enters the average at a guessed rate");
-    assert.deepEqual(pulse.averageBasis, { converted: 1, skipped: 1 });
+    assert.deepEqual(pulse.averageBasis, { converted: 1, skipped: 1, outliers: 0 });
     assert.match(formatMarketPulse(pulse), /from 1 of 2 FS listings, converted to USD — 1 had no usable price or FX rate/);
   } finally {
     rates._resetRatesForTests();

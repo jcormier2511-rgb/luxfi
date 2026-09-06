@@ -3,6 +3,7 @@ import { freshInventorySql, initInventorySchema } from "../watchfacts/inventoryD
 import { canonicalizeReference, referenceEquivalents } from "./normalize";
 import { convertAmount } from "../fx/convert";
 import { inferCurrency } from "../fx/currency";
+import { quantile } from "./priceStats";
 
 /**
  * Fi's automatic seller-facing Market Guide (spec: "FI AUTOMATIC MARKET GUIDE FOR SELLERS").
@@ -168,16 +169,6 @@ async function fetchComparableRows(equivalents: string[]): Promise<RawComparable
     );
     return result.rows as RawComparableRow[];
   });
-}
-
-/** Linear-interpolation percentile (same convention as numpy's default / Excel PERCENTILE.INC) over an ALREADY-SORTED array. */
-function quantile(sortedAsc: number[], q: number): number {
-  if (sortedAsc.length === 1) return sortedAsc[0];
-  const pos = (sortedAsc.length - 1) * q;
-  const base = Math.floor(pos);
-  const rest = pos - base;
-  const next = sortedAsc[base + 1];
-  return next === undefined ? sortedAsc[base] : sortedAsc[base] + rest * (next - sortedAsc[base]);
 }
 
 /**

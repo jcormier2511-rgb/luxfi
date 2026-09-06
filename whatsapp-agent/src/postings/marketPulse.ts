@@ -4,13 +4,20 @@ import { canonicalizeReference, referenceEquivalents } from "./normalize";
 import { convertAmount } from "../fx/convert";
 import { inferCurrency } from "../fx/currency";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
+import { excludeOutliers } from "./priceStats";
 
 /** How an average was actually arrived at, so a figure built from part of the set says so. */
 export interface AverageBasis {
-  /** FS listings whose price was usable and expressed in, or converted to, USD. */
+  /** FS listings actually averaged: usable, converted to USD, and not an IQR outlier. */
   converted: number;
   /** FS listings left out: no usable price, an unknown currency, or unavailable/stale FX rates. */
   skipped: number;
+  /** Converted listings excluded as statistical outliers (IQR, only applied at 5+ converted
+   *  listings — see priceStats.ts). A single mispriced/misconverted row (an untagged foreign
+   *  listing that fell back to USD, a data-entry typo) must never drag a large sample's average
+   *  by itself — real reported bug: one such row alone inflated a ~$29k-market reference's
+   *  "Avg FS ask" to $125,702. */
+  outliers: number;
 }
 
 export interface MarketPulse {
@@ -66,8 +73,7 @@ interface PricedRow { type: string; amount: number | null; currency: string | nu
  * so an unconvertible listing is reported as skipped rather than folded in at a made-up rate.
  */
 async function averageFsAskInUsd(rows: PricedRow[]): Promise<{ average: number | null; basis: AverageBasis }> {
-  let total = 0;
-  let converted = 0;
+  const amountsUsd: number[] = [];
   let skipped = 0;
   for (const row of rows) {
     if (row.type !== "FS") continue;
@@ -75,10 +81,18 @@ async function averageFsAskInUsd(rows: PricedRow[]): Promise<{ average: number |
     const currency = inferCurrency(row.currency, row.location).toUpperCase();
     const result = await convertAmount(row.amount, currency, "USD");
     if (!result) { skipped += 1; continue; }
-    total += result.amount;
-    converted += 1;
+    amountsUsd.push(result.amount);
   }
-  return { average: converted === 0 ? null : total / converted, basis: { converted, skipped } };
+  // Same spec-mandated deterministic IQR method Market Guide uses, and for the same reason: a
+  // sample this size is otherwise defenseless against a single bad row (a mistagged currency, a
+  // stray data-entry typo) dragging the whole average toward it. Only meaningful at 5+ usable
+  // prices — see priceStats.ts.
+  const { clean, excludedCount } = amountsUsd.length >= 5 ? excludeOutliers(amountsUsd) : { clean: amountsUsd, excludedCount: 0 };
+  const total = clean.reduce((sum, a) => sum + a, 0);
+  return {
+    average: clean.length === 0 ? null : total / clean.length,
+    basis: { converted: clean.length, skipped, outliers: excludedCount },
+  };
 }
 
 /**
@@ -187,11 +201,17 @@ function averageLineFor(label: string, value: number | null, basis?: AverageBasi
     ? "Unavailable"
     : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
   const line = `${label}: ${shown}`;
-  if (!basis || basis.skipped === 0) return line;
-  // Prices in other currencies are converted to USD; anything that couldn't be converted —
-  // no usable price, an unknown currency, or FX rates unavailable — is named rather than
-  // quietly folded into or dropped from the figure.
-  return `${line}\n(from ${basis.converted} of ${basis.converted + basis.skipped} FS listings, converted to USD — ${basis.skipped} had no usable price or FX rate)`;
+  if (!basis || (basis.skipped === 0 && basis.outliers === 0)) return line;
+  // Prices in other currencies are converted to USD; anything that couldn't be converted — no
+  // usable price, an unknown currency, or FX rates unavailable — is named rather than quietly
+  // folded into or dropped from the figure. A statistical outlier (IQR) is named separately from
+  // an unconvertible one — both are exclusions, but for different reasons worth telling apart.
+  const total = basis.converted + basis.skipped + basis.outliers;
+  const reasons = [
+    basis.skipped > 0 ? `${basis.skipped} had no usable price or FX rate` : null,
+    basis.outliers > 0 ? `${basis.outliers} excluded as statistical outlier${basis.outliers === 1 ? "" : "s"}` : null,
+  ].filter(Boolean).join(", ");
+  return `${line}\n(from ${basis.converted} of ${total} FS listings, converted to USD — ${reasons})`;
 }
 
 /**
