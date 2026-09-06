@@ -20,8 +20,14 @@ async function callApi(method: string, body: unknown): Promise<any> {
   return json;
 }
 
+/**
+ * link_preview_options disables Telegram's own automatic unfurl of any URL in the text (e.g. a
+ * watchfacts.com listing link) — otherwise Telegram fetches that page's Open Graph image/title
+ * and renders an extra card with a photo pulled from the listing, which a plain informational
+ * message from Fi never intended to send.
+ */
 export async function sendText(identity: string, message: string): Promise<void> {
-  await callApi("sendMessage", { chat_id: telegramChatIdFromIdentity(identity), text: message });
+  await callApi("sendMessage", { chat_id: telegramChatIdFromIdentity(identity), text: message, link_preview_options: { is_disabled: true } });
 }
 
 export async function sendBannerImage(identity: string, imageUrl: string, caption?: string): Promise<void> {

@@ -22,6 +22,17 @@ test("sendText posts to the Bot API with the chat id resolved from a telegram: i
   assert.equal(body.text, "hello there");
 });
 
+test("sendText disables Telegram's own link preview (a watchfacts.com URL in the text must never auto-unfurl into a photo card)", async (t) => {
+  const calls: { url: string; init: RequestInit }[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+  });
+  await telegram.sendText("telegram:445566", "check out https://watchfacts.com/flash-sales/123");
+  const body = JSON.parse(calls[0].init.body as string);
+  assert.deepEqual(body.link_preview_options, { is_disabled: true });
+});
+
 test("sendBannerImage posts to sendPhoto and is a no-op for an empty imageUrl", async (t) => {
   const calls: { url: string; init: RequestInit }[] = [];
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
