@@ -161,6 +161,20 @@ export function formatCurrency(amount: number, currency: string): string {
 const REGION_CURRENCY_DEFAULT: ReadonlyMap<string, string> = new Map([
   ["hong kong", "HKD"],
   ["hk", "HKD"],
+  // Same bug, same fix, other single-currency markets that showed the identical pattern once
+  // Market Pulse's per-row debug data was actually checked: a symbol-less local price from one
+  // of these got silently read as USD, not just Hong Kong's. Still never a multi-currency bucket
+  // like "Asia" (see the regression test guarding that below) — only regions with one unambiguous
+  // real-world currency.
+  ["singapore", "SGD"],
+  ["sg", "SGD"],
+  ["japan", "JPY"],
+  ["china", "CNY"],
+  ["mainland china", "CNY"],
+  ["uae", "AED"],
+  ["dubai", "AED"],
+  ["united arab emirates", "AED"],
+  ["switzerland", "CHF"],
 ]);
 
 export function inferCurrency(rawCurrency: string | null, location: string | null): string {

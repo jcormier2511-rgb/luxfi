@@ -115,3 +115,14 @@ test('required regression: inferCurrency defaults to USD for a broad region ("As
   assert.equal(inferCurrency(null, "North America"), "USD");
   assert.equal(inferCurrency(null, null), "USD");
 });
+
+test("required regression: inferCurrency covers other single-currency markets beyond Hong Kong that showed the identical silently-defaulted-to-USD pattern", () => {
+  assert.equal(inferCurrency(null, "Singapore"), "SGD");
+  assert.equal(inferCurrency(null, "SG"), "SGD");
+  assert.equal(inferCurrency(null, "Japan"), "JPY");
+  assert.equal(inferCurrency(null, "China"), "CNY");
+  assert.equal(inferCurrency(null, "Dubai"), "AED");
+  assert.equal(inferCurrency(null, "UAE"), "AED");
+  assert.equal(inferCurrency(null, "Switzerland"), "CHF");
+  assert.equal(inferCurrency(null, "singapore"), "SGD", "case-insensitive");
+});
