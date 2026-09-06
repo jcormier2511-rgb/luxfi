@@ -284,6 +284,15 @@ export function renderToolsPage(): string {
   </div>
 </section>
 
+<section class="card">
+  <h2>All known identities</h2>
+  <p class="muted">Every phone number / Telegram ID that has ever contacted Fi at all, unfiltered — this is the raw list behind the dashboard's "Total users" and "Known unique users" figures. Both halves of an already-linked WhatsApp/Telegram pair share the same Canonical ID and each get their own row.</p>
+  <div class="toolbar"><button onclick="idLookup()">Load all identities</button></div>
+  <div id="id-empty" class="muted"></div>
+  <table id="id-table" hidden><thead></thead><tbody></tbody></table>
+  <pre id="id-error" class="error"></pre>
+</section>
+
 </main><script>
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let csrf='';
@@ -372,6 +381,17 @@ export function renderToolsPage(): string {
       if(!res.ok){document.querySelector('#ent-error').textContent=data.error||'Failed';return}
       document.querySelector('#ent-result').textContent=JSON.stringify(data.entitlement,null,2);
     }catch(e){document.querySelector('#ent-error').textContent=e.message}
+  }
+  async function idLookup(){
+    document.querySelector('#id-error').textContent='';
+    try{
+      await ensureCsrf();
+      const res=await fetch('/admin/api/tools/identities');
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#id-error').textContent=data.error||'Lookup failed';return}
+      renderTable('id',data.rows||[]);
+    }catch(e){document.querySelector('#id-error').textContent=e.message}
   }
   </script></body></html>`;
 }

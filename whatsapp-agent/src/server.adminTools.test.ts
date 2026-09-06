@@ -207,3 +207,18 @@ test("POST /admin/api/tools/entitlement/plan assigns and clears a plan, rejects 
   const cleared = await fetch(`${baseUrl}/admin/api/tools/entitlement/plan`, { method: "POST", headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf }, body: JSON.stringify({ phone, plan: "none" }) });
   assert.equal((await cleared.json()).entitlement.plan, null);
 });
+
+test("GET /admin/api/tools/identities lists every linked identity, unfiltered by search/approval activity", async () => {
+  const { getOrCreateCanonicalUser } = require("./postings/identity") as typeof import("./postings/identity");
+  await getOrCreateCanonicalUser("whatsapp", "15550006001"); // never searches or approves anything
+
+  const readOnlyId = await seedAdmin("read_only");
+  const res = await fetch(`${baseUrl}/admin/api/tools/identities`, { headers: { Cookie: cookieFor(readOnlyId) } });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { ok: boolean; rows: { identity: string; platform: string; canonicalUserId: number; firstSeenAt: string }[] };
+  assert.equal(body.ok, true);
+  const row = body.rows.find((r) => r.identity === "15550006001");
+  assert.ok(row, "an identity with zero searches/approvals must still appear here, unlike the dashboard's Activity by user table");
+  assert.equal(row!.platform, "whatsapp");
+  assert.ok(row!.firstSeenAt);
+});

@@ -71,6 +71,7 @@ import {
 } from "./admin/session";
 import { Administrator, authenticate, deleteGroup, deleteUser, exportUsersCsv, getAdministrator, importUsersCsv, initAdminSchema, listAdministrators, listGroups, listUsers, resetAdministratorPassword, saveAdministrator, saveGroup, saveUser, USER_CSV_SAMPLE } from "./admin/store";
 import { buildAdminDashboardData } from "./admin/dashboard";
+import { listAllIdentities } from "./admin/metrics";
 import { renderDashboard, renderLoginPage, renderManagementPage, renderToolsPage } from "./admin/view";
 import { getListingLimits, listPushGroups, savePushGroup, setListingLimits } from "./postings/listingConfig";
 import { getLifecycleSettings, recordInboundActivity, setLifecycleSettings } from "./lifecycle";
@@ -478,6 +479,11 @@ export function createServer() {
     if(!isPlanKey(planParam))return res.status(400).json({error:"plan must be one of tier1, tier2, tier3, or none"});
     res.json({ok:true,entitlement:await setPlan(phone,planParam)});
   },true));
+
+  // Unfiltered answer to "who has ever contacted Fi at all" -- unlike the dashboard's Activity
+  // by user table (searches/approvals only), this lists every linked identity system-wide, so
+  // an admin can actually see who the "known unique users" figures are counting.
+  app.get("/admin/api/tools/identities",api(async(_req,res)=>res.json({ok:true,rows:await listAllIdentities()})));
 
   app.get("/admin/tools",async(req,res)=>{const ctx=await adminContext(req).catch(()=>null);if(!ctx)return res.status(401).type('html').send(renderLoginPage());res.type('html').send(renderToolsPage())});
 

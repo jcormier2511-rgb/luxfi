@@ -292,6 +292,47 @@ async function getPaymentsSummary(): Promise<PaymentsSummary> {
   });
 }
 
+export interface IdentityRow {
+  identity: string;
+  platform: ChannelPlatform;
+  canonicalUserId: number;
+  firstSeenAt: string;
+  lastInboundAt: string | null;
+  totalApprovedCount: number;
+}
+
+/**
+ * Every linked identity system-wide, unfiltered — unlike getActivityByUser (searches/approvals
+ * only), this is the raw answer to "who has ever contacted Fi at all," including someone who
+ * only ever said "hi" during onboarding and never went further. One row per identity, not per
+ * canonical user, so both halves of an already-linked WhatsApp/Telegram pair each show up (and
+ * share the same canonicalUserId, making the pairing visible).
+ */
+export async function listAllIdentities(): Promise<IdentityRow[]> {
+  return withSchema(async (pool) => {
+    const result = await pool.query<{
+      identity: string; platform: ChannelPlatform; canonical_user_id: number;
+      first_seen_at: string; last_inbound_at: string | null; total_approved_count: number;
+    }>(
+      `SELECT li.identity, li.platform, li.canonical_user_id,
+              li.created_at AS first_seen_at, ul.last_inbound_at,
+              cu.total_approved_count
+         FROM linked_identities li
+         JOIN canonical_users cu ON cu.id = li.canonical_user_id
+         LEFT JOIN user_lifecycle ul ON ul.canonical_user_id = li.canonical_user_id
+        ORDER BY li.created_at ASC`
+    );
+    return result.rows.map((r) => ({
+      identity: r.identity,
+      platform: r.platform,
+      canonicalUserId: r.canonical_user_id,
+      firstSeenAt: r.first_seen_at,
+      lastInboundAt: r.last_inbound_at,
+      totalApprovedCount: Number(r.total_approved_count),
+    }));
+  });
+}
+
 export async function getAdminMetrics(): Promise<AdminMetrics> {
   const [membership, networkReach, topRequests, activityByUser, payments] = await Promise.all([
     getMembershipCounts(),
