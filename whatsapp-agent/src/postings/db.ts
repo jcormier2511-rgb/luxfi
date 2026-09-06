@@ -459,7 +459,8 @@ export async function _resetDbForTests(): Promise<void> {
       reconciliation_runs, postings_meta, billing_ledger, approvals, match_recipients, matches,
       market_update_deliveries, posting_images, postings, search_requests, linked_identities,
       briefing_posting_state, lifecycle_deliveries, fi_returning_campaign_deliveries,
-      fi_returning_promotions, user_lifecycle, lifecycle_settings, canonical_users
+      fi_returning_promotions, user_lifecycle, lifecycle_settings, canonical_users,
+      listing_group_publications, listing_push_groups, listing_settings
     CASCADE
   `);
   schemaReady = null;

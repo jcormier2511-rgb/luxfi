@@ -199,7 +199,7 @@ const GROUP_FORM = `<section class="card" id="group-form-card">
 export function renderManagementPage(kind:"users"|"groups"|"administrators"|"coverage"):string {
   const title=kind==="users"?"Approved Users":kind==="groups"?"Group Management":kind==="coverage"?"WTB Coverage / Dealer Specialists":"Administrators";
   const empty=kind==="groups"?"No approved groups yet. Add one below.":`No ${title.toLowerCase()} found.`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to</p><h2>Push Groups</h2><p class="muted">Groups Fi may actively post into (configured independently under listing settings)</p>':''}<div class="toolbar"><div class="field"><label for="q">Search</label><input id="q" placeholder="Search"></div><div class="field"><label for="status">Status</label><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select></div><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Monitoring Groups</h2><p class="muted">Groups Fi listens to (read-only — never posts here)</p>':''}<div class="toolbar"><div class="field"><label for="q">Search</label><input id="q" placeholder="Search"></div><div class="field"><label for="status">Status</label><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select></div><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
   const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='', lastRows=[];
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   async function ensureCsrf(){if(csrf)return csrf;const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';return csrf}
@@ -229,13 +229,89 @@ export function renderManagementPage(kind:"users"|"groups"|"administrators"|"cov
 }
 
 /**
+ * Groups Fi actively POSTS a confirmed listing into (see postings/groupPublishing.ts) — distinct
+ * from, and configured independently of, the read-only Monitoring Groups on /admin/groups. Was
+ * previously curl-only (PUT /admin/api/listing-settings/push-groups/:groupId, no way to even
+ * delete one); this is the first browser UI for it.
+ */
+export function renderPushGroupsPage(): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Push Groups</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>Push Groups</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>
+
+<section class="card" id="pg-form-card">
+  <h2 id="pg-form-title">Add push group</h2>
+  <p class="muted">Groups Fi actively posts a confirmed FS/WTB listing into (with the photo, when the listing has one) — separate from Monitoring Groups, which only listen. The chat ID is platform-specific: a WhatsApp group's digits, or a Telegram group/supergroup's numeric chat id (negative, e.g. -1001234567890).</p>
+  <div class="toolbar">
+    <div class="field"><label for="pg-id">Chat ID</label><input id="pg-id" placeholder="Group chat id"></div>
+    <div class="field"><label for="pg-name">Group name</label><input id="pg-name" placeholder="e.g. Miami Dealers"></div>
+    <div class="field"><label for="pg-platform">Platform</label><select id="pg-platform"><option value="whatsapp">WhatsApp</option><option value="telegram">Telegram</option></select></div>
+    <div class="field"><label for="pg-priority">Priority</label><input id="pg-priority" type="number" value="100" placeholder="Lower posts first"></div>
+  </div>
+  <div class="toolbar">
+    <label class="inline"><input type="checkbox" id="pg-enabled" checked> Enabled</label>
+    <label class="inline"><input type="checkbox" id="pg-fs" checked> Allow FS</label>
+    <label class="inline"><input type="checkbox" id="pg-wtb" checked> Allow WTB</label>
+  </div>
+  <div class="toolbar">
+    <div class="field"><label for="pg-notes">Notes (optional)</label><input id="pg-notes" placeholder="Anything worth remembering"></div>
+  </div>
+  <div class="toolbar">
+    <button onclick="pgSave()" id="pg-save">Save push group</button>
+    <button onclick="pgReset()" class="btn-outline">Clear / new</button>
+  </div>
+  <pre id="pg-error" class="error"></pre>
+</section>
+
+<section class="card">
+  <h2>Configured push groups</h2>
+  <div id="pg-empty" class="muted">Loading…</div>
+  <table id="pg-table" hidden><thead></thead><tbody></tbody></table>
+</section>
+
+</main><script>
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  let csrf='', lastRows=[], pgEditId=null;
+  async function ensureCsrf(){if(csrf)return csrf;const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';return csrf}
+  async function load(){
+    await ensureCsrf();
+    const res=await fetch('/admin/api/push-groups');
+    if(res.status===403){location.href='/admin';return}
+    const rows=await res.json();
+    lastRows=rows;
+    document.querySelector('#pg-empty').textContent=rows.length?'':'No push groups configured yet. Add one above.';
+    const table=document.querySelector('#pg-table');table.hidden=!rows.length;if(!rows.length)return;
+    const cols=['group_id','group_name','platform','enabled','allow_fs','allow_wtb','priority','notes','last_post_at','last_result','status_error','actions'];
+    table.querySelector('thead').innerHTML='<tr>'+cols.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';
+    table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+cols.slice(0,-1).map(k=>'<td>'+esc(r[k])+'</td>').join('')+'<td><button class="btn-outline" onclick="pgEdit('+JSON.stringify(r.group_id)+')">Edit</button> <button class="btn-danger btn-outline" onclick="pgDelete('+JSON.stringify(r.group_id)+')">Delete</button></td></tr>').join('');
+  }
+  load().catch(e=>document.querySelector('#pg-empty').textContent=e.message);
+  function pgReset(){pgEditId=null;document.querySelector('#pg-form-title').textContent='Add push group';document.querySelector('#pg-id').value='';document.querySelector('#pg-id').disabled=false;document.querySelector('#pg-name').value='';document.querySelector('#pg-platform').value='whatsapp';document.querySelector('#pg-priority').value='100';document.querySelector('#pg-enabled').checked=true;document.querySelector('#pg-fs').checked=true;document.querySelector('#pg-wtb').checked=true;document.querySelector('#pg-notes').value='';document.querySelector('#pg-error').textContent=''}
+  function pgEdit(groupId){const r=lastRows.find(x=>x.group_id===groupId);if(!r)return;pgEditId=groupId;document.querySelector('#pg-form-title').textContent='Edit push group';document.querySelector('#pg-id').value=r.group_id;document.querySelector('#pg-id').disabled=true;document.querySelector('#pg-name').value=r.group_name||'';document.querySelector('#pg-platform').value=r.platform||'whatsapp';document.querySelector('#pg-priority').value=r.priority??100;document.querySelector('#pg-enabled').checked=!!r.enabled;document.querySelector('#pg-fs').checked=r.allow_fs!==false;document.querySelector('#pg-wtb').checked=r.allow_wtb!==false;document.querySelector('#pg-notes').value=r.notes||'';document.querySelector('#pg-error').textContent='';window.scrollTo(0,0)}
+  async function pgDelete(groupId){if(!confirm('Delete push group '+groupId+'? This cannot be undone.'))return;try{const token=await ensureCsrf();const res=await fetch('/admin/api/listing-settings/push-groups/'+encodeURIComponent(groupId),{method:'DELETE',headers:{'X-CSRF-Token':token}});if(res.status===403){location.href='/admin';return}if(!res.ok){const data=await res.json().catch(()=>({}));document.querySelector('#pg-error').textContent=data.error||'Delete failed';return}if(pgEditId===groupId)pgReset();load()}catch(e){document.querySelector('#pg-error').textContent=e.message}}
+  async function pgSave(){
+    document.querySelector('#pg-error').textContent='';
+    const groupId=(pgEditId||document.querySelector('#pg-id').value.trim());
+    const body={group_name:document.querySelector('#pg-name').value.trim(),platform:document.querySelector('#pg-platform').value,priority:Number(document.querySelector('#pg-priority').value)||100,enabled:document.querySelector('#pg-enabled').checked,allow_fs:document.querySelector('#pg-fs').checked,allow_wtb:document.querySelector('#pg-wtb').checked,notes:document.querySelector('#pg-notes').value.trim()};
+    if(!groupId){document.querySelector('#pg-error').textContent='Chat ID is required';return}
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/listing-settings/push-groups/'+encodeURIComponent(groupId),{method:'PUT',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify(body)});
+      if(res.status===403){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#pg-error').textContent=data.error||'Save failed';return}
+      pgReset();load();
+    }catch(e){document.querySelector('#pg-error').textContent=e.message}
+  }
+  </script></body></html>`;
+}
+
+/**
  * Panel-session UI for the testing tools that previously only existed as curl-only, token-gated
  * endpoints (/admin/market-guide/debug, /admin/inventory-search, /admin/user/reset) — same
  * underlying logic (see server.ts's /admin/api/tools/* routes), just reachable from the browser
  * once signed in, with CSRF on the destructive action.
  */
 export function renderToolsPage(): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Tools</title><style>${PAGE_STYLES} main{display:block;max-width:1000px}.card{margin-bottom:18px}</style></head><body><header><h1>Tools</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Tools</title><style>${PAGE_STYLES} main{display:block;max-width:1000px}.card{margin-bottom:18px}</style></head><body><header><h1>Tools</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><main>
 
 <section class="card">
   <h2>Market Guide debug</h2>
@@ -678,7 +754,7 @@ export function renderDashboard(data: AdminDashboardData): string {
 <body>
   <header>
     <h1>LuxFi Admin</h1>
-    <nav><a href="#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav>
+    <nav><a href="#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav>
   </header>
   <main>
     ${renderWhapiCard(data.whapi)}

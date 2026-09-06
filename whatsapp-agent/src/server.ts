@@ -72,8 +72,8 @@ import {
 import { Administrator, authenticate, deleteGroup, deleteUser, exportUsersCsv, getAdministrator, importUsersCsv, initAdminSchema, listAdministrators, listGroups, listUsers, resetAdministratorPassword, saveAdministrator, saveGroup, saveUser, USER_CSV_SAMPLE } from "./admin/store";
 import { buildAdminDashboardData } from "./admin/dashboard";
 import { listAllIdentities } from "./admin/metrics";
-import { renderDashboard, renderLoginPage, renderManagementPage, renderToolsPage } from "./admin/view";
-import { getListingLimits, listPushGroups, savePushGroup, setListingLimits } from "./postings/listingConfig";
+import { renderDashboard, renderLoginPage, renderManagementPage, renderPushGroupsPage, renderToolsPage } from "./admin/view";
+import { deletePushGroup, getListingLimits, listPushGroups, savePushGroup, setListingLimits } from "./postings/listingConfig";
 import { getLifecycleSettings, recordInboundActivity, setLifecycleSettings } from "./lifecycle";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
@@ -430,6 +430,7 @@ export function createServer() {
     res.json(await runFiReturningCampaign({dryRun,testRecipient}));
   },true));
   app.put("/admin/api/listing-settings/push-groups/:groupId",api(async(req,res)=>res.json(await savePushGroup({...req.body,group_id:req.params.groupId})),true));
+  app.delete("/admin/api/listing-settings/push-groups/:groupId",api(async(req,res)=>{await deletePushGroup(req.params.groupId);res.json({ok:true})},true));
 
   // Panel-session versions of the curl-only testing tools above (/admin/user/reset,
   // /admin/market-guide/debug, /admin/inventory-search) — same underlying logic, gated by the
@@ -486,6 +487,8 @@ export function createServer() {
   app.get("/admin/api/tools/identities",api(async(_req,res)=>res.json({ok:true,rows:await listAllIdentities()})));
 
   app.get("/admin/tools",async(req,res)=>{const ctx=await adminContext(req).catch(()=>null);if(!ctx)return res.status(401).type('html').send(renderLoginPage());res.type('html').send(renderToolsPage())});
+  app.get("/admin/push-groups",async(req,res)=>{const ctx=await adminContext(req).catch(()=>null);if(!ctx)return res.status(401).type('html').send(renderLoginPage());res.type('html').send(renderPushGroupsPage())});
+  app.get("/admin/api/push-groups",api(async(_req,res)=>res.json(await listPushGroups())));
 
   app.get("/admin/logout", (req, res) => {
     res.setHeader("Set-Cookie", buildLogoutCookieHeader(isHttpsRequest(req)));
