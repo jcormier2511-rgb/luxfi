@@ -271,6 +271,18 @@ export function renderPushGroupsPage(): string {
 </section>
 
 <section class="card">
+  <h2>Bulk upload (CSV)</h2>
+  <p class="muted">Add or update many push groups at once — upload a CSV instead of using the form above for each one. A row's group_id must match an existing group to update it; a new group_id creates it. Columns: group_id, group_name, platform (whatsapp/telegram), enabled, allow_fs, allow_wtb, priority, notes.</p>
+  <div class="toolbar">
+    <input type="file" id="pg-csv-file" accept=".csv,text/csv">
+    <button type="button" id="pg-csv-upload">Upload CSV</button>
+    <a href="/admin/api/push-groups/template.csv">Download CSV template</a>
+    <a href="/admin/api/push-groups/export.csv">Export current groups as CSV</a>
+  </div>
+  <div id="pg-csv-result" class="muted"></div>
+</section>
+
+<section class="card">
   <h2>Configured push groups</h2>
   <div id="pg-empty" class="muted">Loading…</div>
   <table id="pg-table" hidden><thead></thead><tbody></tbody></table>
@@ -293,6 +305,23 @@ export function renderPushGroupsPage(): string {
     table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+cols.slice(0,-1).map(k=>'<td>'+esc(r[k])+'</td>').join('')+'<td><button class="btn-outline" onclick="pgEdit('+JSON.stringify(r.group_id)+')">Edit</button> <button class="btn-danger btn-outline" onclick="pgDelete('+JSON.stringify(r.group_id)+')">Delete</button></td></tr>').join('');
   }
   load().catch(e=>document.querySelector('#pg-empty').textContent=e.message);
+  document.getElementById('pg-csv-upload').addEventListener('click',async function(){
+    var input=document.getElementById('pg-csv-file');
+    var result=document.getElementById('pg-csv-result');
+    if(!input.files||!input.files[0]){result.textContent='Choose a CSV file first.';return}
+    result.textContent='Uploading…';
+    try{
+      var text=await input.files[0].text();
+      var token=await ensureCsrf();
+      var res=await fetch('/admin/api/push-groups/import',{method:'POST',headers:{'Content-Type':'text/csv','X-CSRF-Token':token},credentials:'same-origin',body:text});
+      if(res.status===403){location.href='/admin';return}
+      var body=await res.json();
+      if(!res.ok){result.textContent=body.error||'Upload failed';return}
+      result.textContent=body.added+' added, '+body.updated+' updated'+(body.errors&&body.errors.length?', '+body.errors.length+' row(s) skipped: '+body.errors.map(function(e){return 'row '+e.row+': '+e.error}).join('; '):'');
+      input.value='';
+      load();
+    }catch(e){result.textContent=e.message}
+  });
   function pgReset(){pgEditId=null;document.querySelector('#pg-form-title').textContent='Add push group';document.querySelector('#pg-id').value='';document.querySelector('#pg-id').disabled=false;document.querySelector('#pg-name').value='';document.querySelector('#pg-platform').value='whatsapp';document.querySelector('#pg-priority').value='100';document.querySelector('#pg-enabled').checked=true;document.querySelector('#pg-fs').checked=true;document.querySelector('#pg-wtb').checked=true;document.querySelector('#pg-notes').value='';document.querySelector('#pg-error').textContent=''}
   function pgEdit(groupId){const r=lastRows.find(x=>x.group_id===groupId);if(!r)return;pgEditId=groupId;document.querySelector('#pg-form-title').textContent='Edit push group';document.querySelector('#pg-id').value=r.group_id;document.querySelector('#pg-id').disabled=true;document.querySelector('#pg-name').value=r.group_name||'';document.querySelector('#pg-platform').value=r.platform||'whatsapp';document.querySelector('#pg-priority').value=r.priority??100;document.querySelector('#pg-enabled').checked=!!r.enabled;document.querySelector('#pg-fs').checked=r.allow_fs!==false;document.querySelector('#pg-wtb').checked=r.allow_wtb!==false;document.querySelector('#pg-notes').value=r.notes||'';document.querySelector('#pg-error').textContent='';window.scrollTo(0,0)}
   async function pgDelete(groupId){if(!confirm('Delete push group '+groupId+'? This cannot be undone.'))return;try{const token=await ensureCsrf();const res=await fetch('/admin/api/listing-settings/push-groups/'+encodeURIComponent(groupId),{method:'DELETE',headers:{'X-CSRF-Token':token}});if(res.status===403){location.href='/admin';return}if(!res.ok){const data=await res.json().catch(()=>({}));document.querySelector('#pg-error').textContent=data.error||'Delete failed';return}if(pgEditId===groupId)pgReset();load()}catch(e){document.querySelector('#pg-error').textContent=e.message}}

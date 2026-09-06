@@ -73,7 +73,7 @@ import { Administrator, authenticate, deleteGroup, deleteUser, exportUsersCsv, g
 import { buildAdminDashboardData } from "./admin/dashboard";
 import { listAllIdentities } from "./admin/metrics";
 import { renderDashboard, renderLoginPage, renderManagementPage, renderPushGroupsPage, renderToolsPage } from "./admin/view";
-import { deletePushGroup, getListingLimits, listPushGroups, savePushGroup, setListingLimits } from "./postings/listingConfig";
+import { deletePushGroup, exportPushGroupsCsv, getListingLimits, importPushGroupsCsv, listPushGroups, PUSH_GROUP_CSV_SAMPLE, savePushGroup, setListingLimits } from "./postings/listingConfig";
 import { getLifecycleSettings, recordInboundActivity, setLifecycleSettings } from "./lifecycle";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
@@ -431,6 +431,9 @@ export function createServer() {
   },true));
   app.put("/admin/api/listing-settings/push-groups/:groupId",api(async(req,res)=>res.json(await savePushGroup({...req.body,group_id:req.params.groupId})),true));
   app.delete("/admin/api/listing-settings/push-groups/:groupId",api(async(req,res)=>{await deletePushGroup(req.params.groupId);res.json({ok:true})},true));
+  app.post("/admin/api/push-groups/import",express.text({type:"*/*",limit:"5mb"}),api(async(req,res)=>res.json(await importPushGroupsCsv(String(req.body))),true));
+  app.get("/admin/api/push-groups/template.csv",(_q,res)=>res.type("text/csv").attachment("push-groups-template.csv").send(PUSH_GROUP_CSV_SAMPLE));
+  app.get("/admin/api/push-groups/export.csv",api(async(_q,res)=>res.type("text/csv").attachment("push-groups.csv").send(await exportPushGroupsCsv())));
 
   // Panel-session versions of the curl-only testing tools above (/admin/user/reset,
   // /admin/market-guide/debug, /admin/inventory-search) — same underlying logic, gated by the

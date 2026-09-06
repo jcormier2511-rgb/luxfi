@@ -129,3 +129,93 @@ test("DELETE /admin/api/listing-settings/push-groups/:groupId removes it, blocke
   const rows = (await list.json()) as { group_id: string }[];
   assert.equal(rows.some((r) => r.group_id === "tg-group-1"), false, "the deleted group must no longer be listed");
 });
+
+test("GET /admin/api/push-groups/template.csv returns a downloadable CSV sample, no auth required (same as the users template)", async () => {
+  const res = await fetch(`${baseUrl}/admin/api/push-groups/template.csv`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") || "", /text\/csv/);
+  const body = await res.text();
+  assert.match(body, /^group_id,group_name,platform,enabled,allow_fs,allow_wtb,priority,notes/);
+});
+
+test("POST /admin/api/push-groups/import creates and updates push groups from a CSV upload, blocked for read_only", async () => {
+  const readOnlyId = await seedAdmin("read_only");
+  const readOnlyCookie = cookieFor(readOnlyId);
+  const readOnlyCsrf = await csrfFor(readOnlyCookie);
+  const csv = "group_id,group_name,platform,enabled,allow_fs,allow_wtb,priority,notes\ncsv-wa-1,Miami Dealers,whatsapp,true,true,true,100,\ncsv-tg-1,Asia Buyers,telegram,true,true,false,50,FS only";
+  const blocked = await fetch(`${baseUrl}/admin/api/push-groups/import`, {
+    method: "POST",
+    headers: { Cookie: readOnlyCookie, "Content-Type": "text/csv", "X-CSRF-Token": readOnlyCsrf },
+    body: csv,
+  });
+  assert.equal(blocked.status, 403, "read_only is blocked from importing push groups");
+
+  const ownerId = await seedAdmin("owner");
+  const ownerCookie = cookieFor(ownerId);
+  const ownerCsrf = await csrfFor(ownerCookie);
+  const created = await fetch(`${baseUrl}/admin/api/push-groups/import`, {
+    method: "POST",
+    headers: { Cookie: ownerCookie, "Content-Type": "text/csv", "X-CSRF-Token": ownerCsrf },
+    body: csv,
+  });
+  assert.equal(created.status, 200);
+  const createdBody = (await created.json()) as { added: number; updated: number; errors: unknown[] };
+  assert.equal(createdBody.added, 2);
+  assert.equal(createdBody.updated, 0);
+  assert.equal(createdBody.errors.length, 0);
+
+  const list = await fetch(`${baseUrl}/admin/api/push-groups`, { headers: { Cookie: ownerCookie } });
+  const rows = (await list.json()) as { group_id: string; group_name: string; platform: string; allow_wtb: boolean }[];
+  const tgRow = rows.find((r) => r.group_id === "csv-tg-1");
+  assert.equal(tgRow?.group_name, "Asia Buyers");
+  assert.equal(tgRow?.platform, "telegram");
+  assert.equal(tgRow?.allow_wtb, false);
+
+  // Re-uploading the same CSV with a changed name must update in place, not duplicate.
+  const reupload = await fetch(`${baseUrl}/admin/api/push-groups/import`, {
+    method: "POST",
+    headers: { Cookie: ownerCookie, "Content-Type": "text/csv", "X-CSRF-Token": ownerCsrf },
+    body: "group_id,group_name,platform,enabled,allow_fs,allow_wtb,priority,notes\ncsv-wa-1,Miami Dealers Renamed,whatsapp,true,true,true,100,",
+  });
+  const reuploadBody = (await reupload.json()) as { added: number; updated: number };
+  assert.equal(reuploadBody.added, 0);
+  assert.equal(reuploadBody.updated, 1);
+  const list2 = await fetch(`${baseUrl}/admin/api/push-groups`, { headers: { Cookie: ownerCookie } });
+  const rows2 = (await list2.json()) as { group_id: string; group_name: string }[];
+  assert.equal(rows2.filter((r) => r.group_id === "csv-wa-1").length, 1, "no duplicate row for a re-uploaded group_id");
+  assert.equal(rows2.find((r) => r.group_id === "csv-wa-1")?.group_name, "Miami Dealers Renamed");
+});
+
+test("POST /admin/api/push-groups/import reports a per-row error for a missing group_id without failing the whole batch", async () => {
+  const ownerId = await seedAdmin("owner");
+  const ownerCookie = cookieFor(ownerId);
+  const ownerCsrf = await csrfFor(ownerCookie);
+  const csv = "group_id,group_name,platform,enabled,allow_fs,allow_wtb,priority,notes\n,Missing Id,whatsapp,true,true,true,100,\ncsv-valid-1,Valid Row,whatsapp,true,true,true,100,";
+  const res = await fetch(`${baseUrl}/admin/api/push-groups/import`, {
+    method: "POST",
+    headers: { Cookie: ownerCookie, "Content-Type": "text/csv", "X-CSRF-Token": ownerCsrf },
+    body: csv,
+  });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { added: number; errors: { row: number; error: string }[] };
+  assert.equal(body.added, 1, "the valid row must still be imported");
+  assert.equal(body.errors.length, 1);
+  assert.equal(body.errors[0].row, 2);
+});
+
+test("GET /admin/api/push-groups/export.csv returns the currently configured push groups as CSV", async () => {
+  const ownerId = await seedAdmin("owner");
+  const ownerCookie = cookieFor(ownerId);
+  const ownerCsrf = await csrfFor(ownerCookie);
+  await fetch(`${baseUrl}/admin/api/listing-settings/push-groups/export-group-1`, {
+    method: "PUT",
+    headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf },
+    body: JSON.stringify({ group_name: "Export Test Group", platform: "whatsapp", enabled: true, allow_fs: true, allow_wtb: true, priority: 100 }),
+  });
+
+  const res = await fetch(`${baseUrl}/admin/api/push-groups/export.csv`, { headers: { Cookie: ownerCookie } });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") || "", /text\/csv/);
+  const body = await res.text();
+  assert.match(body, /export-group-1,Export Test Group,whatsapp,true,true,true,100/);
+});
