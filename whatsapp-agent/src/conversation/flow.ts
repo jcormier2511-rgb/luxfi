@@ -472,18 +472,38 @@ async function handleNotificationChannelCommand(state: ConversationState, intent
 // intro/general-chat path instead.
 const GREETING = /^(hi|hello|hey|hiya|yo|good\s+(morning|afternoon|evening))\b/i;
 
+// Grouped by what someone is actually trying to DO (buying, selling, deciding on a match,
+// checking prices, managing the account) rather than by raw command syntax — live-reported: a
+// flat list of quoted commands read as too technical/dense for a first-time, non-technical user
+// to get oriented from. One short example per group, in plain language, mirrors the numbered
+// "*1./*2./*3." style Fi's own intro message already uses, so returning users see one consistent
+// format rather than two different menu styles.
 const FI_MENU = [
-  "Hi, I'm Fi — here's what I can do. Tell me naturally what you're looking to buy or sell, or choose an option below:",
-  '"buy: <item>" or "sell: <item>" — search for a match (plain English works too, e.g. "looking for a black Daytona under 25k")',
-  '"approve <number>" — connect with a match',
-  '"photos <number>" — privately ask the seller for photos',
-  '"pass <number>" — skip a match',
-  '"market pulse <reference>" or "what\'s the market for <reference>" — current asking-price range and active buyer/seller counts for a reference',
-  '"cancel" — clear your current matches',
-  '"status" — check your account status',
-  '"listings" — see your approved matches, pending matches, or your own WTB/FS listings',
-  '"Show prices in EUR" (or USD/GBP/HKD/etc.) — set your preferred display currency',
-  '"help" — show this menu',
+  "Hi, I'm Fi — here's what I can do. You can just talk to me normally, like texting a person. Here's how:",
+  "",
+  "*1. Looking to buy a watch?*",
+  "Just tell me what you want:",
+  '"looking for a black Daytona under 25k"',
+  "",
+  "*2. Have a watch to sell?*",
+  "Just tell me what you have:",
+  '"selling a Rolex Submariner, box and papers, $12,000"',
+  "",
+  "*3. I found you a match — deciding what to do?*",
+  '"approve 1" — yes, connect me with them',
+  '"pass 1" — no thanks, skip this one',
+  '"photos 1" — ask for more photos first',
+  "",
+  "*4. Curious what a watch is selling for right now?*",
+  '"market pulse 116500LN" — current asking prices, and how many buyers/sellers are active',
+  "",
+  "*5. Managing your account*",
+  '"listings" — see your matches and open requests',
+  '"status" — check your account',
+  '"cancel" — clear your current search',
+  '"show prices in EUR" — see prices in your currency (also USD, GBP, HKD, and others)',
+  "",
+  'Stuck at any point? Just type "help" and I\'ll show you this again.',
 ].join("\n");
 
 const LISTINGS_MENU = [
