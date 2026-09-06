@@ -2141,7 +2141,40 @@ async function resolveItemRequests(phone: string, text: string): Promise<Resolve
   return { items: parseItemRequests(text) };
 }
 
+// Per-phone serialization queue for handleIncomingMessage below. Keyed by phone; each entry is a
+// promise that never rejects (errors are swallowed here purely so the chain keeps working — the
+// real result/rejection is still returned to the actual caller by withPhoneSerialized itself).
+const phoneMessageQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * Real reported bug: two overlapping calls to handleIncomingMessage for the SAME phone (a
+ * genuine near-simultaneous double-send, or a provider redelivery under a different message id
+ * that alreadyProcessed's id-based dedup can't catch) each independently called the file-based
+ * getState/saveState below with no locking between them — a classic read-modify-write race.
+ * Live-reported symptom: after replying "CONFIRM" to a buy-intake draft, the user got BOTH a
+ * real "Potential Match" (the confirm path's own search) AND a stale "I kept your request draft
+ * open... Should I start monitoring?" (a second, overlapping call that read the SAME pre-
+ * confirmation state and never saw the first call's save) — two contradictory replies for one
+ * action. Serializing every call through this same-phone queue means a second call's getState
+ * always sees the first call's completed saveState, never a stale snapshot racing it.
+ */
+export async function withPhoneSerialized<T>(phone: string, fn: () => Promise<T>): Promise<T> {
+  const prior = phoneMessageQueues.get(phone) ?? Promise.resolve();
+  const run = prior.then(fn, fn);
+  const tracked = run.catch(() => {});
+  phoneMessageQueues.set(phone, tracked);
+  try {
+    return await run;
+  } finally {
+    if (phoneMessageQueues.get(phone) === tracked) phoneMessageQueues.delete(phone);
+  }
+}
+
 export async function handleIncomingMessage(phone: string, text: string, contact?: Contact, imageUrl?: string): Promise<FlowResult> {
+  return withPhoneSerialized(phone, () => handleIncomingMessageInner(phone, text, contact, imageUrl));
+}
+
+async function handleIncomingMessageInner(phone: string, text: string, contact?: Contact, imageUrl?: string): Promise<FlowResult> {
   const state = getState(phone);
   const messages: string[] = [];
   const firstName = contact?.name?.trim().split(/\s+/)[0] || "there";
@@ -2447,7 +2480,10 @@ export async function handleIncomingMessage(phone: string, text: string, contact
       state.pendingSellIntake = undefined;
       state.pendingBuyIntake = undefined;
       saveState(state);
-      return handleIncomingMessage(phone, replacement, contact, imageUrl);
+      // Recurses within the SAME already-serialized call (see withPhoneSerialized above) —
+      // calling the exported handleIncomingMessage here would re-enter its own per-phone queue
+      // and deadlock against itself, since that queue is still holding this very call.
+      return handleIncomingMessageInner(phone, replacement, contact, imageUrl);
     }
     if (/\badd\b/i.test(text)) {
       messages.push("Okay — I kept your current draft. Finish or cancel it first, then send the additional request again.");
@@ -2465,7 +2501,9 @@ export async function handleIncomingMessage(phone: string, text: string, contact
   if (state.pendingBuyIntake && isFreshBuyRequest(text)) {
     state.pendingBuyIntake = undefined;
     saveState(state);
-    return handleIncomingMessage(phone, text, contact, imageUrl);
+    // Same deadlock hazard as the replacement-request branch above — recurse into the inner
+    // function directly, not the exported, per-phone-serialized wrapper.
+    return handleIncomingMessageInner(phone, text, contact, imageUrl);
   }
 
   if ((state.pendingSellIntake || state.pendingBuyIntake) && (isFreshSellRequest(text) || isFreshBuyRequest(text))) {
