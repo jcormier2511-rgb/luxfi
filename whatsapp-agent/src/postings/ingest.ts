@@ -1,7 +1,7 @@
 import {
   ingestChatPosting,
   ChatPostingInput,
-  mirrorApiPosting,
+  mirrorApiPostingsBulk,
   markApiPostingsInactive,
   ApiFsListing,
   createDirectPosting,
@@ -69,34 +69,37 @@ export async function ingestDirectBuyPosting(input: DirectSellPostingInput): Pro
   return { matchesFound, posting };
 }
 
+// A full sync is tens of thousands of listings, almost all unchanged re-syncs — mirrorApiPostingsBulk
+// turns each chunk of this size into one bulk SELECT + one bulk timestamp UPDATE for the unchanged
+// majority, rather than a query per listing. Chunked (not one call for the whole feed) so a single
+// batch's arrays/queries stay a reasonable size and progress is still visible between chunks.
+const SYNC_BATCH_SIZE = 1000;
+
 /**
  * Single entry point for what a successful WatchFacts FS sync must do to the v4 matching
  * system (spec requirement: "every successful sync must trigger reverse matching of new or
  * materially updated FS listings against all active chat-originated WTB monitors"). Reuses
- * the exact same mirrorApiFsPosting/runImmediateMatch/notifyMatch pipeline the chat-ingestion
+ * the exact same mirrorApiPostingsBulk/runImmediateMatch/notifyMatch pipeline the chat-ingestion
  * path uses — matching is one shared engine over the one `postings` table, not a second,
  * source-specific matching implementation. An unchanged re-sync of an already-known listing
  * (materialChange: false) is a no-op here, same as an unedited chat-message redelivery,
  * so a routine sync never re-notifies anyone about a listing nothing actually changed on.
  */
 export async function ingestApiFsSync(listings: ApiFsListing[]): Promise<void> {
-  // Sequential by design (each posting's match check depends on the postings table reflecting
-  // every prior one in this same batch), but that means a large batch is otherwise silent for
-  // however long it takes — the very first sync against a real feed processes every "new to
-  // this table" listing at once (tens of thousands), which can take a long time with nothing
-  // to distinguish "still working" from "hung". Logged every 500 rows and at the end so a long
-  // run is visible in Deploy Logs rather than looking indistinguishable from a stuck process.
+  // Matching is still sequential within (and across) batches, in listing order, so each posting's
+  // match check sees the postings table reflecting every prior one in this same sync.
   const started = Date.now();
   let materialChanges = 0;
-  for (let i = 0; i < listings.length; i++) {
-    const { posting, materialChange } = await mirrorApiPosting(listings[i], "FS");
-    if (materialChange) {
-      materialChanges++;
-      await runImmediateMatch(posting);
+  for (let i = 0; i < listings.length; i += SYNC_BATCH_SIZE) {
+    const batch = listings.slice(i, i + SYNC_BATCH_SIZE);
+    const results = await mirrorApiPostingsBulk(batch, "FS");
+    for (const { posting, materialChange } of results) {
+      if (materialChange) {
+        materialChanges++;
+        await runImmediateMatch(posting);
+      }
     }
-    if ((i + 1) % 500 === 0) {
-      console.log(`[postings] ingestApiFsSync: ${i + 1}/${listings.length} (${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s elapsed)`);
-    }
+    console.log(`[postings] ingestApiFsSync: ${Math.min(i + SYNC_BATCH_SIZE, listings.length)}/${listings.length} (${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s elapsed)`);
   }
   await markApiPostingsInactive("FS", listings.map((l) => l.id));
   console.log(`[postings] ingestApiFsSync: done — ${listings.length} listings, ${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s total`);
@@ -116,15 +119,16 @@ export async function ingestApiFsSync(listings: ApiFsListing[]): Promise<void> {
 export async function ingestApiWtbSync(listings: ApiFsListing[]): Promise<void> {
   const started = Date.now();
   let materialChanges = 0;
-  for (let i = 0; i < listings.length; i++) {
-    const { posting, materialChange } = await mirrorApiPosting(listings[i], "WTB");
-    if (materialChange) {
-      materialChanges++;
-      await runImmediateMatch(posting);
+  for (let i = 0; i < listings.length; i += SYNC_BATCH_SIZE) {
+    const batch = listings.slice(i, i + SYNC_BATCH_SIZE);
+    const results = await mirrorApiPostingsBulk(batch, "WTB");
+    for (const { posting, materialChange } of results) {
+      if (materialChange) {
+        materialChanges++;
+        await runImmediateMatch(posting);
+      }
     }
-    if ((i + 1) % 500 === 0) {
-      console.log(`[postings] ingestApiWtbSync: ${i + 1}/${listings.length} (${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s elapsed)`);
-    }
+    console.log(`[postings] ingestApiWtbSync: ${Math.min(i + SYNC_BATCH_SIZE, listings.length)}/${listings.length} (${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s elapsed)`);
   }
   await markApiPostingsInactive("WTB", listings.map((l) => l.id));
   console.log(`[postings] ingestApiWtbSync: done — ${listings.length} listings, ${materialChanges} material changes, ${Math.round((Date.now() - started) / 1000)}s total`);

@@ -11,6 +11,7 @@ const store = require("./postingsStore") as typeof import("./postingsStore");
 const {
   ingestChatPosting,
   mirrorApiFsPosting,
+  mirrorApiPostingsBulk,
   markApiPostingsInactive,
   isEligible,
   getPosting,
@@ -141,6 +142,139 @@ test("mirrorApiFsPosting captures WatchFacts' own listing image (frontImage)", a
     imageUrl: "https://cdn.watchfacts.com/listings/ext-img/front.jpg",
   });
   assert.equal(await store.getPrimaryImageUrl(result.posting.id), "https://cdn.watchfacts.com/listings/ext-img/front.jpg");
+});
+
+test("mirrorApiPostingsBulk creates brand-new listings, one row each, same as mirrorApiFsPosting", async () => {
+  await db._resetDbForTests();
+  const base = {
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "$29,000",
+    contactName: "Seller",
+    contactPhone: "1",
+    description: "",
+  };
+  const results = await mirrorApiPostingsBulk(
+    [
+      { id: "bulk-1", item: "bulk-1", ...base },
+      { id: "bulk-2", item: "bulk-2", ...base },
+    ],
+    "FS"
+  );
+  assert.equal(results.length, 2);
+  assert.ok(results.every((r) => r.created && r.materialChange));
+  assert.deepEqual(
+    results.map((r) => r.posting.external_listing_id),
+    ["bulk-1", "bulk-2"]
+  );
+});
+
+test("mirrorApiPostingsBulk reports materialChange: false on an unchanged re-sync, and never re-triggers matching for nothing (same contract as mirrorApiFsPosting)", async () => {
+  await db._resetDbForTests();
+  const listing = {
+    id: "bulk-unchanged",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "$29,000",
+    contactName: "Seller",
+    contactPhone: "1",
+    description: "",
+  };
+  await mirrorApiPostingsBulk([listing], "FS");
+  const [resynced] = await mirrorApiPostingsBulk([{ ...listing }], "FS");
+  assert.equal(resynced.created, false);
+  assert.equal(resynced.materialChange, false);
+});
+
+test("mirrorApiPostingsBulk reports materialChange: true and persists the new value when a re-synced listing's price changed", async () => {
+  await db._resetDbForTests();
+  const listing = {
+    id: "bulk-changed",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "$29,000",
+    contactName: "Seller",
+    contactPhone: "1",
+    description: "",
+  };
+  const [first] = await mirrorApiPostingsBulk([listing], "FS");
+  const [second] = await mirrorApiPostingsBulk([{ ...listing, price: "$27,500" }], "FS");
+  assert.equal(second.materialChange, true, "a changed price must be reported as a material change");
+  assert.equal(second.posting.id, first.posting.id);
+  assert.equal(second.posting.price, "27500");
+});
+
+test("mirrorApiPostingsBulk refreshes last_seen_at for unchanged listings (in one bulk update) so they don't get swept as source_inactive", async () => {
+  await db._resetDbForTests();
+  const listing = {
+    id: "bulk-refresh",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "$29,000",
+    contactName: "Seller",
+    contactPhone: "1",
+    description: "",
+  };
+  const [created] = await mirrorApiPostingsBulk([listing], "FS");
+  const before = await db.withSchema((pool) => pool.query(`SELECT last_seen_at FROM postings WHERE id=$1`, [created.posting.id]));
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await mirrorApiPostingsBulk([{ ...listing }], "FS"); // identical re-sync — the unchanged path
+
+  const after = await db.withSchema((pool) => pool.query(`SELECT last_seen_at FROM postings WHERE id=$1`, [created.posting.id]));
+  assert.ok(
+    new Date(after.rows[0].last_seen_at).getTime() > new Date(before.rows[0].last_seen_at).getTime(),
+    "an unchanged listing must still have its last_seen_at refreshed on every sync"
+  );
+});
+
+test("mirrorApiPostingsBulk captures WatchFacts' own listing image for a created listing", async () => {
+  await db._resetDbForTests();
+  const [result] = await mirrorApiPostingsBulk(
+    [
+      {
+        id: "bulk-img",
+        item: "Rolex Daytona",
+        brand: "Rolex",
+        ref: "116500LN",
+        condition: "New",
+        price: "$29,000",
+        contactName: "Seller",
+        contactPhone: "1",
+        description: "",
+        imageUrl: "https://cdn.watchfacts.com/listings/bulk-img/front.jpg",
+      },
+    ],
+    "FS"
+  );
+  assert.equal(await store.getPrimaryImageUrl(result.posting.id), "https://cdn.watchfacts.com/listings/bulk-img/front.jpg");
+});
+
+test("mirrorApiPostingsBulk keeps FS and WTB listings with the same external id separate, same as mirrorApiFsPosting/mirrorApiPosting", async () => {
+  await db._resetDbForTests();
+  const base = {
+    id: "bulk-both-sides",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "$29,000",
+    contactName: "Seller",
+    contactPhone: "1",
+    description: "",
+  };
+  const [fs] = await mirrorApiPostingsBulk([base], "FS");
+  const [wtb] = await mirrorApiPostingsBulk([base], "WTB");
+  assert.equal(fs.created, true);
+  assert.equal(wtb.created, true);
+  assert.notEqual(fs.posting.id, wtb.posting.id);
 });
 
 test("markApiPostingsInactive deactivates only API FS rows absent from the latest sync", async () => {

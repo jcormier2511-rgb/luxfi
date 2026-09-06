@@ -365,6 +365,94 @@ export async function mirrorApiFsPosting(listing: ApiFsListing): Promise<MirrorF
   return mirrorApiPosting(listing, "FS");
 }
 
+/**
+ * Batched counterpart to mirrorApiPosting, for a full WatchFacts sync (tens of thousands of
+ * listings). mirrorApiPosting does one SELECT + one INSERT-or-UPDATE + one image write per
+ * listing, so a full sync — almost entirely re-syncs of listings that haven't changed at all —
+ * was issuing three round trips per listing regardless: found in production taking ~100 minutes
+ * per run, long enough to still be running when the next scheduled sync fired.
+ *
+ * This does ONE bulk SELECT for the whole batch, diffs in memory exactly as mirrorApiPosting
+ * does per-row, and for the (typically large) subset that hasn't changed at all: no INSERT/
+ * UPDATE and no image write — just one bulk timestamp refresh so they don't get swept as
+ * source_inactive. Only created/changed listings pay the per-row INSERT/UPDATE + image cost,
+ * same as before. Results are returned in the same order as `listings`.
+ */
+export async function mirrorApiPostingsBulk(listings: ApiFsListing[], type: PostingType): Promise<MirrorFsResult[]> {
+  if (listings.length === 0) return [];
+
+  return withSchema(async (pool) => {
+    const externalIds = listings.map((l) => l.id);
+    const existing = await pool.query<PostingRow>(
+      `SELECT * FROM postings WHERE source_platform='watchfacts_api' AND type=$2 AND source_type='api' AND external_listing_id = ANY($1::text[])`,
+      [externalIds, type]
+    );
+    const existingByExternalId = new Map(existing.rows.map((row) => [row.external_listing_id as string, row]));
+
+    const results: MirrorFsResult[] = [];
+    const unchangedIds: number[] = [];
+    const imageWrites: { postingId: number; imageUrl?: string | null }[] = [];
+    const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
+
+    for (const listing of listings) {
+      const priceNum = Number(listing.price.replace(/[^0-9.]/g, ""));
+      const price = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
+      const originalText = listing.description || listing.item;
+      const old = existingByExternalId.get(listing.id);
+
+      if (!old) {
+        const insert = await pool.query<PostingRow>(
+          `INSERT INTO postings
+             (source_platform, source_type, external_listing_id, type, original_text, brand, model, reference, dial, year, box_papers, condition,
+              price, location, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
+           VALUES ('watchfacts_api','api',$1,$16,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',$15, now())
+           RETURNING *`,
+          [listing.id, originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt, type]
+        );
+        results.push({ posting: insert.rows[0], created: true, materialChange: true });
+        imageWrites.push({ postingId: insert.rows[0].id, imageUrl: listing.imageUrl });
+        continue;
+      }
+
+      const materialChange =
+        !valuesEqual(old.reference, listing.ref) ||
+        !valuesEqual(old.brand, listing.brand) ||
+        !valuesEqual(old.model, listing.model) ||
+        !valuesEqual(old.dial, listing.dial) ||
+        !valuesEqual(old.year, listing.year) ||
+        !valuesEqual(old.box_papers, listing.boxPapers) ||
+        !valuesEqual(old.price, price) ||
+        !valuesEqual(old.location, listing.location) ||
+        !valuesEqual(old.condition, listing.condition);
+
+      if (!materialChange) {
+        unchangedIds.push(old.id);
+        results.push({ posting: old, created: false, materialChange: false });
+        continue;
+      }
+
+      const update = await pool.query<PostingRow>(
+        `UPDATE postings SET original_text=$1, brand=$2, model=$3, reference=$4, dial=$5, year=$6, box_papers=$7,
+           condition=$8, price=$9, location=$10, contact_name=$11, contact_phone=$12, detail_url=$13, updated_at=now(), last_seen_at=now()
+         WHERE id=$14 RETURNING *`,
+        [originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
+      );
+      results.push({ posting: update.rows[0], created: false, materialChange: true });
+      imageWrites.push({ postingId: update.rows[0].id, imageUrl: listing.imageUrl });
+    }
+
+    if (unchangedIds.length > 0) {
+      await pool.query(`UPDATE postings SET updated_at=now(), last_seen_at=now() WHERE id = ANY($1::int[])`, [unchangedIds]);
+    }
+
+    for (const { postingId, imageUrl } of imageWrites) {
+      await setPostingImagesSafely(postingId, [imageUrl]);
+    }
+
+    return results;
+  });
+}
+
 /** Mirrors markMissingInactive for the API-mirrored postings — only called after a fully successful FS/WTB sync. */
 export async function markApiPostingsInactive(type: PostingType, seenExternalIds: string[]): Promise<void> {
   if (seenExternalIds.length === 0) return;

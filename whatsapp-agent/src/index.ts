@@ -103,11 +103,14 @@ if (isAuthorizeNetConfigured()) {
 
 // Refresh the WatchFacts Trading Floor feed on boot, then on a fixed interval. Each run is a
 // fresh login (no persistent browser session kept across ticks yet — see README) so
-// INVENTORY_SYNC_INTERVAL_MINUTES defaults to 5, not 1-2, to keep repeated-login volume low
-// (the same category of risk as the WhatsApp number bans hit earlier in this project).
-// runInventorySync's own re-entrancy guard means an overlapping tick just skips, never queues.
+// INVENTORY_SYNC_INTERVAL_MINUTES defaults to 30, not 1-5, to keep repeated-login volume low
+// (the same category of risk as the WhatsApp number bans hit earlier in this project) and to
+// give a full sync of the whole feed (tens of thousands of listings, even batched) comfortable
+// headroom to finish before the next tick fires. runInventorySync's own re-entrancy guard means
+// an overlapping tick just skips, never queues, but a 5-minute default left almost no margin —
+// production logs showed real ticks colliding with the still-running previous one.
 if (config.watchfacts.email && config.watchfacts.password) {
-  const intervalMs = Number(process.env.INVENTORY_SYNC_INTERVAL_MINUTES ?? 5) * 60_000;
+  const intervalMs = Number(process.env.INVENTORY_SYNC_INTERVAL_MINUTES ?? 30) * 60_000;
   const tick = () => {
     runInventorySync()
       .then((r) => console.log(`[watchfacts] sync: ${r.total} active (${r.forSale} FS, ${r.wtb} WTB)`))
