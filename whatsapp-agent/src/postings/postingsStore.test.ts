@@ -144,6 +144,59 @@ test("mirrorApiFsPosting captures WatchFacts' own listing image (frontImage)", a
   assert.equal(await store.getPrimaryImageUrl(result.posting.id), "https://cdn.watchfacts.com/listings/ext-img/front.jpg");
 });
 
+test("required regression: mirrorApiFsPosting resolves currency via inferCurrency's region fallback when the listing carries none — postings.currency is NOT NULL DEFAULT 'USD', so leaving it unset here previously meant every API-mirrored listing was silently averaged as USD regardless of its real currency", async () => {
+  await db._resetDbForTests();
+  const result = await mirrorApiFsPosting({
+    id: "ext-hk",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "$228,500",
+    contactName: "Seller",
+    contactPhone: "1",
+    description: "",
+    location: "Hong Kong",
+    // No `currency` — exactly the ambiguousCurrency case from watchfacts/api.ts's bare-$ fix.
+  });
+  assert.equal(result.posting.currency, "HKD");
+});
+
+test("mirrorApiFsPosting trusts an explicit listing currency over region-guessing", async () => {
+  await db._resetDbForTests();
+  const result = await mirrorApiFsPosting({
+    id: "ext-eur",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "95000",
+    contactName: "Seller",
+    contactPhone: "1",
+    description: "",
+    location: "Hong Kong",
+    currency: "EUR",
+  });
+  assert.equal(result.posting.currency, "EUR");
+});
+
+test("mirrorApiFsPosting defaults to USD when the listing carries no currency and the region isn't a known single-currency market", async () => {
+  await db._resetDbForTests();
+  const result = await mirrorApiFsPosting({
+    id: "ext-us",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "29000",
+    contactName: "Seller",
+    contactPhone: "1",
+    description: "",
+    location: "North America",
+  });
+  assert.equal(result.posting.currency, "USD");
+});
+
 test("mirrorApiPostingsBulk creates brand-new listings, one row each, same as mirrorApiFsPosting", async () => {
   await db._resetDbForTests();
   const base = {
@@ -275,6 +328,50 @@ test("mirrorApiPostingsBulk keeps FS and WTB listings with the same external id 
   assert.equal(fs.created, true);
   assert.equal(wtb.created, true);
   assert.notEqual(fs.posting.id, wtb.posting.id);
+});
+
+test("required regression: mirrorApiPostingsBulk resolves currency the same way mirrorApiFsPosting does (region fallback when the listing carries none) — this is the batched sync path that actually runs in production", async () => {
+  await db._resetDbForTests();
+  const [created] = await mirrorApiPostingsBulk(
+    [
+      {
+        id: "bulk-hk",
+        item: "Rolex Daytona",
+        brand: "Rolex",
+        ref: "116500LN",
+        condition: "New",
+        price: "$228,500",
+        contactName: "Seller",
+        contactPhone: "1",
+        description: "",
+        location: "Hong Kong",
+      },
+    ],
+    "FS"
+  );
+  assert.equal(created.posting.currency, "HKD");
+});
+
+test("mirrorApiPostingsBulk treats a currency-only change as a material change, not silently absorbed", async () => {
+  await db._resetDbForTests();
+  const listing = {
+    id: "bulk-currency-change",
+    item: "Rolex Daytona",
+    brand: "Rolex",
+    ref: "116500LN",
+    condition: "New",
+    price: "228500",
+    contactName: "Seller",
+    contactPhone: "1",
+    description: "",
+    location: "North America", // resolves to USD first time
+  };
+  const [first] = await mirrorApiPostingsBulk([listing], "FS");
+  assert.equal(first.posting.currency, "USD");
+
+  const [second] = await mirrorApiPostingsBulk([{ ...listing, location: "Hong Kong" }], "FS");
+  assert.equal(second.materialChange, true, "a corrected currency must re-trigger matching, not be silently absorbed");
+  assert.equal(second.posting.currency, "HKD");
 });
 
 test("markApiPostingsInactive deactivates only API FS rows absent from the latest sync", async () => {

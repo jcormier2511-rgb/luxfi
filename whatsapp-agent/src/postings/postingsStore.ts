@@ -3,6 +3,7 @@ import { getOrCreateCanonicalUser } from "./identity";
 import { platformForIdentity } from "../channels/identity";
 import { classifyText, normalizeText, isOnlyNonModelLanguage, PostingType } from "./normalize";
 import { config } from "../config";
+import { inferCurrency } from "../fx/currency";
 
 export interface PostingRow {
   id: number;
@@ -303,6 +304,16 @@ export interface ApiFsListing {
   // WatchFacts' own listing detail image (RawListingDetail.frontImage) — a confirmed, real
   // field from the authenticated API response, unlike the chat side's best-effort imageUrl.
   imageUrl?: string | null;
+  // The listing's own native currency (fx/currency.ts's extractNativePrice, same source as
+  // inventory_listings.native_currency), when the title named an unambiguous one — undefined
+  // otherwise. Real reported bug: postings.currency is NOT NULL DEFAULT 'USD' and this INSERT
+  // never set it at all, so every API-mirrored FS/WTB listing was averaged as if priced in USD
+  // regardless of its real currency, completely bypassing inferCurrency's region-aware fallback
+  // below (which only ever runs when no currency is already on record — a confirmed 'USD'
+  // default looks exactly like a confirmed real one). This is resolved into a final currency
+  // via inferCurrency at ingestion time (see mirrorApiPosting/mirrorApiPostingsBulk) rather than
+  // stored as-is, since the column can't hold NULL for "still ambiguous."
+  currency?: string;
 }
 
 export interface MirrorFsResult {
@@ -330,6 +341,7 @@ export async function mirrorApiPosting(listing: ApiFsListing, type: PostingType)
   const price = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
   const expiresAt = new Date(Date.now() + WATCHFACTS_LISTING_LIFETIME_MS).toISOString();
   const originalText = listing.description || listing.item;
+  const currency = inferCurrency(listing.currency ?? null, listing.location ?? null);
 
   const result = await withSchema(async (pool) => {
     const existing = await pool.query<PostingRow>(
@@ -341,10 +353,10 @@ export async function mirrorApiPosting(listing: ApiFsListing, type: PostingType)
       const insert = await pool.query<PostingRow>(
         `INSERT INTO postings
            (source_platform, source_type, external_listing_id, type, original_text, brand, model, reference, dial, year, box_papers, condition,
-            price, location, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
-         VALUES ('watchfacts_api','api',$1,$16,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',$15, now())
+            price, currency, location, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
+         VALUES ('watchfacts_api','api',$1,$17,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'active',$16, now())
          RETURNING *`,
-        [listing.id, originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt, type]
+        [listing.id, originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, currency, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt, type]
       );
       return { posting: insert.rows[0], created: true, materialChange: true };
     }
@@ -358,14 +370,15 @@ export async function mirrorApiPosting(listing: ApiFsListing, type: PostingType)
       !valuesEqual(old.year, listing.year) ||
       !valuesEqual(old.box_papers, listing.boxPapers) ||
       !valuesEqual(old.price, price) ||
+      !valuesEqual(old.currency, currency) ||
       !valuesEqual(old.location, listing.location) ||
       !valuesEqual(old.condition, listing.condition);
 
     const update = await pool.query<PostingRow>(
       `UPDATE postings SET original_text=$1, brand=$2, model=$3, reference=$4, dial=$5, year=$6, box_papers=$7,
-         condition=$8, price=$9, location=$10, contact_name=$11, contact_phone=$12, detail_url=$13, updated_at=now(), last_seen_at=now()
-       WHERE id=$14 RETURNING *`,
-      [originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
+         condition=$8, price=$9, currency=$10, location=$11, contact_name=$12, contact_phone=$13, detail_url=$14, updated_at=now(), last_seen_at=now()
+       WHERE id=$15 RETURNING *`,
+      [originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, currency, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
     );
     return { posting: update.rows[0], created: false, materialChange };
   });
@@ -412,16 +425,17 @@ export async function mirrorApiPostingsBulk(listings: ApiFsListing[], type: Post
       const priceNum = Number(listing.price.replace(/[^0-9.]/g, ""));
       const price = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
       const originalText = listing.description || listing.item;
+      const currency = inferCurrency(listing.currency ?? null, listing.location ?? null);
       const old = existingByExternalId.get(listing.id);
 
       if (!old) {
         const insert = await pool.query<PostingRow>(
           `INSERT INTO postings
              (source_platform, source_type, external_listing_id, type, original_text, brand, model, reference, dial, year, box_papers, condition,
-              price, location, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
-           VALUES ('watchfacts_api','api',$1,$16,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',$15, now())
+              price, currency, location, contact_name, contact_phone, detail_url, status, expires_at, last_seen_at)
+           VALUES ('watchfacts_api','api',$1,$17,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'active',$16, now())
            RETURNING *`,
-          [listing.id, originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt, type]
+          [listing.id, originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, currency, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", expiresAt, type]
         );
         results.push({ posting: insert.rows[0], created: true, materialChange: true });
         imageWrites.push({ postingId: insert.rows[0].id, imageUrl: listing.imageUrl });
@@ -436,6 +450,7 @@ export async function mirrorApiPostingsBulk(listings: ApiFsListing[], type: Post
         !valuesEqual(old.year, listing.year) ||
         !valuesEqual(old.box_papers, listing.boxPapers) ||
         !valuesEqual(old.price, price) ||
+        !valuesEqual(old.currency, currency) ||
         !valuesEqual(old.location, listing.location) ||
         !valuesEqual(old.condition, listing.condition);
 
@@ -447,9 +462,9 @@ export async function mirrorApiPostingsBulk(listings: ApiFsListing[], type: Post
 
       const update = await pool.query<PostingRow>(
         `UPDATE postings SET original_text=$1, brand=$2, model=$3, reference=$4, dial=$5, year=$6, box_papers=$7,
-           condition=$8, price=$9, location=$10, contact_name=$11, contact_phone=$12, detail_url=$13, updated_at=now(), last_seen_at=now()
-         WHERE id=$14 RETURNING *`,
-        [originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
+           condition=$8, price=$9, currency=$10, location=$11, contact_name=$12, contact_phone=$13, detail_url=$14, updated_at=now(), last_seen_at=now()
+         WHERE id=$15 RETURNING *`,
+        [originalText, listing.brand, listing.model ?? "", listing.ref, listing.dial ?? "", listing.year ?? "", listing.boxPapers ?? "", listing.condition, price, currency, listing.location ?? "", listing.contactName, listing.contactPhone, listing.detailUrl ?? "", old.id]
       );
       results.push({ posting: update.rows[0], created: false, materialChange: true });
       imageWrites.push({ postingId: update.rows[0].id, imageUrl: listing.imageUrl });

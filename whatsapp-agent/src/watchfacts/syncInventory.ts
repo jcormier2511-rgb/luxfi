@@ -187,6 +187,13 @@ async function processRawSales(raw: RawFlashSale[], type: ListingType, now: Date
             detailUrl: l.detailUrl,
             description: l.description,
             imageUrl: images[i] ?? null,
+            // Same already-computed native currency inventory_listings gets (see
+            // mapToInventoryListings/extractNativePrice) — real reported bug: this mirror never
+            // carried it at all, so postings.currency sat at its schema default ('USD') for
+            // every API-mirrored listing regardless of its real currency, bypassing
+            // inferCurrency's region-aware fallback entirely (mirrorApiPosting resolves the
+            // final value from this).
+            currency: l.nativeCurrency,
           }));
         });
         if (type === "FS") await ingestApiFsSync(apiListings);
