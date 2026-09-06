@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { config, isAiChatEnabled } from "../config";
 import { checkWhapiHealth, WhapiHealthResult } from "../whapi/client";
+import { getFxHealth, FxHealthResult } from "../fx/rates";
 import { initSchema } from "../postings/db";
 import { getSyncStatus, SyncStatus } from "../watchfacts/inventoryDb";
 import { getV4OperationalStatus, V4OperationalStatus } from "../postings/status";
@@ -12,6 +13,7 @@ import { getAdminMetrics, AdminMetrics } from "./metrics";
 
 export interface AdminDashboardData {
   whapi: WhapiHealthResult;
+  fx: FxHealthResult | { error: string };
   database: {
     schemaReady: boolean;
     schemaError: string | null;
@@ -105,6 +107,13 @@ export async function buildAdminDashboardData(): Promise<AdminDashboardData> {
     })
   );
 
+  let fx: FxHealthResult | { error: string };
+  try {
+    fx = await getFxHealth();
+  } catch (err) {
+    fx = { error: (err as Error).message };
+  }
+
   let schemaReady = true;
   let schemaError: string | null = null;
   try {
@@ -166,6 +175,7 @@ export async function buildAdminDashboardData(): Promise<AdminDashboardData> {
 
   return {
     whapi,
+    fx,
     database: { schemaReady, schemaError, host: dbSummary.host, databaseName: dbSummary.databaseName },
     marketUpdates: {
       enabled: config.marketUpdates.enabled,

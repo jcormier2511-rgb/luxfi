@@ -127,6 +127,27 @@ test("a pulse always states which scope it counted, and discloses a canonical re
   assert.match(brand, /not shown for a whole brand/);
 });
 
+/**
+ * Real reported bug: "market pulse patek 5712" answered "FS: 1 active listing" with full
+ * "Scope: this exact reference" confidence, while the properly-suffixed form of the very same
+ * watch ("5712/1A") had over 30 active listings -- a bare digits-only reference like "5712" is
+ * genuinely ambiguous across case-material variants (steel/rose gold/white gold/platinum), the
+ * same way Rolex's 116610 is ambiguous between an LN and LV bezel, and Fi never merges those
+ * buckets (see the 116610 case above). The count wasn't wrong, but nothing said so was
+ * incomplete rather than a genuinely thin market -- this caveat is that disclosure.
+ */
+test("a bare digits-only reference gets a caveat that it may be missing suffixed variants; a fully-suffixed reference does not", () => {
+  const bare = formatMarketPulse({ reference:"5712", requested:"PATEK 5712", label:"Patek 5712", scope:"reference", fsCount:1, wtbCount:0, averageFsAsk:null });
+  assert.match(bare, /no case\/bezel\/dial suffix/);
+  assert.match(bare, /"5712\/1A"/, "the example suffix must build on the actual reference asked for, not a hardcoded example");
+
+  const suffixed = formatMarketPulse({ reference:"5712/1A", requested:"5712/1A", label:"Patek 5712/1A", scope:"reference", fsCount:34, wtbCount:0, averageFsAsk:280000 });
+  assert.doesNotMatch(suffixed, /suffix/, "a reference that already carries a suffix needs no such caveat");
+
+  const alsoBare = formatMarketPulse({ reference:"116610", requested:"116610", label:"116610", scope:"reference", fsCount:0, wtbCount:0, averageFsAsk:null });
+  assert.match(alsoBare, /no case\/bezel\/dial suffix/, "the same ambiguity applies to any bare numeric reference, not just Patek's");
+});
+
 
 /**
  * The averages used to be computed in SQL over USD rows only: a listing priced in HKD or EUR

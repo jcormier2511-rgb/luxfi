@@ -533,6 +533,32 @@ function renderWhapiCard(w: AdminDashboardData["whapi"]): string {
   </section>`;
 }
 
+function renderFxCard(fx: AdminDashboardData["fx"]): string {
+  if ("error" in fx) {
+    return `<section class="card">
+      <h2>FX / currency conversion</h2>
+      ${badge("rates", false)}
+      <dl><dt>Error</dt><dd>${escapeHtml(fx.error)}</dd></dl>
+    </section>`;
+  }
+  // Not configured or stale is reported as an ERROR badge, not "unknown" — the whole point of
+  // this card is that this exact failure mode (OPEN_EXCHANGE_RATES_APP_ID unset) previously had
+  // no visible signal anywhere and silently dropped non-USD listings from every price average.
+  const state = !fx.configured ? false : fx.stale ? false : true;
+  return `<section class="card">
+    <h2>FX / currency conversion</h2>
+    ${badge("rates", state)}
+    <dl>
+      <dt>Configured</dt><dd>${fx.configured ? "yes" : "no — OPEN_EXCHANGE_RATES_APP_ID not set"}</dd>
+      <dt>Cached rates</dt><dd>${
+        fx.hasCachedRates ? `yes — ${fx.ratesCount} currencies, base ${escapeHtml(fx.baseCurrency ?? "—")}` : "no"
+      }</dd>
+      <dt>Rates age</dt><dd>${fx.ratesAgeHours === null ? "—" : `${fx.ratesAgeHours.toFixed(1)}h`}</dd>
+      <dt>Stale</dt><dd>${fx.stale ? "yes — non-USD conversions are being skipped, not guessed" : "no"}</dd>
+    </dl>
+  </section>`;
+}
+
 function renderDatabaseCard(db: AdminDashboardData["database"]): string {
   return `<section class="card">
     <h2>PostgreSQL / schema</h2>
@@ -806,6 +832,7 @@ export function renderDashboard(data: AdminDashboardData): string {
   <script>${NAV_ACTIVE_SCRIPT}</script>
   <main>
     ${renderWhapiCard(data.whapi)}
+    ${renderFxCard(data.fx)}
     ${renderDatabaseCard(data.database)}
     ${renderMembershipCard(data.metrics, data.metricsError)}
     ${renderNetworkReachCard(data.metrics)}

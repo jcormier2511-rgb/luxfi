@@ -249,6 +249,28 @@ export function liquidityLine(fsCount: number, wtbCount: number): string {
   return `Implied liquidity ratio: 1:${perBuyer} (${perBuyer} listing${perBuyer === 1 ? "" : "s"} per buyer)`;
 }
 
+/**
+ * A bare digits-only reference (no case-material/bezel/dial suffix at all, e.g. "5712" rather
+ * than "5712/1A") is exactly the shape a real reference's UNSUFFIXED base takes across several
+ * genuinely distinct variants — Patek's 5712 alone spans steel/rose gold/white gold/platinum,
+ * the same way Rolex's 116610 spans a black (LN) and a green (LV) bezel. Fi deliberately never
+ * merges these into one bucket (see REFERENCE_ALIAS_GROUPS in postings/normalize.ts — only a
+ * stem with exactly one commercially produced suffixed variant is ever auto-resolved), so an
+ * exact-reference pulse for a bare number can legitimately count only the rare listings someone
+ * happened to store without a suffix, while every properly-suffixed listing for the very same
+ * watch sits in its own, uncounted bucket.
+ *
+ * Real reported bug: "market pulse patek 5712" answered "FS: 1 active listing" with full
+ * "Scope: this exact reference" confidence, while the same watch's properly-suffixed form
+ * ("5712/1A") had over 30 active listings. The count itself wasn't wrong — Fi never guessed
+ * which variant was meant — but nothing told the user the answer was almost certainly
+ * incomplete rather than a genuinely thin market.
+ */
+function bareReferenceCaveat(reference: string): string {
+  if (!/^\d+$/.test(reference)) return "";
+  return ` (note: "${reference}" has no case/bezel/dial suffix — if this reference has more than one variant, only listings stored exactly this way are counted; ask with the full reference, e.g. "${reference}/1A", for complete results)`;
+}
+
 export function formatMarketPulse(pulse: MarketPulse): string {
   const title = pulse.label || pulse.reference;
   const plural = (n: number, one: string, many: string) => `${n} active ${n === 1 ? one : many}`;
@@ -272,7 +294,7 @@ export function formatMarketPulse(pulse: MarketPulse): string {
     const alias = pulse.requested && pulse.requested !== pulse.reference
       ? ` (${pulse.requested} and ${pulse.reference} are the same watch)`
       : "";
-    scopeLine = `Scope: this exact reference${alias}`;
+    scopeLine = `Scope: this exact reference${alias}${bareReferenceCaveat(pulse.reference)}`;
     averageLine = averageLineFor("Average FS ask", pulse.averageFsAsk, pulse.averageBasis);
   }
 

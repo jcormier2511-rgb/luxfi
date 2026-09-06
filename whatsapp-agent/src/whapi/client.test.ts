@@ -53,6 +53,13 @@ test("required regression: a document (or any other non-text/non-image message t
   assert.equal(msg.imageUrl, undefined, "not treated as a photo — most document types genuinely aren't one");
 });
 
+test("required regression: a reaction (emoji double-tap on an earlier message) is dropped entirely, not treated as a content-less message — reacting to Fi's own reply produced a spurious \"I'm not sure I understood that\" right after a correct answer", () => {
+  const messages = extractIncomingMessages(
+    webhook([{ id: "m7", from_me: false, type: "reaction", chat_id: "15551234567", from: "15551234567" }])
+  );
+  assert.equal(messages.length, 0, "a bare gesture must never reach the conversation flow's fallback");
+});
+
 test("plain text messages are unaffected by the image-filter change", () => {
   const [msg] = extractIncomingMessages(
     webhook([{ id: "m5", from_me: false, type: "text", chat_id: "15551234567", from: "15551234567", text: { body: "buy: Rolex Daytona" } }])

@@ -148,9 +148,17 @@ export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[
     // carries no imageUrl (most document types genuinely aren't a usable photo), but same as an
     // uncaptioned image, it must still reach the conversation flow as a real, if content-less,
     // message so the active flow's own "I didn't understand that" fallback can respond.
+    //
+    // A "reaction" (double-tapping/emoji-reacting to any earlier message — a bare gesture, not
+    // an attempt to communicate anything) is deliberately excluded from that same catch-all,
+    // unlike a document/sticker/voice-note. Real reported bug: reacting to Fi's own reply (even
+    // by accident — double-tap-to-react is a very easy gesture to trigger) produced a spurious
+    // "I'm not sure I understood that" immediately after a perfectly good answer, since the
+    // catch-all above was treating the reaction event itself as a real, if empty, message.
     .filter(
       (m) =>
         !m.from_me &&
+        m.type !== "reaction" &&
         (m.type === "text" ? Boolean(m.text?.body) : m.type === "image" ? Boolean(m.image?.link) : true)
     )
     .map((m) => {

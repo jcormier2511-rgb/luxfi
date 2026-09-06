@@ -75,6 +75,37 @@ export async function getRates(): Promise<RatesTable | null> {
   return cached;
 }
 
+export interface FxHealthResult {
+  configured: boolean;
+  hasCachedRates: boolean;
+  ratesAgeHours: number | null;
+  stale: boolean;
+  baseCurrency: string | null;
+  ratesCount: number;
+}
+
+/**
+ * Admin-panel visibility into whether currency conversion actually works right now. Real reported
+ * bug: OPEN_EXCHANGE_RATES_APP_ID was never set on Railway, so every non-USD listing silently
+ * failed to convert (convertAmount returning null looks identical to "unknown currency" from the
+ * outside) — Market Pulse/Guide averages quietly excluded the vast majority of a reference's
+ * listings for weeks with no error anywhere a human would see it. Calling getRates() here (rather
+ * than just inspecting the cache) also means loading /admin/tools doubles as a live check of the
+ * configured app id, on the same refresh cadence getRates() already enforces elsewhere.
+ */
+export async function getFxHealth(): Promise<FxHealthResult> {
+  const configured = Boolean(config.fx.appId);
+  const table = configured ? await getRates() : null;
+  return {
+    configured,
+    hasCachedRates: table !== null,
+    ratesAgeHours: getRatesAgeHours(),
+    stale: isRatesStale(),
+    baseCurrency: table?.base ?? null,
+    ratesCount: table ? Object.keys(table.rates).length : 0,
+  };
+}
+
 /** Test-only — seeds the cache directly so conversion tests don't depend on network access. */
 export function _setRatesForTests(table: RatesTable | null): void {
   cached = table;
