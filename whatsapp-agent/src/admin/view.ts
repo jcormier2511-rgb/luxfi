@@ -640,7 +640,8 @@ function renderActivityCard(metrics: AdminDashboardData["metrics"]): string {
         .join("")}</tbody></table>`
     : `<p class="muted">No user activity recorded yet.</p>`;
   return `<section class="card full">
-    <h2>Activity by user (top 20, most recent first)</h2>
+    <h2>Activity by user — searches or approvals only (top 20, most recent first)</h2>
+    <p class="muted">Excludes anyone who has messaged Fi but never run a search or approved a match yet — those users still count toward "Total users" and "Known unique users" above, they just won't appear in this table.</p>
     ${rows}
   </section>`;
 }
