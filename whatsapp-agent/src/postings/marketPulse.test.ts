@@ -46,7 +46,7 @@ test("exact-reference pulse uses current normalized postings and deduplicates th
   // Every pulse states the scope it counted, so a brand-wide number can't be mistaken for one
   // about a single reference.
   assert.equal(formatMarketPulse(pulse),
-    "Market Pulse — 126500LN\n\nScope: this exact reference\nFS: 4 active listings\nWTB: 2 active requests\nImplied liquidity ratio: 1:2 (2 listings per buyer)\nAverage FS ask: $29,833\n(from 3 of 4 FS listings, converted to USD — 1 had no usable price or FX rate)\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.");
+    "Market Pulse — 126500LN\n\nScope: this exact reference\nFS: 4 active listings\nWTB: 2 active requests\nImplied liquidity ratio: 1:2 (2 listings per buyer)\nAverage FS ask: $29,833\n(from 3 of 4 FS listings, converted to USD — 1 had no usable price or FX rate)\n\nBased on WatchFacts flash-sale listings from the last 30 days and the dealer groups Fi monitors.");
 });
 
 test("pulse rejects a missing exact reference", async () => {
@@ -271,7 +271,27 @@ test("a pulse links the WatchFacts listings behind its numbers, and shows no lin
     "https://watchfacts.com/flash-sales/live-a",
     "https://watchfacts.com/flash-sales/live-b",
   ], "the 404 link is dropped rather than sent broken");
-  assert.match(formatMarketPulse(pulse), /Current WatchFacts listings:\nhttps:\/\/watchfacts\.com\/flash-sales\/live-a\nhttps:\/\/watchfacts\.com\/flash-sales\/live-b/);
+  assert.match(formatMarketPulse(pulse), /Here are the 2 most recent listings:\nhttps:\/\/watchfacts\.com\/flash-sales\/live-a\nhttps:\/\/watchfacts\.com\/flash-sales\/live-b/);
+});
+
+test("a pulse's listing links are ordered most-recent-first, not incidental row order (the message explicitly claims 'most recent')", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => ({ ok: true, status: 200 }) as Response);
+  const wf = (id: string, price: string) => ({
+    id, type:"FS" as const, category:"watches", item:"Daytona", brand:"Rolex", ref:"116500LN",
+    condition:"new", price, location:"NY", contactName:"A", contactPhone:"1", rating:"", description:"",
+    detailUrl:`https://watchfacts.com/flash-sales/${id}`,
+  });
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86400000).toISOString();
+  // Inserted older-first, so an unsorted (incidental SQL row order) result would list "older" first.
+  await inventory.upsertListings([wf("older", "$30,000")], daysAgo(10));
+  await inventory.upsertListings([wf("newer", "$31,000")], daysAgo(1));
+
+  const pulse = await getMarketPulse("116500LN");
+  assert.deepEqual(pulse.listingUrls, [
+    "https://watchfacts.com/flash-sales/newer",
+    "https://watchfacts.com/flash-sales/older",
+  ]);
+  assert.match(formatMarketPulse(pulse), /Here are the 2 most recent listings:\nhttps:\/\/watchfacts\.com\/flash-sales\/newer\nhttps:\/\/watchfacts\.com\/flash-sales\/older/);
 });
 
 test("a pulse with no reachable WatchFacts link shows no empty link heading", async (t) => {
@@ -282,5 +302,5 @@ test("a pulse with no reachable WatchFacts link shows no empty link heading", as
 
   const pulse = await getMarketPulse("116500LN");
   assert.deepEqual(pulse.listingUrls, []);
-  assert.doesNotMatch(formatMarketPulse(pulse), /Current WatchFacts listing/);
+  assert.doesNotMatch(formatMarketPulse(pulse), /most recent listing/i);
 });

@@ -1,4 +1,5 @@
 import { withSchema } from "./db";
+import { config } from "../config";
 import { freshInventorySql, initInventorySchema } from "../watchfacts/inventoryDb";
 import { canonicalizeReference, referenceEquivalents } from "./normalize";
 import { convertAmount } from "../fx/convert";
@@ -59,9 +60,10 @@ export interface MarketScope { brand?: string; model?: string; reference?: strin
  * stored "116508-0013" never lined up with a typed "1165080013".
  */
 
-/** `detail_url` is only selected by the exact-reference pulse (which shows links); the
- *  network-wide snapshot leaves it undefined, and neither one needs the other's columns. */
-interface PricedRow { type: string; amount: number | null; currency: string | null; location: string | null; detail_url?: string | null }
+/** `detail_url`/`observed_at` are only selected by the exact-reference pulse (which shows
+ *  links, most-recent-first); the network-wide snapshot leaves them undefined, and neither
+ *  one needs the other's columns. */
+interface PricedRow { type: string; amount: number | null; currency: string | null; location: string | null; detail_url?: string | null; observed_at?: string | null }
 
 /**
  * Averages FS asking prices in USD, converting every other currency rather than ignoring it.
@@ -96,14 +98,19 @@ async function averageFsAskInUsd(rows: PricedRow[]): Promise<{ average: number |
 }
 
 /**
- * The FS listings' own watchfacts.com links, deduplicated, capped, and checked for reachability
- * before being sent -- a constructed flash-sale URL is not guaranteed to resolve, and the same
- * validator (and its cache) already guards every match card, so a pulse and a card never
- * disagree about whether a link is safe to show. An unreachable link is dropped, never shown
- * broken.
+ * The FS listings' own watchfacts.com links, most-recently-observed first, deduplicated, capped,
+ * and checked for reachability before being sent -- a constructed flash-sale URL is not
+ * guaranteed to resolve, and the same validator (and its cache) already guards every match card,
+ * so a pulse and a card never disagree about whether a link is safe to show. An unreachable link
+ * is dropped, never shown broken. Sorted (rather than left in incidental SQL row order) because
+ * the message explicitly calls these out as "the N most recent listings" — that claim has to be
+ * true, not just plausible-looking.
  */
 async function validatedListingUrls(rows: PricedRow[]): Promise<string[]> {
-  const candidates = [...new Set(rows.filter((r) => r.type === "FS").map((r) => r.detail_url).filter((u): u is string => Boolean(u)))];
+  const fsRows = rows
+    .filter((r): r is PricedRow & { detail_url: string } => r.type === "FS" && Boolean(r.detail_url))
+    .sort((a, b) => new Date(b.observed_at ?? 0).getTime() - new Date(a.observed_at ?? 0).getTime());
+  const candidates = [...new Set(fsRows.map((r) => r.detail_url))];
   const checked = await Promise.all(candidates.slice(0, MAX_PULSE_LISTING_URLS).map(getValidatedListingUrl));
   return checked.filter((u): u is string => Boolean(u));
 }
@@ -121,7 +128,8 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
                 CASE WHEN p.price > 0 THEN p.price::double precision END AS amount,
                 NULLIF(p.currency,'') AS currency,
                 NULLIF(p.location,'') AS location,
-                p.detail_url
+                p.detail_url,
+                p.created_at AS observed_at
          FROM postings p
          WHERE p.status='active' AND p.expires_at > now()
            AND upper(regexp_replace(COALESCE(p.reference,''), '[^A-Za-z0-9]', '', 'g')) = ANY($1::text[])
@@ -134,7 +142,8 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
                        THEN regexp_replace(i.price, '[^0-9.]', '', 'g')::double precision END) AS amount,
                 NULLIF(i.native_currency,'') AS currency,
                 NULLIF(i.location,'') AS location,
-                i.detail_url
+                i.detail_url,
+                COALESCE(i.listed_at, i.first_seen_at) AS observed_at
          FROM inventory_listings i
          WHERE i.is_active=TRUE AND ${freshInventorySql("i")}
            AND upper(regexp_replace(COALESCE(i.ref,''), '[^A-Za-z0-9]', '', 'g')) = ANY($1::text[])
@@ -146,7 +155,7 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
                AND p.type=i.type AND p.external_listing_id=i.external_id
            )
        )
-       SELECT type, amount, currency, location, detail_url FROM current_inventory`,
+       SELECT type, amount, currency, location, detail_url, observed_at FROM current_inventory`,
       [equivalents]
     );
     const rows = result.rows as PricedRow[];
@@ -215,6 +224,20 @@ function averageLineFor(label: string, value: number | null, basis?: AverageBasi
 }
 
 /**
+ * "Based on WatchFacts flash-sale listings from the last 30 days..." — every pulse/overview ends
+ * with this, and the day count has to actually say what the underlying query enforces
+ * (config.watchfacts.maxListingAgeDays, shared with postingsStore.ts's WATCHFACTS_LISTING_LIFETIME_MS
+ * and inventoryDb.ts's freshInventorySql) rather than a hardcoded "current" that quietly went
+ * stale the last time that window changed. 0 (the window disabled) reads as "all known listings"
+ * rather than claiming a 0-day window.
+ */
+function dataWindowTrailer(): string {
+  const days = config.watchfacts.maxListingAgeDays;
+  const window = days > 0 ? `from the last ${days} days` : "Fi has ever seen";
+  return `Based on WatchFacts flash-sale listings ${window} and the dealer groups Fi monitors.`;
+}
+
+/**
  * Listings per active buyer — the one number that says whether this is a buyer's or a seller's
  * market at a glance, which two raw counts do not. Undefined at either zero, and said so,
  * rather than "1:0" or "Infinity".
@@ -253,15 +276,17 @@ export function formatMarketPulse(pulse: MarketPulse): string {
     averageLine = averageLineFor("Average FS ask", pulse.averageFsAsk, pulse.averageBasis);
   }
 
-  // The listings behind the number. A pulse that says "3 active listings" and then shows none
+  // The listings behind the number. A pulse that says "93 active listings" and then shows none
   // of them asks to be taken on trust; these are the actual WatchFacts pages, so the figures
-  // can be checked. Absent (brand/model scope, no WF-sourced listings, or every link
-  // unreachable) the block is simply omitted rather than left as an empty heading.
+  // can be checked. Named as "most recent" rather than just "current" because that's what they
+  // are (validatedListingUrls sorts by observed date) — out of however many are active, not a
+  // claim that these are the only ones. Absent (brand/model scope, no WF-sourced listings, or
+  // every link unreachable) the block is simply omitted rather than left as an empty heading.
   const links = pulse.listingUrls?.length
-    ? `\n\nCurrent WatchFacts listing${pulse.listingUrls.length === 1 ? "" : "s"}:\n${pulse.listingUrls.join("\n")}`
+    ? `\n\nHere ${pulse.listingUrls.length === 1 ? "is the most recent listing" : `are the ${pulse.listingUrls.length} most recent listings`}:\n${pulse.listingUrls.join("\n")}`
     : "";
 
-  return `Market Pulse — ${title}\n\n${scopeLine}\n${counts}\n${averageLine}${links}\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.`;
+  return `Market Pulse — ${title}\n\n${scopeLine}\n${counts}\n${averageLine}${links}\n\n${dataWindowTrailer()}`;
 }
 
 
@@ -318,5 +343,5 @@ export async function getNetworkMarketSnapshot(): Promise<NetworkMarketSnapshot>
 }
 
 export function formatNetworkMarketSnapshot(snapshot: NetworkMarketSnapshot): string {
-  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\n${liquidityLine(snapshot.fsCount, snapshot.wtbCount)}\n${averageLineFor("Average FS ask", snapshot.averageFsAsk, snapshot.averageBasis)}\n\nBased on current WatchFacts flash-sale inventory and the dealer groups Fi monitors.`;
+  return `Market Overview — everything Fi is monitoring\n\nFS: ${snapshot.fsCount} active listings\nWTB: ${snapshot.wtbCount} active requests\n${liquidityLine(snapshot.fsCount, snapshot.wtbCount)}\n${averageLineFor("Average FS ask", snapshot.averageFsAsk, snapshot.averageBasis)}\n\n${dataWindowTrailer()}`;
 }

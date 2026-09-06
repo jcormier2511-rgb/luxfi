@@ -227,7 +227,13 @@ export const config = {
     // posted it: the WatchFacts API returns no creation date (only a flash-sale `deadline`).
     // On a freshly-populated mirror every row is therefore 0 days old and this filter does
     // nothing until the mirror itself is older than the window. 0 disables it entirely.
-    maxListingAgeDays: Math.max(0, Math.floor(Number(process.env.WATCHFACTS_MAX_LISTING_AGE_DAYS ?? 15)) || 0),
+    //
+    // Also the window postings/postingsStore.ts uses for a WatchFacts-mirrored listing's own
+    // expiry (see WATCHFACTS_LISTING_LIFETIME_MS there) — one shared number for "how much market
+    // history Fi will quote", not two independently-tunable ones that could silently drift apart.
+    // Raised from 15 to 30: 15 was cutting real, still-active WatchFacts inventory out of Market
+    // Pulse/Guide entirely, understating both count and average.
+    maxListingAgeDays: Math.max(0, Math.floor(Number(process.env.WATCHFACTS_MAX_LISTING_AGE_DAYS ?? 30)) || 0),
     // Ceiling on how many inventory rows a single search may pull into memory when the request
     // names no reference to narrow by. Matching used to load EVERY active listing per message
     // and filter in JS, which is fine against a few hundred flash sales and fatal against a

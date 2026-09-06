@@ -2,6 +2,7 @@ import { withSchema } from "./db";
 import { getOrCreateCanonicalUser } from "./identity";
 import { platformForIdentity } from "../channels/identity";
 import { classifyText, normalizeText, isOnlyNonModelLanguage, PostingType } from "./normalize";
+import { config } from "../config";
 
 export interface PostingRow {
   id: number;
@@ -34,6 +35,19 @@ export interface PostingRow {
 }
 
 const REQUEST_LIFETIME_MS = 15 * 24 * 60 * 60 * 1000;
+
+/**
+ * How long a WatchFacts-mirrored FS/WTB listing (mirrorApiPosting/mirrorApiPostingsBulk below)
+ * stays eligible before it's swept out of matching and Market Pulse/Guide -- distinct from
+ * REQUEST_LIFETIME_MS above, which is a real buyer/seller's own request lifetime, not a market-
+ * data freshness window. Shares config.watchfacts.maxListingAgeDays with inventory_listings'
+ * freshInventorySql so both WatchFacts-sourced tables age out on the same schedule ("market data
+ * from the last N days" means the same N everywhere) rather than two independently-tunable knobs
+ * silently drifting apart. That config's own "0 disables the window" convention doesn't translate
+ * to an expiry timestamp (0 there would mean "expires immediately"), so 0 here falls back to a
+ * long-but-finite window instead of turning expiry off outright.
+ */
+const WATCHFACTS_LISTING_LIFETIME_MS = (config.watchfacts.maxListingAgeDays > 0 ? config.watchfacts.maxListingAgeDays : 3650) * 24 * 60 * 60 * 1000;
 
 /**
  * The model named in a free-text description, or "" when it names none.
@@ -314,7 +328,7 @@ export interface MirrorFsResult {
 export async function mirrorApiPosting(listing: ApiFsListing, type: PostingType): Promise<MirrorFsResult> {
   const priceNum = Number(listing.price.replace(/[^0-9.]/g, ""));
   const price = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
-  const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
+  const expiresAt = new Date(Date.now() + WATCHFACTS_LISTING_LIFETIME_MS).toISOString();
   const originalText = listing.description || listing.item;
 
   const result = await withSchema(async (pool) => {
@@ -392,7 +406,7 @@ export async function mirrorApiPostingsBulk(listings: ApiFsListing[], type: Post
     const results: MirrorFsResult[] = [];
     const unchangedIds: number[] = [];
     const imageWrites: { postingId: number; imageUrl?: string | null }[] = [];
-    const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
+    const expiresAt = new Date(Date.now() + WATCHFACTS_LISTING_LIFETIME_MS).toISOString();
 
     for (const listing of listings) {
       const priceNum = Number(listing.price.replace(/[^0-9.]/g, ""));
