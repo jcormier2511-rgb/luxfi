@@ -16,7 +16,7 @@ const api = require("./api") as typeof import("./api");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("./inventoryDb") as typeof import("./inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { syncOneSide, fetchOpenAuctionsFromDb, syncWtbFromDb } = require("./syncInventory") as typeof import("./syncInventory");
+const { syncOneSide, fetchOpenAuctionsFromDb, syncWtbFromDb, flatMapWithYield } = require("./syncInventory") as typeof import("./syncInventory");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require("../postings/db") as typeof import("../postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -25,6 +25,30 @@ const { scoreMatch } = require("../postings/matching") as typeof import("../post
 after(() => {
   inventoryDb._closePoolForTests();
   db._closePoolForTests();
+});
+
+test("flatMapWithYield returns the same flattened result as Array.prototype.flatMap, in order", async () => {
+  const result = await flatMapWithYield([1, 2, 3], (x) => [x, x * 10]);
+  assert.deepEqual(result, [1, 10, 2, 20, 3, 30]);
+});
+
+test("required regression: flatMapWithYield yields control back to the event loop periodically for a large input — a full sync's per-listing parsing (tens of thousands of titles) must never block live webhook replies for its whole duration", async (t) => {
+  const calls: unknown[] = [];
+  t.mock.method(globalThis, "setImmediate", ((cb: () => void) => {
+    calls.push(true);
+    cb();
+    return {} as NodeJS.Immediate;
+  }) as typeof setImmediate);
+
+  const small = Array.from({ length: 10 }, (_, i) => i);
+  await flatMapWithYield(small, (x) => [x]);
+  assert.equal(calls.length, 0, "an input well under one chunk must never yield at all");
+
+  calls.length = 0;
+  const large = Array.from({ length: 1200 }, (_, i) => i);
+  const result = await flatMapWithYield(large, (x) => [x]);
+  assert.deepEqual(result, large, "yielding must never change the actual output");
+  assert.ok(calls.length >= 2, "an input spanning multiple chunks must yield more than once");
 });
 
 function fakeSale(id: string): RawFlashSale {

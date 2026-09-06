@@ -18,6 +18,26 @@ export interface SyncResult {
   wtbDisabled: boolean;
 }
 
+// A full sync maps tens of thousands of raw sales in one pass — each one regex-parsing its title
+// (extractNativePrice, classifyTextKeyword) — and Node is single-threaded, so doing that whole
+// pass in one synchronous .flatMap starves the event loop for however long it takes, delaying
+// every concurrent webhook reply for the same stretch (real reported symptom: a live chat reply
+// taking several minutes, exactly overlapping a manual full re-sync). Chunked here so the event
+// loop gets a breath every YIELD_EVERY items regardless of how large `items` is — a full sync
+// still finishes in roughly the same total time, it just no longer blocks anything else for it.
+const YIELD_EVERY = 500;
+
+export async function flatMapWithYield<T, R>(items: T[], fn: (item: T, index: number) => R[]): Promise<R[]> {
+  const result: R[] = [];
+  for (let i = 0; i < items.length; i++) {
+    result.push(...fn(items[i], i));
+    if ((i + 1) % YIELD_EVERY === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+  return result;
+}
+
 /** Last write wins on a duplicate id within one fetch — the DB's own dedupe key is source+type+id. */
 function dedupeById(sales: RawFlashSale[]): RawFlashSale[] {
   const byId = new Map<string, RawFlashSale>();
@@ -138,7 +158,7 @@ async function processRawSales(raw: RawFlashSale[], type: ListingType, now: Date
     // Each sale's structured sub-listings are mapped individually (a bundle lot of several
     // watches becomes several InventoryListings, not just its first one) — see
     // mapToInventoryListings.
-    const mapped = dedupedRaw.flatMap((s) => mapToInventoryListings(s, type));
+    const mapped = await flatMapWithYield(dedupedRaw, (s) => mapToInventoryListings(s, type));
     // AI enrichment/splitting (ENABLE_AI_MATCHING) — a no-op pass-through when disabled. Only
     // ever touches an unstructured multi-watch blast that the deterministic mapper above
     // couldn't already break apart; never runs for content unchanged since the last sync.
@@ -168,7 +188,7 @@ async function processRawSales(raw: RawFlashSale[], type: ListingType, now: Date
         // Recomputed per-sale (rather than reusing the flattened `listings` above) so each
         // sub-listing can be zipped back to its own frontImage via resolveListingDetails'
         // guaranteed matching order/length.
-        const apiListings: ApiFsListing[] = dedupedRaw.flatMap((s) => {
+        const apiListings: ApiFsListing[] = await flatMapWithYield(dedupedRaw, (s) => {
           const subListings = mapToInventoryListings(s, type);
           const images = resolveListingDetails(s).map((d) => d?.frontImage ?? null);
           return subListings.map((l, i) => ({
