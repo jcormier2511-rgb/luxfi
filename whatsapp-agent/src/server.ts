@@ -185,7 +185,19 @@ export async function tryHandleV4Extend(phone: string, text: string): Promise<st
  * same normalized shape (channels/types.ts's NormalizedIncomingMessage) before calling this.
  */
 export async function processIncomingMessages(incoming: NormalizedIncomingMessage[]): Promise<void> {
-  const filtered = incoming.filter((m) => !alreadyProcessed(m.id) && !alreadyProcessedContent(m.phone, m.text, m.imageUrl));
+  // Logged for every message BEFORE dedup decides anything -- the only way to tell, from
+  // Railway's own deploy logs, whether a live "duplicate reply" report is a genuine second
+  // webhook delivery (a different id, same phone/text) versus something else entirely, without
+  // needing Whapi's separate Webhook Request Debugger.
+  const filtered = incoming.filter((m) => {
+    const idSeen = alreadyProcessed(m.id);
+    const contentSeen = !idSeen && alreadyProcessedContent(m.phone, m.text, m.imageUrl);
+    const duplicate = idSeen || contentSeen;
+    console.log(
+      `[webhook] ${duplicate ? `duplicate (${idSeen ? "id" : "content"}), skipping` : "processing"} id=${m.id} phone=${m.phone} text=${JSON.stringify(m.text.slice(0, 80))}`
+    );
+    return !duplicate;
+  });
 
   for (const message of filtered) {
     try {
