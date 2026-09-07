@@ -512,9 +512,30 @@ const LISTINGS_MENU = [
   "1. Matches I've approved",
   "2. Matches still pending my decision",
   "3. My current WTB/FS listings",
+  "4. My draft in progress",
   "",
   "Reply with a number.",
 ].join("\n");
+
+const BUY_INTAKE_STEP_LABELS: Record<PendingBuyIntake["step"], string> = {
+  details: "what you're looking for",
+  budget: "your maximum budget",
+  model: "which model",
+  condition: "new, pre-owned, or any condition",
+  location: "your location preference",
+  dial: "dial color preference",
+  confirm: "your confirmation to start monitoring",
+};
+
+const SELL_INTAKE_STEP_LABELS: Record<PendingSellIntake["step"], string> = {
+  details: "a description of the item",
+  price: "your asking price",
+  condition: "new, pre-owned, or any condition",
+  location: "your location",
+  dial: "dial color",
+  photo: "a photo (or say \"skip\")",
+  confirm: "your confirmation to list it",
+};
 
 /** Option 1 — durable across searches (unlike v3's own pendingMatches, which a new search
  *  replaces): reads live from Postgres (approvalUsage.ts), the same store both the v3 and v4
@@ -554,6 +575,30 @@ async function formatMyListingsSummary(phone: string): Promise<string> {
   if (postings.length === 0) return "You don’t have any active buy or sell tasks right now.\nTell me what you want to buy or sell and I’ll start working on it.";
   const lines = postings.map((p, i) => `${i + 1}. ${formatStructuredPosting(p)}`);
   return `You currently have ${postings.length} active task${postings.length === 1 ? "" : "s"}:\n\n${lines.join("\n\n")}\n\nYou can say:\n"change listing 2 price to 35,000"\n"expand listing 1 to worldwide"\n"pause listing 1"\n"close listing 2"`;
+}
+
+/** Option 4 — the caller's OWN open, unconfirmed draft(s) (buy and/or sell), the customer-facing
+ *  counterpart to stateStore.ts's listOpenDrafts() (which surfaces the same data admin-wide).
+ *  Useful for anyone unsure whether Fi is still waiting on them for something, or what it
+ *  already has, rather than re-answering from scratch or texting in to ask. Deliberately reads
+ *  the draft as-is (never calls nextBuy/nextSell, which mutate `step` as a side effect of
+ *  computing the next question) — a read-only view must never normalize state as a side effect
+ *  of being looked at.
+ */
+function formatMyDraftSummary(state: ConversationState): string {
+  const sections: string[] = [];
+  if (state.pendingBuyIntake) {
+    const p = state.pendingBuyIntake;
+    const identity = [displayBrand(p.brand), p.model, p.reference].filter(Boolean).join(" ") || p.description;
+    sections.push(`WTB draft — ${identity}\nWaiting on: ${BUY_INTAKE_STEP_LABELS[p.step]}`);
+  }
+  if (state.pendingSellIntake) {
+    const p = state.pendingSellIntake;
+    const identity = [displayBrand(p.brand), p.model, p.reference].filter(Boolean).join(" ") || p.description;
+    sections.push(`FS draft — ${identity}\nWaiting on: ${SELL_INTAKE_STEP_LABELS[p.step]}`);
+  }
+  if (sections.length === 0) return "You don't have a draft in progress right now.\nTell me what you want to buy or sell and I'll start one.";
+  return `Your draft${sections.length > 1 ? "s" : ""} in progress:\n\n${sections.join("\n\n")}\n\nJust keep answering, or say "cancel" to drop it.`;
 }
 
 function formatAmount(value: string, currency: string): string {
@@ -2009,7 +2054,7 @@ async function startSellIntake(state: ConversationState, request: ItemRequest, m
     ...(suppliedLocation !== undefined ? { location: suppliedLocation } : {}),
     ...(imageUrl !== undefined ? { imageUrl } : {}),
   };
-  applySellSlots(p, originalText); state.pendingSellIntake=p; messages.push((await nextSell(p)) ?? await sellSummaryWithMarketGuide(p));
+  applySellSlots(p, originalText); state.pendingSellIntake=p; state.intakeFallbackCount=0; messages.push((await nextSell(p)) ?? await sellSummaryWithMarketGuide(p));
 }
 
 async function startBuyIntake(state: ConversationState, request: ItemRequest, messages: string[], originalText: string, suppliedCondition?: string, suppliedLocation?: string): Promise<void> {
@@ -2018,7 +2063,7 @@ async function startBuyIntake(state: ConversationState, request: ItemRequest, me
     ...(suppliedCondition !== undefined ? { condition: suppliedCondition } : {}),
     ...(suppliedLocation !== undefined ? { location: suppliedLocation } : {}),
   };
-  applyBuySlots(p, originalText); state.pendingBuyIntake=p; messages.push(nextBuy(p) ?? buySummary(p));
+  applyBuySlots(p, originalText); state.pendingBuyIntake=p; state.intakeFallbackCount=0; messages.push(nextBuy(p) ?? buySummary(p));
 }
 
 /**
@@ -2077,6 +2122,37 @@ function photoReplyForSell(state: ConversationState, messages: string[]): FlowRe
  *  a real v4 FS posting run against every active WTB posting immediately (see postings/ingest.ts's
  *  ingestDirectSellPosting) — the acknowledgment reflects whether that immediate search actually
  *  found a live buyer, rather than a blanket "not wired up yet" caveat. */
+// Real reported pattern this session: a stuck or confused conversation kept getting the exact
+// same non-advancing "I kept your ... draft open" reply over and over, with no way out short of
+// an admin manually resetting the account. 3 in a row is Fi giving up on the draft rather than
+// repeating itself a fourth time.
+const INTAKE_CONFUSION_THRESHOLD = 3;
+
+/**
+ * Once a draft's answer has failed to advance it INTAKE_CONFUSION_THRESHOLD times in a row,
+ * clears whichever draft is open, resets the counter, and replaces the usual "I kept your ...
+ * draft open" reply with a plain "let's start over" plus the intro menu (which itself already
+ * says "type help to see this again") — returns true so the caller skips its own normal
+ * fallback/next-question push. Below the threshold, just tracks the count and returns false so
+ * the caller behaves exactly as before. Deliberately narrow: only ever called from the literal
+ * "did this answer change nothing" branch, never from a genuine question mid-intake (which gets
+ * its own, different reply) -- and the count lives on the CURRENT draft's own history, reset to
+ * 0 the moment anything actually advances it, so it never carries over from an old, unrelated one.
+ */
+function bailOutOfStuckIntake(state: ConversationState, messages: string[]): boolean {
+  const count = (state.intakeFallbackCount ?? 0) + 1;
+  if (count < INTAKE_CONFUSION_THRESHOLD) {
+    state.intakeFallbackCount = count;
+    return false;
+  }
+  state.intakeFallbackCount = 0;
+  state.pendingBuyIntake = undefined;
+  state.pendingSellIntake = undefined;
+  messages.push("I think I got confused somewhere — let's start over.");
+  messages.push(FI_MENU);
+  return true;
+}
+
 async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<void> {
   const p=state.pendingSellIntake!; const suppliedPhoto = Boolean(imageUrl); if(imageUrl)p.imageUrl=imageUrl;
   if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
@@ -2086,7 +2162,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
     // above), never the actual current WTB listings/links a buyer gets shown. Runs before the
     // draft is cleared, so the search is scoped to the request just confirmed.
     messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
-    state.pendingSellIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
+    state.pendingSellIntake=undefined; state.intakeFallbackCount=0; await maybeNudgeChannelPreference(state,messages); return; }
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
@@ -2101,7 +2177,11 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   if(freeLocation)p.location=text.trim();
   const changed=scopedChange || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
-  if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open."); }
+  if (changed) state.intakeFallbackCount = 0;
+  if(!changed) {
+    if (bailOutOfStuckIntake(state, messages)) return;
+    const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open.");
+  }
   messages.push((await nextSell(p))??await sellSummaryWithMarketGuide(p));
 }
 
@@ -2112,7 +2192,7 @@ async function handleBuyIntakeAnswer(state: ConversationState, text: string, mes
     // request rather than making the buyer ask a second time. Runs before the draft is cleared,
     // so the search is scoped to the request they just confirmed.
     messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
-    state.pendingBuyIntake=undefined; await maybeNudgeChannelPreference(state,messages); return; }
+    state.pendingBuyIntake=undefined; state.intakeFallbackCount=0; await maybeNudgeChannelPreference(state,messages); return; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   // See the sell handler above: the scoped answer claims the message first, and only what it
@@ -2122,7 +2202,11 @@ async function handleBuyIntakeAnswer(state: ConversationState, text: string, mes
   if(freeLocation)p.location=text.trim();
   const changed=scopedChange||skippedReference||freeLocation;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
-  if(!changed) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your request draft open."); }
+  if (changed) state.intakeFallbackCount = 0;
+  if(!changed) {
+    if (bailOutOfStuckIntake(state, messages)) return;
+    const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your request draft open.");
+  }
   messages.push(nextBuy(p)??buySummary(p));
 }
 
@@ -2474,7 +2558,12 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
       saveState(state);
       return { state, messages };
     }
-    // Not 1/2/3 — fall through so this message is still handled normally.
+    if (choice === "4") {
+      messages.push(formatMyDraftSummary(state));
+      saveState(state);
+      return { state, messages };
+    }
+    // Not 1/2/3/4 — fall through so this message is still handled normally.
   }
 
   // Fi asked a direct question ("what's the best number to reach you at on SMS?") and this

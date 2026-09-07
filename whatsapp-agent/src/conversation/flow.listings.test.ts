@@ -325,3 +325,29 @@ test("pause, resume, and price changes preserve a pending WTB exactly", async ()
     assert.deepEqual(result.state.pendingSellIntake, pendingSellBefore, `${command} must not alter sell intake state`);
   }
 });
+
+test('required: "listings" then "4" shows the caller\'s own open draft, read-only', async () => {
+  const phone = "19992230020";
+  resetState(phone);
+
+  const started = await handleIncomingMessage(phone, "WTB Rolex Daytona");
+  assert.ok(started.state.pendingBuyIntake, "precondition: a draft is now open");
+  const before = structuredClone(started.state.pendingBuyIntake);
+
+  await handleIncomingMessage(phone, "listings");
+  const shown = await handleIncomingMessage(phone, "4");
+  const text = shown.messages.join("\n");
+  assert.match(text, /WTB draft/);
+  assert.match(text, /Rolex/i);
+  assert.match(text, /Waiting on:/);
+  assert.deepEqual(shown.state.pendingBuyIntake, before, "viewing the draft must never mutate it (nextBuy's step side effect must not run here)");
+});
+
+test('required: "listings" then "4" says so when there is no draft open', async () => {
+  const phone = "19992230021";
+  resetState(phone);
+
+  await handleIncomingMessage(phone, "listings");
+  const shown = await handleIncomingMessage(phone, "4");
+  assert.match(shown.messages.join("\n"), /don't have a draft in progress/);
+});

@@ -168,6 +168,11 @@ export interface ConversationState {
   pendingNaturalFollowUp?: PendingNaturalFollowUp;
   pendingSellIntake?: PendingSellIntake;
   pendingBuyIntake?: PendingBuyIntake;
+  // Consecutive replies that failed to advance whichever draft above is open (the literal "I
+  // kept your ... draft open" fallback, never a genuine question mid-intake) — see flow.ts's
+  // bailOutOfStuckIntake. Reset to 0 the moment any answer actually advances a draft, or a draft
+  // starts/confirms; never carried over between two different drafts.
+  intakeFallbackCount?: number;
   pendingReplacementRequest?: string;
   // Set right after a real connection reveal suggests escrow/inspection partners (see
   // config.fiFlow.escrowSuggestion) — checked once, on the contact's very next reply, so a

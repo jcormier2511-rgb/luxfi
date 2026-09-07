@@ -145,7 +145,9 @@ export const config = {
     // Per the Fi Conversation Flow Spec (v3): trial = 3 *approved* matches, not 3 searches.
     // Searching and passing are unlimited; only "approve" is metered.
     maxApprovedMatches: Number(process.env.TRIAL_MAX_APPROVED_MATCHES ?? process.env.TRIAL_MAX_ITEMS ?? 3),
-    maxOptionsPerItem: Number(process.env.TRIAL_MAX_OPTIONS_PER_ITEM ?? 5),
+    // Real reported ask: the initial set of match cards for one search read as too many at 5 —
+    // narrowed to the 3 best rather than a longer scroll.
+    maxOptionsPerItem: Number(process.env.TRIAL_MAX_OPTIONS_PER_ITEM ?? 3),
   },
   fiReturningCampaign: {
     publicPhoneNumber: process.env.FI_PUBLIC_PHONE_NUMBER ?? "",
