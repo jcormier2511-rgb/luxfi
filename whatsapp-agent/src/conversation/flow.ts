@@ -405,11 +405,12 @@ function parseNotificationChannelCommand(text: string): NotificationChannelInten
     new RegExp(`^notify\\s+me\\s+(?:by|on|via|through)\\s+${channelWord}$`, "i"),
     new RegExp(`^use\\s+${channelWord}\\s+for\\s+(?:my\\s+)?(?:matches|notifications|alerts)$`, "i"),
     new RegExp(`^(?:set\\s+)?(?:my\\s+)?(?:notification|alert)\\s+channel\\s+(?:to|=)\\s+${channelWord}$`, "i"),
-    // maybeNudgeChannelPreference's own one-time question quotes "Telegram"/"SMS" as valid
-    // replies on their own, not only inside the full "notify me on X" phrasing — a bare "SMS"
-    // (or "sms") failed to match anything and fell through to the generic help text, exactly as
-    // reported live. A message that is ENTIRELY just the channel word (nothing else) is
-    // unambiguous enough to accept the same way.
+    // maybeNudgeChannelPreference's own one-time question quotes "WhatsApp"/"Telegram" as valid
+    // replies on their own, not only inside the full "notify me on X" phrasing — a bare channel
+    // word (e.g. "sms", still accepted here even though the prompt itself no longer offers it)
+    // failed to match anything and fell through to the generic help text, exactly as reported
+    // live. A message that is ENTIRELY just the channel word (nothing else) is unambiguous
+    // enough to accept the same way.
     new RegExp(`^${channelWord}$`, "i"),
   ];
   for (const re of patterns) {
@@ -469,8 +470,8 @@ async function handleNotificationChannelCommand(state: ConversationState, intent
     if (!pref.preferredChannel) {
       messages.push(
         linked.length > 0
-          ? `You haven't set a preferred notification channel — right now I'd send your matches and alerts by ${channelLabel(linked[0].platform)}. Say "notify me on WhatsApp/Telegram/SMS" to set one.`
-          : 'No channel linked yet. Say "notify me on WhatsApp/Telegram/SMS" to set one up.'
+          ? `You haven't set a preferred notification channel — right now I'd send your matches and alerts by ${channelLabel(linked[0].platform)}. Say "notify me on WhatsApp/Telegram" to set one.`
+          : 'No channel linked yet. Say "notify me on WhatsApp/Telegram" to set one up.'
       );
       return;
     }
@@ -825,7 +826,10 @@ async function maybeNudgeChannelPreference(state: ConversationState, messages: s
   const pref = await getNotificationPreference(canonicalUserId);
   if (pref.preferredChannel) return;
   messages.push(
-    'One-time question: how would you like me to notify you when I find a buyer, seller, or market opportunity? Reply "notify me on WhatsApp", "Telegram", or "SMS" — or ignore this and I\'ll keep using wherever you\'re chatting with me now.'
+    // SMS temporarily left off this prompt (real reported ask) -- "notify me on SMS" still works
+    // if someone asks for it unprompted (see parseNotificationChannelCommand), this just stops
+    // Fi from offering it as a suggested option here.
+    'One-time question: how would you like me to notify you when I find a buyer, seller, or market opportunity? Reply "notify me on WhatsApp" or "Telegram" — or ignore this and I\'ll keep using wherever you\'re chatting with me now.'
   );
 }
 
