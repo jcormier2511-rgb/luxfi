@@ -110,3 +110,36 @@ export function alreadyProcessedContent(phone: string, text: string, imageUrl?: 
 export function _resetContentDedupeForTests(): void {
   recentContent = [];
 }
+
+export interface OpenDraftSummary {
+  phone: string;
+  type: "WTB" | "FS";
+  step: string;
+  brand?: string;
+  model?: string;
+  reference: string | null;
+  description: string;
+}
+
+/**
+ * Every identity with a currently open, unconfirmed buy or sell draft -- until now, invisible to
+ * anyone but the customer themselves, since a draft lives only in this per-phone conversation
+ * state and never in postings. An admin chasing a stuck or confused conversation (the recurring
+ * "I kept your request draft open" reports this session) had no way to see which identities
+ * actually have an open draft, or what's in it, without asking the customer or reading the raw
+ * state file by hand.
+ */
+export function listOpenDrafts(): OpenDraftSummary[] {
+  const drafts: OpenDraftSummary[] = [];
+  for (const [phone, state] of Object.entries(readAll())) {
+    if (state.pendingBuyIntake) {
+      const p = state.pendingBuyIntake;
+      drafts.push({ phone, type: "WTB", step: p.step, brand: p.brand, model: p.model, reference: p.reference, description: p.description });
+    }
+    if (state.pendingSellIntake) {
+      const p = state.pendingSellIntake;
+      drafts.push({ phone, type: "FS", step: p.step, brand: p.brand, model: p.model, reference: p.reference, description: p.description });
+    }
+  }
+  return drafts;
+}

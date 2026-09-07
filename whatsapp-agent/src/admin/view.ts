@@ -357,6 +357,7 @@ export function renderToolsPage(): string {
   <a href="#reset-section">Full account reset</a>
   <a href="#ent-section">Membership / entitlement</a>
   <a href="#id-section">All known identities</a>
+  <a href="#drafts-section">Open drafts</a>
 </nav>
 
 <section class="card" id="mg-section">
@@ -413,6 +414,15 @@ export function renderToolsPage(): string {
   <div id="id-empty" class="muted"></div>
   <table id="id-table" hidden><thead></thead><tbody></tbody></table>
   <pre id="id-error" class="error"></pre>
+</section>
+
+<section class="card" id="drafts-section">
+  <h2>Open drafts</h2>
+  <p class="muted">Every identity with a currently open, unconfirmed buy or sell draft — until now, invisible to anyone but the customer, since a draft lives only in that phone's own conversation state and never in postings. Useful for spotting a stuck conversation (e.g. an old, abandoned draft that keeps intercepting an unrelated later message) without asking the customer or reading the state file by hand.</p>
+  <div class="toolbar"><button onclick="draftsLookup()">Load open drafts</button></div>
+  <div id="drafts-empty" class="muted"></div>
+  <table id="drafts-table" hidden><thead></thead><tbody></tbody></table>
+  <pre id="drafts-error" class="error"></pre>
 </section>
 
 </main><script>
@@ -514,6 +524,17 @@ export function renderToolsPage(): string {
       if(!res.ok){document.querySelector('#id-error').textContent=data.error||'Lookup failed';return}
       renderTable('id',data.rows||[]);
     }catch(e){document.querySelector('#id-error').textContent=e.message}
+  }
+  async function draftsLookup(){
+    document.querySelector('#drafts-error').textContent='';
+    try{
+      await ensureCsrf();
+      const res=await fetch('/admin/api/tools/open-drafts');
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#drafts-error').textContent=data.error||'Lookup failed';return}
+      renderTable('drafts',data.rows||[]);
+    }catch(e){document.querySelector('#drafts-error').textContent=e.message}
   }
   </script></body></html>`;
 }

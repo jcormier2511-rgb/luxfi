@@ -10,6 +10,7 @@ import { recordBillingRequested, getEntitlement, createCheckoutSession, findLate
 import { MEMBERSHIP_PLANS, PlanKey } from "../billing/plans";
 import { isAuthorizeNetConfigured } from "../billing/authorizeNet";
 import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, getApprovedMatchesSummary } from "../postings/approvalUsage";
+import { formatPhoneForDisplay } from "../postings/notify";
 import { getOrCreateCanonicalUser } from "../postings/identity";
 import { platformForIdentity, smsIdentity, ChannelPlatform } from "../channels/identity";
 import {
@@ -523,7 +524,7 @@ async function formatApprovedListingsSummary(phone: string): Promise<string> {
   const summary = await getApprovedMatchesSummary(phone);
   if (summary.length === 0) return "You haven't approved any matches yet.";
   const lines = summary.map((s, i) => {
-    const contact = s.counterpartName && s.counterpartPhone ? `${s.counterpartName}: ${s.counterpartPhone}` : "waiting on the other side to confirm";
+    const contact = s.counterpartName && s.counterpartPhone ? `${s.counterpartName}: ${formatPhoneForDisplay(s.counterpartPhone)}` : "waiting on the other side to confirm";
     return `${i + 1}. ${s.listingDescription} — ${contact}`;
   });
   return "Your approved matches:\n\n" + lines.join("\n");

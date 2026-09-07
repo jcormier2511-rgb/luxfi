@@ -22,6 +22,8 @@ const postingsDb = require("./postings/db") as typeof import("./postings/db");
 const inventoryDb = require("./watchfacts/inventoryDb") as typeof import("./watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const rates = require("./fx/rates") as typeof import("./fx/rates");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const stateStore = require("./conversation/stateStore") as typeof import("./conversation/stateStore");
 
 const database = new Pool({ connectionString: process.env.DATABASE_URL });
 const app = createServer();
@@ -211,14 +213,45 @@ test("POST /admin/api/tools/entitlement/plan assigns and clears a plan, rejects 
 test("GET /admin/api/tools/identities lists every linked identity, unfiltered by search/approval activity", async () => {
   const { getOrCreateCanonicalUser } = require("./postings/identity") as typeof import("./postings/identity");
   await getOrCreateCanonicalUser("whatsapp", "15550006001"); // never searches or approves anything
+  await getOrCreateCanonicalUser("telegram", "telegram:5559990002");
 
   const readOnlyId = await seedAdmin("read_only");
   const res = await fetch(`${baseUrl}/admin/api/tools/identities`, { headers: { Cookie: cookieFor(readOnlyId) } });
   assert.equal(res.status, 200);
   const body = (await res.json()) as { ok: boolean; rows: { identity: string; platform: string; canonicalUserId: number; firstSeenAt: string }[] };
   assert.equal(body.ok, true);
-  const row = body.rows.find((r) => r.identity === "15550006001");
+  // A raw WhatsApp identity is formatted for legibility (real reported ask: unformatted phone
+  // numbers throughout the admin panel), but a Telegram identity isn't a phone number at all and
+  // must never be reformatted as though it were one.
+  const row = body.rows.find((r) => r.identity === "+1 (555) 000-6001");
   assert.ok(row, "an identity with zero searches/approvals must still appear here, unlike the dashboard's Activity by user table");
   assert.equal(row!.platform, "whatsapp");
   assert.ok(row!.firstSeenAt);
+  const telegramRow = body.rows.find((r) => r.identity === "telegram:5559990002");
+  assert.ok(telegramRow, "a Telegram identity must be left exactly as stored, never reformatted as a phone number");
+  assert.equal(telegramRow!.platform, "telegram");
+});
+
+test("required: GET /admin/api/tools/open-drafts surfaces a phone's currently open draft, with its phone formatted", async () => {
+  const phone = "15550009002";
+  stateStore.resetState(phone);
+  const state = stateStore.getState(phone);
+  state.pendingBuyIntake = { step: "budget", description: "WTB Rolex Daytona", reference: "116500LN", brand: "rolex" };
+  stateStore.saveState(state);
+
+  const readOnlyId = await seedAdmin("read_only");
+  const res = await fetch(`${baseUrl}/admin/api/tools/open-drafts`, { headers: { Cookie: cookieFor(readOnlyId) } });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { ok: boolean; rows: { phone: string; type: string; step: string; reference: string | null }[] };
+  assert.equal(body.ok, true);
+  const row = body.rows.find((r) => r.phone === "+1 (555) 000-9002");
+  assert.ok(row, "the open draft must appear, with its phone formatted the same way as the identities table");
+  assert.equal(row!.type, "WTB");
+  assert.equal(row!.step, "budget");
+  assert.equal(row!.reference, "116500LN");
+
+  stateStore.resetState(phone);
+  const cleared = await fetch(`${baseUrl}/admin/api/tools/open-drafts`, { headers: { Cookie: cookieFor(readOnlyId) } });
+  const clearedBody = (await cleared.json()) as { rows: { phone: string }[] };
+  assert.equal(clearedBody.rows.some((r) => r.phone === "+1 (555) 000-9002"), false, "a cleared draft must disappear from the list");
 });

@@ -8,7 +8,7 @@ import { sendText, sendBannerImage, NormalizedIncomingMessage } from "./channels
 import { platformForIdentity } from "./channels/identity";
 import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
 import { verifyTwilioSignature, extractIncomingMessage as extractSmsMessage } from "./channels/sms";
-import { alreadyProcessed, alreadyProcessedContent, getState, resetState, markPendingEscrowOffer } from "./conversation/stateStore";
+import { alreadyProcessed, alreadyProcessedContent, getState, resetState, markPendingEscrowOffer, listOpenDrafts } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
@@ -499,7 +499,12 @@ export function createServer() {
   // Unfiltered answer to "who has ever contacted Fi at all" -- unlike the dashboard's Activity
   // by user table (searches/approvals only), this lists every linked identity system-wide, so
   // an admin can actually see who the "known unique users" figures are counting.
-  app.get("/admin/api/tools/identities",api(async(_req,res)=>res.json({ok:true,rows:await listAllIdentities()})));
+  // A raw, digits-only identity (a WhatsApp number) reads far more legibly as "+1 (305) 389-7000"
+  // than "13053897000" -- a Telegram/SMS identity ("telegram:5703391972") isn't a phone number at
+  // all, so it's left exactly as stored rather than treated as one.
+  const formatIdentityForDisplay = (identity: string): string => (/^\d+$/.test(identity) ? formatPhoneForDisplay(identity) : identity);
+  app.get("/admin/api/tools/identities",api(async(_req,res)=>res.json({ok:true,rows:(await listAllIdentities()).map((r)=>({...r,identity:formatIdentityForDisplay(r.identity)}))})));
+  app.get("/admin/api/tools/open-drafts",api(async(_req,res)=>res.json({ok:true,rows:listOpenDrafts().map((r)=>({...r,phone:formatIdentityForDisplay(r.phone)}))})));
 
   app.get("/admin/tools",async(req,res)=>{const ctx=await adminContext(req).catch(()=>null);if(!ctx)return res.status(401).type('html').send(renderLoginPage());res.type('html').send(renderToolsPage())});
   app.get("/admin/push-groups",async(req,res)=>{const ctx=await adminContext(req).catch(()=>null);if(!ctx)return res.status(401).type('html').send(renderLoginPage());res.type('html').send(renderPushGroupsPage())});
