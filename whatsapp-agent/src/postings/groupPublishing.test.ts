@@ -7,6 +7,8 @@ process.env.WEBHOOK_TOKEN = "test";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require("./db") as typeof import("./db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const adminStore = require("../admin/store") as typeof import("../admin/store");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { savePushGroup } = require("./listingConfig") as typeof import("./listingConfig");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { createDirectPosting, setPostingImages } = require("./postingsStore") as typeof import("./postingsStore");
@@ -17,9 +19,15 @@ const channels = require("../channels") as typeof import("../channels");
 
 beforeEach(async () => {
   await db._resetDbForTests(); // drops listing_push_groups/listing_settings/listing_group_publications too
+  await adminStore.initAdminSchema();
+  // Push-group settings now live in the unified Group Registry (approved_groups), which is not
+  // part of the postings reset above -- see server.pushGroups.test.ts's own comment on this.
+  await db.withSchema((pool) => pool.query("DELETE FROM approved_groups"));
 });
 after(async () => {
+  await db.withSchema((pool) => pool.query("DELETE FROM approved_groups"));
   await db._closePoolForTests();
+  await adminStore._closePoolForTests();
 });
 
 test("a listing with no photo pushes as plain text", async (t) => {

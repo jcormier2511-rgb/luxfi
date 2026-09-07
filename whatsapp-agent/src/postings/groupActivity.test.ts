@@ -33,7 +33,7 @@ async function reset(): Promise<void> {
 
 async function approveGroup(chatId: string, status: "active" | "inactive" = "active"): Promise<void> {
   await db.withSchema((pool) =>
-    pool.query("INSERT INTO approved_groups(group_name,whatsapp_chat_id,status,monitoring_enabled) VALUES($1,$2,$3,true)", [`Group ${chatId}`, chatId, status])
+    pool.query("INSERT INTO approved_groups(group_name,group_id,status,monitoring_enabled) VALUES($1,$2,$3,true)", [`Group ${chatId}`, chatId, status])
   );
 }
 

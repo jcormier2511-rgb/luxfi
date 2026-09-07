@@ -39,6 +39,50 @@ async function createAdminSchema():Promise<void> {
     ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS last_successful_ingest_at TIMESTAMPTZ;
     ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS ingestion_status TEXT;
     ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS ingestion_error TEXT;
+
+    -- Unified Group Registry (real reported ask): approved_groups becomes the single canonical
+    -- table for BOTH monitoring (inbound ingestion) and pushing (outbound listing distribution,
+    -- previously the entirely separate listing_push_groups table -- see postings/listingConfig.ts),
+    -- plus Whapi-discovery bookkeeping. "group_id" replaces the WhatsApp-specific name
+    -- whatsapp_chat_id now that this table has long since covered Telegram too.
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='approved_groups' AND column_name='whatsapp_chat_id')
+         AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='approved_groups' AND column_name='group_id')
+      THEN
+        ALTER TABLE approved_groups RENAME COLUMN whatsapp_chat_id TO group_id;
+      END IF;
+    END $$;
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS push_enabled BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS allow_fs BOOLEAN NOT NULL DEFAULT true;
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS allow_wtb BOOLEAN NOT NULL DEFAULT true;
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 100;
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS category TEXT;
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS source_account TEXT;
+    -- NULL = never checked (unknown); only Whapi discovery or an explicit manual verification
+    -- ever sets this true/false -- a group is never assumed accessible just because a row exists.
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS fi_is_member BOOLEAN;
+    -- KNOWN (a row exists) vs ACCESSIBLE (this column) are deliberately different states -- see
+    -- the module comment on isApprovedMonitoringGroup. Defaults true so every group created
+    -- before this column existed, and every manually-added group, reads as accessible until a
+    -- Whapi sync says otherwise.
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS accessible BOOLEAN NOT NULL DEFAULT true;
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMPTZ;
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS last_push_at TIMESTAMPTZ;
+    ALTER TABLE approved_groups ADD COLUMN IF NOT EXISTS last_push_result TEXT;
+
+    -- Platform-qualified uniqueness (a WhatsApp group and a Telegram group could theoretically
+    -- share the same literal id string) replaces the old single-column constraint.
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='approved_groups_platform_group_id_key') THEN
+        ALTER TABLE approved_groups DROP CONSTRAINT IF EXISTS approved_groups_whatsapp_chat_id_key;
+        ALTER TABLE approved_groups ADD CONSTRAINT approved_groups_platform_group_id_key UNIQUE (platform, group_id);
+      END IF;
+    END $$;
+
+    -- One-time migration marker table -- see postings/listingConfig.ts's ready(), which performs
+    -- the actual backfill of pre-unification push-group data into this table (it, not this
+    -- module, is guaranteed to run after listing_push_groups exists).
+    CREATE TABLE IF NOT EXISTS admin_schema_migrations (key TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());
   `); await client.query("COMMIT"); } catch(error){await client.query("ROLLBACK");throw error} finally{client.release()}
   const count=Number((await db().query("SELECT count(*) n FROM administrators")).rows[0].n);
   if(count===0 && config.admin.initial.username && config.admin.initial.passwordHash) await db().query("INSERT INTO administrators(name,username,email,password_hash,role) VALUES($1,$2,$3,$4,'owner')",[config.admin.initial.name,config.admin.initial.username,config.admin.initial.email,config.admin.initial.passwordHash]);
@@ -107,11 +151,97 @@ export async function saveUser(actor:Administrator,input:any,id?:number){const p
 export async function deleteUser(actor:Administrator,id:number){await db().query("DELETE FROM approved_users WHERE id=$1",[id]);await audit(actor,"user.deleted","approved_user",String(id))}
 export async function importUsersCsv(actor:Administrator,csv:string){const rows=parse(csv,{columns:true,skip_empty_lines:true,trim:true}) as any[];let added=0,updated=0,skipped=0;const errors:any[]=[];for(let i=0;i<rows.length;i++){try{const raw=rows[i],phone=normalizePhone(raw.phone||"");if(!raw.name)throw new Error("name required");const existing=(await db().query("SELECT * FROM approved_users WHERE phone=$1",[phone])).rows[0];if(existing){const patch:any={...existing};for(const f of allowedUserFields)if(raw[f]!==undefined&&raw[f]!=="")patch[f]=raw[f];await saveUser(actor,patch,existing.id);updated++;}else{await saveUser(actor,{...raw,phone},undefined);added++;}}catch(e){errors.push({row:i+2,error:(e as Error).message});}}await audit(actor,"users.csv_import","approved_user",undefined,{added,updated,skipped,errorCount:errors.length});return{added,updated,skipped,errors}}
 export async function exportUsersCsv(){const rows=(await db().query(`SELECT ${allowedUserFields.join(',')} FROM approved_users ORDER BY id`)).rows;const esc=(v:any)=>v==null?'':/[",\n]/.test(String(v))?`"${String(v).replace(/"/g,'""')}"`:String(v);return USER_CSV_HEADER+'\n'+rows.map(r=>allowedUserFields.map(f=>esc(r[f])).join(',')).join('\n')+'\n'}
-export async function listGroups(q="",status=""){const vals:any[]=[];let w="WHERE 1=1";if(q){vals.push(`%${q}%`);w+=` AND (group_name ILIKE $${vals.length} OR whatsapp_chat_id ILIKE $${vals.length})`}if(status){vals.push(status);w+=` AND status=$${vals.length}`}return(await db().query(`SELECT * FROM approved_groups ${w} ORDER BY group_name`,vals)).rows}
-export async function saveGroup(actor:Administrator,input:any,id?:number){if(!input.group_name||!input.whatsapp_chat_id||input.whatsapp_chat_id==='*')throw new Error("group name and a specific group ID are required");const platform=input.platform==='telegram'?'telegram':'whatsapp';const vals=[input.group_name,String(input.whatsapp_chat_id),input.status||'active',!!input.monitoring_enabled,!!input.concierge_enabled,Array.isArray(input.categories)?input.categories:String(input.categories||'').split(',').filter(Boolean),input.country||null,input.timezone||null,input.member_count?Number(input.member_count):null,input.notes||null,platform,input.monitor_fs!==false,input.monitor_wtb!==false];let row;if(id){vals.push(id);row=(await db().query("UPDATE approved_groups SET group_name=$1,whatsapp_chat_id=$2,status=$3,monitoring_enabled=$4,concierge_enabled=$5,categories=$6,country=$7,timezone=$8,member_count=$9,notes=$10,platform=$11,monitor_fs=$12,monitor_wtb=$13,updated_at=now() WHERE id=$14 RETURNING *",vals)).rows[0]}else row=(await db().query("INSERT INTO approved_groups(group_name,whatsapp_chat_id,status,monitoring_enabled,concierge_enabled,categories,country,timezone,member_count,notes,platform,monitor_fs,monitor_wtb) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *",vals)).rows[0];await audit(actor,id?"group.updated":"group.created","approved_group",String(row.id));return row}
-export async function deleteGroup(actor:Administrator,id:number){await db().query("DELETE FROM approved_groups WHERE id=$1",[id]);await audit(actor,"group.deleted","approved_group",String(id))}
-export async function isApprovedMonitoringGroup(chatId:string,type?:"FS"|"WTB"){if(chatId==='*')return false;await initAdminSchema();const r=await db().query("SELECT EXISTS(SELECT 1 FROM approved_groups WHERE whatsapp_chat_id=$1 AND status='active' AND monitoring_enabled AND ($2::text IS NULL OR $2='FS' AND monitor_fs OR $2='WTB' AND monitor_wtb)) ok",[chatId,type??null]);return Boolean(r.rows[0].ok)}
+const groupColumns=["group_name","group_id","status","monitoring_enabled","concierge_enabled","categories","country","timezone","member_count","notes","platform","monitor_fs","monitor_wtb","push_enabled","allow_fs","allow_wtb","priority","category","source_account","fi_is_member","accessible","last_verified_at"] as const;
+function groupValues(input:any):any[]{
+  return [
+    input.group_name,
+    String(input.group_id),
+    input.status||'active',
+    !!input.monitoring_enabled,
+    !!input.concierge_enabled,
+    Array.isArray(input.categories)?input.categories:String(input.categories||'').split(',').filter(Boolean),
+    input.country||null,
+    input.timezone||null,
+    input.member_count?Number(input.member_count):null,
+    input.notes||null,
+    input.platform==='telegram'?'telegram':'whatsapp',
+    input.monitor_fs!==false,
+    input.monitor_wtb!==false,
+    !!input.push_enabled,
+    input.allow_fs!==false,
+    input.allow_wtb!==false,
+    input.priority!=null&&input.priority!==''?Number(input.priority):100,
+    input.category||null,
+    input.source_account||null,
+    input.fi_is_member===true?true:input.fi_is_member===false?false:null,
+    input.accessible!==false,
+    input.last_verified_at||null,
+  ];
+}
+export async function listGroups(q="",status=""){const vals:any[]=[];let w="WHERE 1=1";if(q){vals.push(`%${q}%`);w+=` AND (group_name ILIKE $${vals.length} OR group_id ILIKE $${vals.length})`}if(status){vals.push(status);w+=` AND status=$${vals.length}`}return(await db().query(`SELECT * FROM approved_groups ${w} ORDER BY group_name`,vals)).rows}
+/**
+ * Manual add/edit, CSV import, and (a later phase's) Whapi sync all funnel through this one
+ * function -- the single validation/write path the unified Group Registry requires. Editing an
+ * already-loaded row (an `id` given) updates that exact row by primary key. Adding one without an
+ * `id` upserts by (platform, group_id) instead: entering a group_id that already exists loads and
+ * updates that existing record rather than raising a duplicate-key error or creating a second row.
+ */
+export async function saveGroup(actor:Administrator,input:any,id?:number){
+  if(!input.group_name||!input.group_id||input.group_id==='*')throw new Error("group name and a specific group ID are required");
+  const vals=groupValues(input);
+  let row;
+  if(id){
+    vals.push(id);
+    row=(await db().query(`UPDATE approved_groups SET ${groupColumns.map((c,i)=>`${c}=$${i+1}`).join(',')},updated_at=now() WHERE id=$${vals.length} RETURNING *`,vals)).rows[0];
+    if(!row)throw new Error("group not found");
+  }else{
+    row=(await db().query(
+      `INSERT INTO approved_groups(${groupColumns.join(',')}) VALUES(${vals.map((_,i)=>`$${i+1}`).join(',')})
+       ON CONFLICT (platform, group_id) DO UPDATE SET ${groupColumns.filter(c=>c!=='group_id').map(c=>`${c}=EXCLUDED.${c}`).join(',')},updated_at=now()
+       RETURNING *`,
+      vals
+    )).rows[0];
+  }
+  await audit(actor,id?"group.updated":"group.created","approved_group",String(row.id));
+  return row;
+}
+/** Delete is destructive and unrecoverable -- `confirmed` must be explicitly true (the admin UI
+ *  only sends it after its own confirm() dialog), never inferred from the request merely
+ *  reaching this far, so a scripted/accidental call without confirmation is rejected server-side
+ *  too rather than trusting the client alone. */
+export async function deleteGroup(actor:Administrator,id:number,confirmed:boolean){
+  if(!confirmed)throw new Error("delete requires explicit confirmation");
+  await db().query("DELETE FROM approved_groups WHERE id=$1",[id]);
+  await audit(actor,"group.deleted","approved_group",String(id));
+}
+export async function isApprovedMonitoringGroup(chatId:string,type?:"FS"|"WTB"){if(chatId==='*')return false;await initAdminSchema();const r=await db().query("SELECT EXISTS(SELECT 1 FROM approved_groups WHERE group_id=$1 AND status='active' AND monitoring_enabled AND ($2::text IS NULL OR $2='FS' AND monitor_fs OR $2='WTB' AND monitor_wtb)) ok",[chatId,type??null]);return Boolean(r.rows[0].ok)}
 export async function hasDatabaseGroupAllowlist(){await initAdminSchema();const r=await db().query("SELECT EXISTS(SELECT 1 FROM approved_groups) ok");return Boolean(r.rows[0].ok)}
+export interface PushEligibleGroup { group_id:string; group_name:string; platform:"whatsapp"|"telegram"; allow_fs:boolean; allow_wtb:boolean; priority:number }
+/** The real push-routing gate (see postings/listingConfig.ts's eligiblePushGroups) -- reads from
+ *  the SAME unified registry manual entries and CSV imports write to, so there is exactly one
+ *  place that decides where a confirmed listing gets pushed. */
+export async function listActivePushEligibleGroups(type:"FS"|"WTB"):Promise<PushEligibleGroup[]>{
+  await initAdminSchema();
+  const column=type==="FS"?"allow_fs":"allow_wtb";
+  const r=await db().query(`SELECT group_id,group_name,platform,allow_fs,allow_wtb,priority FROM approved_groups WHERE status='active' AND push_enabled AND ${column} ORDER BY priority,group_name`);
+  return r.rows;
+}
+/** Records the outcome of one push attempt against the group it was sent to -- "show last push
+ *  result where available" (real reported ask). group_id alone (platform not always known at
+ *  the call site) is precise enough in practice; a WhatsApp/Telegram id collision is vanishingly
+ *  unlikely given how differently the two platforms shape their ids. */
+export async function recordGroupPushResult(groupId:string,status:"posted"|"failed",result?:string):Promise<void>{
+  await db().query("UPDATE approved_groups SET last_push_at=now(),last_push_result=$2 WHERE group_id=$1",[groupId,status==="posted"?"posted":`failed: ${result??"unknown error"}`]);
+}
+/** Records that Fi actually saw a new inbound message from this group -- "show last message
+ *  seen / last ingestion" (real reported ask). Best-effort: called from the group-monitoring
+ *  ingestion path (conversation/groupMonitor.ts) and must never itself block or fail ingestion. */
+export async function recordGroupIngestion(chatId:string,ok:boolean,error?:string):Promise<void>{
+  await db().query(
+    "UPDATE approved_groups SET last_message_at=now(),last_successful_ingest_at=CASE WHEN $2 THEN now() ELSE last_successful_ingest_at END,ingestion_status=CASE WHEN $2 THEN 'ok' ELSE 'error' END,ingestion_error=$3 WHERE group_id=$1",
+    [chatId,ok,ok?null:error??"unknown error"]
+  );
+}
 export async function isPostingMonitoringEnabled(posting:{source_type:string;source_chat_id:string|null;type?:"FS"|"WTB"}){
   if(posting.source_type!=="chat")return true;
   if(!posting.source_chat_id||!config.postingsV4.enabled)return false;

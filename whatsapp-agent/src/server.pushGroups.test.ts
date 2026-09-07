@@ -54,10 +54,16 @@ before(async () => {
   await new Promise<void>((resolve) => { httpServer = app.listen(0, () => resolve()); });
   baseUrl = `http://127.0.0.1:${(httpServer.address() as AddressInfo).port}`;
 });
+// Push-group settings now live in the unified Group Registry (approved_groups -- see
+// postings/listingConfig.ts) rather than the old, now-legacy listing_push_groups table, so
+// resetting the latter no longer isolates these tests from each other.
 beforeEach(async () => {
-  await postingsDb.withSchema((pool) => pool.query("DELETE FROM listing_push_groups"));
+  await postingsDb.withSchema((pool) => pool.query("DELETE FROM approved_groups"));
 });
 after(async () => {
+  // approved_groups is not part of the postings reset: leaving rows behind would pollute a
+  // later test file's own group-registry expectations (same convention as groupActivity.test.ts).
+  await postingsDb.withSchema((pool) => pool.query("DELETE FROM approved_groups"));
   await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   await postingsDb._closePoolForTests();
   await adminStore._closePoolForTests();

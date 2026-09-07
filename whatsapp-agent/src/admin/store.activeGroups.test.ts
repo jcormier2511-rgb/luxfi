@@ -33,7 +33,7 @@ async function reset(): Promise<void> {
 test("listUsers reports how many active monitored groups each approved user posts in", async () => {
   await reset();
   await db.withSchema((pool) =>
-    pool.query("INSERT INTO approved_groups(group_name,whatsapp_chat_id,status,monitoring_enabled) VALUES('A','grp-a','active',true),('B','grp-b','active',true),('C','grp-c','inactive',true)")
+    pool.query("INSERT INTO approved_groups(group_name,group_id,status,monitoring_enabled) VALUES('A','grp-a','active',true),('B','grp-b','active',true),('C','grp-c','inactive',true)")
   );
   await adminStore.saveUser(actor, { phone: "13055550001", name: "Marco", access_status: "active" });
   await adminStore.saveUser(actor, { phone: "13055550002", name: "Silent", access_status: "active" });

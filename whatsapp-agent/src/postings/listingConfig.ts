@@ -1,5 +1,6 @@
 import { parse } from "csv-parse/sync";
 import { withSchema, withTransaction } from "./db";
+import { initAdminSchema, listActivePushEligibleGroups, recordGroupPushResult } from "../admin/store";
 
 export const DEFAULT_MAX_MATCHES_PER_LISTING = 5;
 export const DEFAULT_MAX_PUSH_GROUPS_PER_LISTING = 3;
@@ -28,12 +29,63 @@ async function ready():Promise<void>{
     ALTER TABLE listing_push_groups ADD COLUMN IF NOT EXISTS status_error TEXT;
     `);
   });
+  // Unified Group Registry cutover: approved_groups (admin/store.ts) is now the single source of
+  // truth for push eligibility too -- see listPushGroups/savePushGroup/eligiblePushGroups below,
+  // which all read/write it instead of this table now. One-time-only backfill of whatever was
+  // configured here before the cutover, so a real deployment's existing push configuration is
+  // never silently lost -- gated so it never re-runs and clobbers a later edit made directly on
+  // the unified registry with what's now orphaned data sitting in listing_push_groups.
+  await initAdminSchema();
+  await withTransaction(async client=>{
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('luxfi_push_groups_backfill'))`);
+    const already=await client.query(`SELECT 1 FROM admin_schema_migrations WHERE key='backfill_push_groups_into_registry'`);
+    if(already.rows.length===0){
+      await client.query(`
+        INSERT INTO approved_groups (group_name, group_id, platform, push_enabled, allow_fs, allow_wtb, priority, notes)
+        SELECT group_name, group_id, CASE WHEN platform='telegram' THEN 'telegram' ELSE 'whatsapp' END, enabled, allow_fs, allow_wtb, priority, notes
+        FROM listing_push_groups
+        ON CONFLICT (platform, group_id) DO UPDATE SET
+          push_enabled = EXCLUDED.push_enabled, allow_fs = EXCLUDED.allow_fs, allow_wtb = EXCLUDED.allow_wtb,
+          priority = EXCLUDED.priority, updated_at = now();
+        INSERT INTO admin_schema_migrations(key) VALUES ('backfill_push_groups_into_registry');
+      `);
+    }
+  });
 }
 export async function getListingLimits():Promise<ListingLimits>{ await ready(); return withSchema(async pool=>{const r=await pool.query(`SELECT key,value FROM listing_settings WHERE key=ANY($1)`,[["MAX_MATCHES_PER_LISTING","MAX_PUSH_GROUPS_PER_LISTING"]]);const m=new Map(r.rows.map(x=>[x.key,Number(x.value)]));return {maxMatchesPerListing:m.get("MAX_MATCHES_PER_LISTING")??DEFAULT_MAX_MATCHES_PER_LISTING,maxPushGroupsPerListing:m.get("MAX_PUSH_GROUPS_PER_LISTING")??DEFAULT_MAX_PUSH_GROUPS_PER_LISTING};}); }
 export async function setListingLimits(input:Partial<ListingLimits>):Promise<ListingLimits>{await ready();for(const [key,value] of [["MAX_MATCHES_PER_LISTING",input.maxMatchesPerListing],["MAX_PUSH_GROUPS_PER_LISTING",input.maxPushGroupsPerListing]] as const){if(value!==undefined){if(!Number.isInteger(value)||value<0)throw new Error(`${key} must be a non-negative integer`);await withSchema(pool=>pool.query(`INSERT INTO listing_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,[key,value]));}}return getListingLimits();}
-export async function listPushGroups():Promise<PushGroup[]>{await ready();return withSchema(async pool=>(await pool.query(`SELECT * FROM listing_push_groups ORDER BY priority,group_id`)).rows);}
-export async function savePushGroup(g:PushGroup):Promise<PushGroup>{await ready();if(!g.group_id?.trim())throw new Error("group_id is required");const r=await withSchema(pool=>pool.query(`INSERT INTO listing_push_groups(group_id,group_name,platform,enabled,allow_fs,allow_wtb,priority,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(group_id) DO UPDATE SET group_name=EXCLUDED.group_name,platform=EXCLUDED.platform,enabled=EXCLUDED.enabled,allow_fs=EXCLUDED.allow_fs,allow_wtb=EXCLUDED.allow_wtb,priority=EXCLUDED.priority,notes=EXCLUDED.notes,updated_at=now() RETURNING *`,[g.group_id.trim(),g.group_name||"",g.platform==='telegram'?'telegram':'whatsapp',Boolean(g.enabled),Boolean(g.allow_fs),Boolean(g.allow_wtb),Number(g.priority)||0,g.notes||null]));return r.rows[0];}
-export async function deletePushGroup(groupId:string):Promise<void>{await ready();await withSchema(pool=>pool.query(`DELETE FROM listing_push_groups WHERE group_id=$1`,[groupId]));}
+/** Reads the unified Group Registry (approved_groups), not this module's own legacy
+ *  listing_push_groups table -- see ready()'s one-time backfill comment above. */
+export async function listPushGroups():Promise<PushGroup[]>{
+  await initAdminSchema();
+  return withSchema(async pool=>(await pool.query(
+    `SELECT group_id,group_name,platform,push_enabled AS enabled,allow_fs,allow_wtb,priority,notes,
+            last_push_at AS last_post_at,last_push_result AS last_result,NULL::text AS status_error
+     FROM approved_groups ORDER BY priority,group_id`
+  )).rows);
+}
+/** Manual push-group save (the legacy /admin/push-groups page) writes into the SAME unified
+ *  registry table the new /admin/groups page and CSV imports use -- upserts by (platform,
+ *  group_id), same contract as before. */
+export async function savePushGroup(g:PushGroup):Promise<PushGroup>{
+  await initAdminSchema();
+  if(!g.group_id?.trim())throw new Error("group_id is required");
+  const platform=g.platform==='telegram'?'telegram':'whatsapp';
+  const r=await withSchema(pool=>pool.query(
+    `INSERT INTO approved_groups(group_name,group_id,platform,push_enabled,allow_fs,allow_wtb,priority,notes)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT (platform, group_id) DO UPDATE SET
+       group_name=EXCLUDED.group_name,push_enabled=EXCLUDED.push_enabled,allow_fs=EXCLUDED.allow_fs,
+       allow_wtb=EXCLUDED.allow_wtb,priority=EXCLUDED.priority,notes=EXCLUDED.notes,updated_at=now()
+     RETURNING group_id,group_name,platform,push_enabled AS enabled,allow_fs,allow_wtb,priority,notes`,
+    [g.group_name||"",g.group_id.trim(),platform,Boolean(g.enabled),Boolean(g.allow_fs),Boolean(g.allow_wtb),Number(g.priority)||0,g.notes||null]
+  ));
+  return r.rows[0];
+}
+export async function deletePushGroup(groupId:string):Promise<void>{
+  await initAdminSchema();
+  await withSchema(pool=>pool.query(`DELETE FROM approved_groups WHERE group_id=$1`,[groupId]));
+}
 /**
  * Bulk push-group setup from a CSV upload — the user has 4 WhatsApp groups and 6 Telegram
  * groups to configure at once, one row per group rather than one save through the form per
@@ -41,7 +93,7 @@ export async function deletePushGroup(groupId:string):Promise<void>{await ready(
  * updates it in place), mirroring admin/store.ts's importUsersCsv/exportUsersCsv pattern.
  */
 export async function importPushGroupsCsv(csv:string):Promise<{added:number;updated:number;errors:{row:number;error:string}[]}>{
-  await ready();
+  await initAdminSchema();
   const rows=parse(csv,{columns:true,skip_empty_lines:true,trim:true}) as any[];
   let added=0,updated=0;
   const errors:{row:number;error:string}[]=[];
@@ -51,7 +103,8 @@ export async function importPushGroupsCsv(csv:string):Promise<{added:number;upda
       const groupId=String(raw.group_id||"").trim();
       if(!groupId)throw new Error("group_id is required");
       const isFalse=(v:unknown)=>["false","0"].includes(String(v??"").trim().toLowerCase());
-      const existing=await withSchema(pool=>pool.query(`SELECT 1 FROM listing_push_groups WHERE group_id=$1`,[groupId]));
+      const platform=raw.platform==="telegram"?"telegram":"whatsapp";
+      const existing=await withSchema(pool=>pool.query(`SELECT 1 FROM approved_groups WHERE platform=$1 AND group_id=$2`,[platform,groupId]));
       await savePushGroup({
         group_id:groupId,
         group_name:raw.group_name||"",
@@ -73,6 +126,20 @@ export async function exportPushGroupsCsv():Promise<string>{
   const fields=["group_id","group_name","platform","enabled","allow_fs","allow_wtb","priority","notes"] as const;
   return PUSH_GROUP_CSV_HEADER+"\n"+rows.map(r=>fields.map(f=>esc(r[f])).join(",")).join("\n")+(rows.length?"\n":"");
 }
-export async function eligiblePushGroups(type:"FS"|"WTB"):Promise<PushGroup[]>{const [groups,limits]=await Promise.all([listPushGroups(),getListingLimits()]);return groups.filter(g=>g.enabled&&(type==="FS"?g.allow_fs:g.allow_wtb)&&g.group_id.trim()).slice(0,limits.maxPushGroupsPerListing);}
+/** Reads the unified registry directly (not listPushGroups, which shapes every group for
+ *  display) -- already filtered to active+push_enabled+allow_{fs,wtb} and priority-ordered. */
+export async function eligiblePushGroups(type:"FS"|"WTB"):Promise<PushGroup[]>{
+  const [groups,limits]=await Promise.all([listActivePushEligibleGroups(type),getListingLimits()]);
+  return groups.slice(0,limits.maxPushGroupsPerListing).map(g=>({
+    group_id:g.group_id,group_name:g.group_name,platform:g.platform,
+    enabled:true,allow_fs:g.allow_fs,allow_wtb:g.allow_wtb,priority:g.priority,
+  }));
+}
 export async function claimPublication(listingId:number,groupId:string):Promise<boolean>{await ready();const r=await withSchema(pool=>pool.query(`INSERT INTO listing_group_publications(listing_id,group_id,status) VALUES($1,$2,'sending') ON CONFLICT(listing_id,group_id) DO NOTHING RETURNING id`,[listingId,groupId]));return r.rows.length>0;}
-export async function finishPublication(listingId:number,groupId:string,status:"posted"|"failed",result?:string):Promise<void>{await withSchema(pool=>pool.query(`UPDATE listing_group_publications SET status=$3,result=$4,posted_at=now() WHERE listing_id=$1 AND group_id=$2`,[listingId,groupId,status,result??null]));}
+/** Also records the outcome against the group itself in the unified registry -- "show last push
+ *  result where available" (real reported ask) -- best-effort, must never throw and block/mask
+ *  the actual publication-status update above. */
+export async function finishPublication(listingId:number,groupId:string,status:"posted"|"failed",result?:string):Promise<void>{
+  await withSchema(pool=>pool.query(`UPDATE listing_group_publications SET status=$3,result=$4,posted_at=now() WHERE listing_id=$1 AND group_id=$2`,[listingId,groupId,status,result??null]));
+  await recordGroupPushResult(groupId,status,result).catch(()=>{});
+}

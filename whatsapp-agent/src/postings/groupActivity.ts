@@ -11,7 +11,7 @@ import { withSchema } from "./db";
 const ACTIVE_GROUP_COUNT_SQL = `
   SELECT p.canonical_user_id, count(DISTINCT p.source_chat_id)::int AS n
   FROM postings p
-  JOIN approved_groups g ON g.whatsapp_chat_id = p.source_chat_id AND g.status = 'active'
+  JOIN approved_groups g ON g.group_id = p.source_chat_id AND g.status = 'active'
   WHERE p.canonical_user_id = ANY($1::int[])
     AND p.source_type = 'chat'
     AND p.source_chat_id IS NOT NULL

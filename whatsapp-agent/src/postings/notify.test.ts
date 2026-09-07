@@ -150,7 +150,7 @@ test("match card shows how many monitored dealer groups the counterpart is activ
   const sent: { phone: string; message: string }[] = [];
   t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
   await db.withSchema((pool) =>
-    pool.query("INSERT INTO approved_groups(group_name,whatsapp_chat_id,status,monitoring_enabled) VALUES('G1','g1','active',true),('G2','g2','active',true),('Paused','g3','inactive',true)")
+    pool.query("INSERT INTO approved_groups(group_name,group_id,status,monitoring_enabled) VALUES('G1','g1','active',true),('G2','g2','active',true),('Paused','g3','inactive',true)")
   );
   // The seller has posted in two active groups and one inactive one.
   await ingestChatPosting({ platform: "whatsapp", chatId: "g2", messageId: "seller-elsewhere", senderIdentity: "seller-groups", text: "FS Rolex 126610LN $12,000" });

@@ -5,7 +5,7 @@ import { InventoryListing, ListingType } from "../types";
 import { ingestAndMatch } from "../postings/ingest";
 import { normalizeText, classifyText } from "../postings/normalize";
 import { enrichListingText } from "../ai/enrichment";
-import { isPostingMonitoringEnabled } from "../admin/store";
+import { isPostingMonitoringEnabled, recordGroupIngestion } from "../admin/store";
 import { platformForIdentity } from "../channels/identity";
 
 const GROUP_LISTINGS_HEADER =
@@ -175,7 +175,11 @@ export async function handleGroupMessage(
       text,
       imageUrl,
     });
+    // "show last message seen / last ingestion" (real reported ask) -- best-effort, must never
+    // throw and mask the ingestion result above.
+    await recordGroupIngestion(groupId, true).catch(() => {});
   } catch (err) {
     console.error(`[group-monitor] postings ingestion/matching failed for message ${messageId}:`, err);
+    await recordGroupIngestion(groupId, false, (err as Error).message).catch(() => {});
   }
 }
