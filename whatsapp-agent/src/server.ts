@@ -46,7 +46,7 @@ import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
 import { getLinkedIdentities, resetNotificationPreference } from "./postings/notificationPreferences";
 import { debugMarketGuideComparables } from "./postings/marketGuide";
-import { getPosting, extendPosting, getOwnPostingForMatch, getActivePostingsForUser, closePosting } from "./postings/postingsStore";
+import { getPosting, extendPosting, getOwnPostingForMatch, getActivePostingsForUser, closePosting, findDuplicatePostings, closeDuplicatePostings } from "./postings/postingsStore";
 import { getV4OperationalStatus } from "./postings/status";
 import { initSchema } from "./postings/db";
 import { handleCoverageCommand } from "./fulfillment/coverage";
@@ -497,6 +497,20 @@ export function createServer() {
     const identity=typeof req.body?.identity==="string"?req.body.identity.trim():"";
     if(!identity)return res.status(400).json({error:"identity is required (e.g. telegram:5703391972 or 13053897000)"});
     res.json({ok:true,...(await resetUserAccount(identity))});
+  },true));
+
+  // One-time cleanup for direct (buy/sell intake) postings created before createDirectPosting
+  // started reusing an already-open posting for the same user/item -- re-running the same intake
+  // repeatedly used to pile up near-identical postings, each independently matched/notified.
+  // GET previews exactly what a close would do; nothing is closed until the POST is confirmed.
+  app.get("/admin/api/tools/duplicate-postings",api(async(_req,res)=>{
+    const groups=await findDuplicatePostings();
+    res.json({ok:true,groups,postingsClosable:groups.reduce((n,g)=>n+g.closedIds.length,0)});
+  }));
+  app.post("/admin/api/tools/duplicate-postings/close",api(async(req,res,ctx)=>{
+    if(ctx.admin.role==='support')return res.status(403).json({error:"administrator or owner role required"});
+    if(req.body?.confirmed!==true)return res.status(400).json({error:"confirmed:true is required"});
+    res.json({ok:true,...(await closeDuplicatePostings())});
   },true));
 
   // Panel-session versions of the curl-only /admin/entitlement* endpoints (Fi Build Spec v4

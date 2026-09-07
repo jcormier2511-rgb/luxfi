@@ -408,6 +408,7 @@ export function renderToolsPage(): string {
   <a href="#mg-section">Market Guide debug</a>
   <a href="#inv-section">Inventory search</a>
   <a href="#reset-section">Full account reset</a>
+  <a href="#dup-section">Duplicate postings</a>
   <a href="#ent-section">Membership / entitlement</a>
   <a href="#id-section">All known identities</a>
   <a href="#drafts-section">Open drafts</a>
@@ -437,6 +438,17 @@ export function renderToolsPage(): string {
   <div class="toolbar"><div class="field"><label for="reset-id">Identity</label><input id="reset-id" placeholder="e.g. telegram:5703391972 or 13053897000"></div><button class="btn-danger" onclick="resetAccount()">Reset account</button></div>
   <pre id="reset-result"></pre>
   <pre id="reset-error" class="error"></pre>
+</section>
+
+<section class="card" id="dup-section">
+  <h2>Duplicate postings</h2>
+  <p class="muted">A one-time cleanup for direct (buy/sell intake) postings created before Fi started reusing an already-open posting for the same watch — repeating the same intake used to create a new duplicate row every time instead of updating the existing one, flooding match notifications. Load below shows exactly what a close would do; nothing is closed until confirmed. Closing requires administrator or owner role.</p>
+  <div class="toolbar"><button onclick="dupLookup()">Load duplicate postings</button></div>
+  <div id="dup-empty" class="muted"></div>
+  <table id="dup-table" hidden><thead></thead><tbody></tbody></table>
+  <div class="toolbar"><button class="btn-danger" id="dup-close-btn" onclick="dupClose()" hidden>Close all duplicates</button></div>
+  <pre id="dup-result"></pre>
+  <pre id="dup-error" class="error"></pre>
 </section>
 
 <section class="card" id="ent-section">
@@ -588,6 +600,33 @@ export function renderToolsPage(): string {
       if(!res.ok){document.querySelector('#drafts-error').textContent=data.error||'Lookup failed';return}
       renderTable('drafts',data.rows||[]);
     }catch(e){document.querySelector('#drafts-error').textContent=e.message}
+  }
+  let dupPostingsClosable=0;
+  async function dupLookup(){
+    document.querySelector('#dup-error').textContent='';document.querySelector('#dup-result').textContent='';
+    try{
+      await ensureCsrf();
+      const res=await fetch('/admin/api/tools/duplicate-postings');
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#dup-error').textContent=data.error||'Lookup failed';return}
+      dupPostingsClosable=data.postingsClosable||0;
+      renderTable('dup',data.groups||[]);
+      document.querySelector('#dup-close-btn').hidden=dupPostingsClosable===0;
+    }catch(e){document.querySelector('#dup-error').textContent=e.message}
+  }
+  async function dupClose(){
+    document.querySelector('#dup-error').textContent='';document.querySelector('#dup-result').textContent='';
+    if(!confirm('Close '+dupPostingsClosable+' duplicate posting(s), keeping the most recently updated one in each group? This cannot be undone.'))return;
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/tools/duplicate-postings/close',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify({confirmed:true})});
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#dup-error').textContent=data.error||'Close failed';return}
+      document.querySelector('#dup-result').textContent=JSON.stringify(data,null,2);
+      dupLookup();
+    }catch(e){document.querySelector('#dup-error').textContent=e.message}
   }
   </script></body></html>`;
 }

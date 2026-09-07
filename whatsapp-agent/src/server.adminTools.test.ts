@@ -87,6 +87,7 @@ test("GET /admin/tools renders for a signed-in administrator and links from the 
   assert.match(html, /Market Guide debug/);
   assert.match(html, /Inventory search/);
   assert.match(html, /Full account reset/);
+  assert.match(html, /Duplicate postings/);
 
   const dashboard = await fetch(`${baseUrl}/admin`, { headers: { Cookie: cookieFor(ownerId) } });
   assert.match(await dashboard.text(), /href="\/admin\/tools"/, "the dashboard nav must link to the new Tools page");
@@ -161,6 +162,67 @@ test("POST /admin/api/tools/user-reset requires CSRF and blocks read_only and su
   const body = (await ok.json()) as { ok: boolean; closedPostings: { id: number }[] };
   assert.equal(body.ok, true);
   assert.equal(body.closedPostings.length, 1);
+});
+
+test("GET /admin/api/tools/duplicate-postings previews duplicate direct postings without closing anything", async () => {
+  const readOnlyId = await seedAdmin("read_only");
+  const store = require("./postings/postingsStore") as typeof import("./postings/postingsStore");
+  const kept = await store.createDirectPosting({ phone: "15550004010", type: "WTB", description: "dup-preview", brand: "Rolex", model: "Daytona", reference: null, price: 30000 });
+  await postingsDb.withSchema((pool) =>
+    pool.query(
+      `INSERT INTO postings (source_platform, source_type, canonical_user_id, source_identity, type, original_text,
+         brand, model, reference, condition, price, currency, location, contact_name, contact_phone, status, expires_at, updated_at)
+       VALUES ('whatsapp','direct',$1,$2,'WTB','dup','Rolex','Daytona','','',30000,'USD','','',$2,'active', now() + interval '1 day', now() - interval '1 hour')`,
+      [kept.canonical_user_id, "15550004010"]
+    )
+  );
+
+  const res = await fetch(`${baseUrl}/admin/api/tools/duplicate-postings`, { headers: { Cookie: cookieFor(readOnlyId) } });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { ok: boolean; groups: { keptId: number; closedIds: number[] }[]; postingsClosable: number };
+  assert.equal(body.ok, true);
+  assert.equal(body.postingsClosable, 1);
+  assert.equal(body.groups.length, 1);
+  assert.equal(body.groups[0].keptId, kept.id);
+
+  assert.equal((await store.getPosting(kept.id))!.status, "active", "preview must never close anything");
+});
+
+test("POST /admin/api/tools/duplicate-postings/close requires confirmed:true and blocks the support role", async () => {
+  const store = require("./postings/postingsStore") as typeof import("./postings/postingsStore");
+  const kept = await store.createDirectPosting({ phone: "15550004011", type: "WTB", description: "dup-close", brand: "Rolex", model: "Daytona", reference: null, price: 30000 });
+  const dup = await postingsDb.withSchema((pool) =>
+    pool.query(
+      `INSERT INTO postings (source_platform, source_type, canonical_user_id, source_identity, type, original_text,
+         brand, model, reference, condition, price, currency, location, contact_name, contact_phone, status, expires_at, updated_at)
+       VALUES ('whatsapp','direct',$1,$2,'WTB','dup','Rolex','Daytona','','',30000,'USD','','',$2,'active', now() + interval '1 day', now() - interval '1 hour')
+       RETURNING id`,
+      [kept.canonical_user_id, "15550004011"]
+    )
+  );
+  const dupId = dup.rows[0].id;
+
+  const supportId = await seedAdmin("support");
+  const supportCookie = cookieFor(supportId);
+  const supportCsrf = await csrfFor(supportCookie);
+  const supportBlocked = await fetch(`${baseUrl}/admin/api/tools/duplicate-postings/close`, { method: "POST", headers: { Cookie: supportCookie, "Content-Type": "application/json", "X-CSRF-Token": supportCsrf }, body: JSON.stringify({ confirmed: true }) });
+  assert.equal(supportBlocked.status, 403, "closing duplicates requires administrator or owner role");
+
+  const ownerId = await seedAdmin("owner");
+  const ownerCookie = cookieFor(ownerId);
+  const ownerCsrf = await csrfFor(ownerCookie);
+  const unconfirmed = await fetch(`${baseUrl}/admin/api/tools/duplicate-postings/close`, { method: "POST", headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf }, body: JSON.stringify({}) });
+  assert.equal(unconfirmed.status, 400, "confirmed:true is required, even for an owner");
+  assert.equal((await store.getPosting(dupId))!.status, "active", "an unconfirmed request must never close anything");
+
+  const confirmed = await fetch(`${baseUrl}/admin/api/tools/duplicate-postings/close`, { method: "POST", headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf }, body: JSON.stringify({ confirmed: true }) });
+  assert.equal(confirmed.status, 200);
+  const body = (await confirmed.json()) as { ok: boolean; groupsClosed: number; postingsClosed: number };
+  assert.equal(body.ok, true);
+  assert.equal(body.groupsClosed, 1);
+  assert.equal(body.postingsClosed, 1);
+  assert.equal((await store.getPosting(dupId))!.status, "admin_closed");
+  assert.equal((await store.getPosting(kept.id))!.status, "active", "the kept posting in the group must remain active");
 });
 
 test("GET /admin/api/tools/entitlement returns the account's plan/override state for any signed-in role", async () => {

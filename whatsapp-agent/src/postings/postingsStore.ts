@@ -673,6 +673,82 @@ export async function closePosting(id: number, status: "sold" | "found" | "stopp
   await withSchema((pool) => pool.query(`UPDATE postings SET status=$1, updated_at=now() WHERE id=$2`, [status, id]));
 }
 
+export interface DuplicatePostingGroup {
+  canonicalUserId: number | null;
+  type: PostingType;
+  brand: string;
+  model: string;
+  reference: string;
+  keptId: number;
+  closedIds: number[];
+}
+
+/** Every currently-active, direct-sourced posting, ranked within its (user, type, brand, model,
+ *  reference) identity group -- the same identity createDirectPosting now matches on for reuse
+ *  (see canonicalIdentity above) -- newest-updated first. Only used by the two functions below;
+ *  not exported on its own. */
+const DUPLICATE_POSTINGS_SQL = `
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY canonical_user_id, type,
+      regexp_replace(LOWER(brand), '[^a-z0-9]', '', 'g'),
+      regexp_replace(LOWER(COALESCE(model, '')), '[^a-z0-9]', '', 'g'),
+      regexp_replace(LOWER(COALESCE(reference, '')), '[^a-z0-9]', '', 'g')
+    ORDER BY updated_at DESC, id DESC
+  ) AS rn
+  FROM postings
+  WHERE source_type = 'direct' AND status = 'active' AND expires_at > now()
+`;
+
+/**
+ * One-time cleanup for postings created before createDirectPosting started reusing an existing
+ * open posting for the same user/item: groups every currently-active, direct-sourced posting by
+ * that same identity, and reports every posting beyond the most recently updated one in each
+ * group as closeable. Read-only -- see closeDuplicatePostings to actually close them.
+ */
+export async function findDuplicatePostings(): Promise<DuplicatePostingGroup[]> {
+  return withSchema(async (pool) => {
+    const result = await pool.query<PostingRow & { rn: string }>(DUPLICATE_POSTINGS_SQL);
+    const groups = new Map<string, (PostingRow & { rn: string })[]>();
+    for (const row of result.rows) {
+      const key = [
+        row.canonical_user_id,
+        row.type,
+        canonicalIdentity(row.brand),
+        canonicalIdentity(row.model ?? ""),
+        canonicalIdentity(row.reference ?? ""),
+      ].join("|");
+      const list = groups.get(key) ?? [];
+      list.push(row);
+      groups.set(key, list);
+    }
+    const duplicates: DuplicatePostingGroup[] = [];
+    for (const rows of groups.values()) {
+      if (rows.length < 2) continue;
+      const kept = rows.find((r) => r.rn === "1") ?? rows[0];
+      duplicates.push({
+        canonicalUserId: kept.canonical_user_id,
+        type: kept.type,
+        brand: kept.brand,
+        model: kept.model,
+        reference: kept.reference,
+        keptId: kept.id,
+        closedIds: rows.filter((r) => r.id !== kept.id).map((r) => r.id),
+      });
+    }
+    return duplicates;
+  });
+}
+
+/** Closes (status='admin_closed') every duplicate posting findDuplicatePostings reports,
+ *  keeping the most recently updated posting in each duplicate group active. */
+export async function closeDuplicatePostings(): Promise<{ groupsClosed: number; postingsClosed: number }> {
+  const groups = await findDuplicatePostings();
+  const ids = groups.flatMap((g) => g.closedIds);
+  if (ids.length === 0) return { groupsClosed: 0, postingsClosed: 0 };
+  await withSchema((pool) => pool.query(`UPDATE postings SET status='admin_closed', updated_at=now() WHERE id = ANY($1::int[])`, [ids]));
+  return { groupsClosed: groups.length, postingsClosed: ids.length };
+}
+
 /** Run on a schedule — expires postings past their expires_at that haven't been extended. */
 export async function expireStalePostings(): Promise<number> {
   return withSchema(async (pool) => {

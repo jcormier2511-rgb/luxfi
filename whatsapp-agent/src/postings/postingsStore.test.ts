@@ -576,3 +576,60 @@ test("a closed/expired prior posting for the same item is never reused -- a fres
   });
   assert.notEqual(second.id, first.id, "a deliberately closed request must not be silently revived by a new intake");
 });
+
+/** Inserts a raw duplicate posting directly, bypassing createDirectPosting's own dedup-on-create
+ *  check -- simulates the pre-existing garbage rows the cleanup tools exist to clean up. */
+async function insertRawDuplicatePosting(canonicalUserId: number | null, phone: string): Promise<number> {
+  const result = await db.withSchema((pool) =>
+    pool.query(
+      `INSERT INTO postings (source_platform, source_type, canonical_user_id, source_identity, type, original_text,
+         brand, model, reference, condition, price, currency, location, contact_name, contact_phone, status, expires_at, updated_at)
+       VALUES ('whatsapp','direct',$1,$2,'WTB','dup','Rolex','Daytona','','',30000,'USD','','',$2,'active', now() + interval '1 day', now() - interval '1 hour')
+       RETURNING id`,
+      [canonicalUserId, phone]
+    )
+  );
+  return result.rows[0].id;
+}
+
+test("findDuplicatePostings reports a pre-existing duplicate direct posting, keeping the most recently updated one", async () => {
+  await db._resetDbForTests();
+  const first = await store.createDirectPosting({
+    phone: "15550007777", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 30000, type: "WTB",
+  });
+  const dupId = await insertRawDuplicatePosting(first.canonical_user_id, "15550007777");
+
+  const groups = await store.findDuplicatePostings();
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].keptId, first.id, "the most recently updated posting must be kept");
+  assert.deepEqual(groups[0].closedIds, [dupId]);
+});
+
+test("findDuplicatePostings reports nothing when there are no duplicates", async () => {
+  await db._resetDbForTests();
+  await store.createDirectPosting({
+    phone: "15550009000", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 30000, type: "WTB",
+  });
+  assert.deepEqual(await store.findDuplicatePostings(), []);
+});
+
+test("closeDuplicatePostings closes every reported duplicate and leaves the kept posting active", async () => {
+  await db._resetDbForTests();
+  const first = await store.createDirectPosting({
+    phone: "15550008888", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 30000, type: "WTB",
+  });
+  const dupId = await insertRawDuplicatePosting(first.canonical_user_id, "15550008888");
+
+  const result = await store.closeDuplicatePostings();
+  assert.equal(result.groupsClosed, 1);
+  assert.equal(result.postingsClosed, 1);
+
+  assert.equal((await getPosting(first.id))!.status, "active");
+  assert.equal((await getPosting(dupId))!.status, "admin_closed");
+  assert.deepEqual(await store.findDuplicatePostings(), [], "a second run finds nothing left to close");
+});
+
+test("closeDuplicatePostings is a no-op when there are no duplicates", async () => {
+  await db._resetDbForTests();
+  assert.deepEqual(await store.closeDuplicatePostings(), { groupsClosed: 0, postingsClosed: 0 });
+});
