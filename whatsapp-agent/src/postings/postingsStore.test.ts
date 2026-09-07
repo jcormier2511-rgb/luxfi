@@ -513,3 +513,66 @@ test("direct postings persist dial and native currency", async () => {
   assert.equal(posting.condition, "pre-owned");
   assert.equal(posting.location, "Hong Kong");
 });
+
+test("required regression: repeating the same direct intake for a watch you already have open updates it in place instead of creating a duplicate", async () => {
+  await db._resetDbForTests();
+  const first = await store.createDirectPosting({
+    phone: "15550001111", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null,
+    price: 30000, type: "WTB",
+  });
+  const second = await store.createDirectPosting({
+    phone: "15550001111", description: "WTB Rolex Daytona, budget raised", brand: "Rolex", model: "Daytona", reference: null,
+    price: 35000, type: "WTB",
+  });
+
+  assert.equal(second.id, first.id, "the same open request must be updated in place, not duplicated");
+  assert.equal(second.price, "35000");
+
+  const rows = await db.withSchema((pool) => pool.query(`SELECT * FROM postings WHERE canonical_user_id=$1`, [first.canonical_user_id]));
+  assert.equal(rows.rows.length, 1, "only one posting row must exist for this user/item");
+});
+
+test("a direct posting for a different model from the same user creates a separate posting, not an update", async () => {
+  await db._resetDbForTests();
+  const daytona = await store.createDirectPosting({
+    phone: "15550002222", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 30000, type: "WTB",
+  });
+  const submariner = await store.createDirectPosting({
+    phone: "15550002222", description: "WTB Rolex Submariner", brand: "Rolex", model: "Submariner", reference: null, price: 12000, type: "WTB",
+  });
+  assert.notEqual(submariner.id, daytona.id, "a genuinely different model must not overwrite the existing request");
+});
+
+test("reuse matching for an already-open posting is case/punctuation-insensitive on the reference", async () => {
+  await db._resetDbForTests();
+  const first = await store.createDirectPosting({
+    phone: "15550003333", description: "WTB Rolex 116500LN", brand: "Rolex", reference: "116500LN", price: 28000, type: "WTB",
+  });
+  const second = await store.createDirectPosting({
+    phone: "15550003333", description: "WTB Rolex 116500-ln", brand: "Rolex", reference: "116500-ln", price: 29000, type: "WTB",
+  });
+  assert.equal(second.id, first.id, "116500LN and 116500-ln are the same reference and must reuse the same posting");
+});
+
+test("two different users' identical requests never collide -- each gets their own posting", async () => {
+  await db._resetDbForTests();
+  const userA = await store.createDirectPosting({
+    phone: "15550004444", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 30000, type: "WTB",
+  });
+  const userB = await store.createDirectPosting({
+    phone: "15550005555", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 30000, type: "WTB",
+  });
+  assert.notEqual(userB.id, userA.id);
+});
+
+test("a closed/expired prior posting for the same item is never reused -- a fresh intake creates a new one", async () => {
+  await db._resetDbForTests();
+  const first = await store.createDirectPosting({
+    phone: "15550006666", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 30000, type: "WTB",
+  });
+  await closePosting(first.id, "stopped");
+  const second = await store.createDirectPosting({
+    phone: "15550006666", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 32000, type: "WTB",
+  });
+  assert.notEqual(second.id, first.id, "a deliberately closed request must not be silently revived by a new intake");
+});

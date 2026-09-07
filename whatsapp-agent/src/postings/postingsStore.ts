@@ -241,13 +241,65 @@ export interface DirectSellPostingInput {
  * No chat_id/message_id (there's no group message this originated from) — each intake
  * completion is its own new listing, never an in-place edit of a previous one.
  */
+/** Case/punctuation-insensitive identity key -- "116500-LN" and "116500LN" name the same
+ *  reference, "Daytona" and "daytona" the same model, so neither should read as a "different
+ *  item" purely over formatting when checking for an already-open posting below. */
+function canonicalIdentity(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 export async function createDirectPosting(input: DirectSellPostingInput): Promise<PostingRow> {
   const platform = platformForIdentity(input.phone);
   const canonicalUserId = await getOrCreateCanonicalUser(platform, input.phone);
   const normalized = normalizeText(input.description);
   const expiresAt = new Date(Date.now() + REQUEST_LIFETIME_MS).toISOString();
+  const type = input.type ?? "FS";
+  const brand = input.brand ?? normalized.brand;
+  const model = input.model ?? (input.modelSkipped ? "" : inferDirectModel(input.description, brand, input.reference));
+  const reference = input.reference ?? "";
 
   return withSchema(async (pool) => {
+    // One active posting per user per item: repeating the same buy/sell intake for a watch
+    // that already has an open direct posting (same brand/model/reference) updates it in place
+    // instead of piling up a duplicate row -- duplicates were flooding match notifications with
+    // near-identical postings for the same watch every time the flow was re-run.
+    const existing = await pool.query<PostingRow>(
+      `SELECT * FROM postings
+         WHERE canonical_user_id=$1 AND source_type='direct' AND type=$2 AND status='active' AND expires_at > now()
+           AND regexp_replace(LOWER(brand), '[^a-z0-9]', '', 'g') = $3
+           AND regexp_replace(LOWER(COALESCE(model, '')), '[^a-z0-9]', '', 'g') = $4
+           AND regexp_replace(LOWER(COALESCE(reference, '')), '[^a-z0-9]', '', 'g') = $5
+         ORDER BY id DESC LIMIT 1`,
+      [canonicalUserId, type, canonicalIdentity(brand), canonicalIdentity(model), canonicalIdentity(reference)]
+    );
+
+    if (existing.rows.length > 0) {
+      const old = existing.rows[0];
+      const update = await pool.query<PostingRow>(
+        `UPDATE postings SET original_text=$1, brand=$2, model=$3, reference=$4, dial=$5, condition=$6, box_papers=$7,
+           year=$8, price=$9, currency=$10, location=$11, contact_name=$12, updated_at=now(), last_seen_at=now(), expires_at=$13
+         WHERE id=$14 RETURNING *`,
+        [
+          input.description,
+          brand,
+          model,
+          reference,
+          input.dialColor ?? "",
+          input.condition ?? "",
+          input.boxPapers ?? "",
+          input.year ?? "",
+          input.price,
+          input.currency ?? normalized.currency,
+          input.location ?? "",
+          input.senderName || input.phone,
+          expiresAt,
+          old.id,
+        ]
+      );
+      await setPostingImagesSafely(old.id, [input.imageUrl]);
+      return update.rows[0];
+    }
+
     const insert = await pool.query<PostingRow>(
       `INSERT INTO postings
          (source_platform, source_type, canonical_user_id, source_identity,
@@ -258,11 +310,11 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
         platform,
         canonicalUserId,
         input.phone,
-        input.type ?? "FS",
+        type,
         input.description,
-        input.brand ?? normalized.brand,
-        input.model ?? (input.modelSkipped ? "" : inferDirectModel(input.description,input.brand??normalized.brand,input.reference)),
-        input.reference ?? "",
+        brand,
+        model,
+        reference,
         input.dialColor ?? "",
         input.condition ?? "",
         input.boxPapers ?? "",
