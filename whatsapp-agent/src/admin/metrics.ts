@@ -3,7 +3,7 @@ import { listAllEntitlements } from "../billing/entitlementStore";
 import { getTopRequests, TopRequest } from "../postings/analytics";
 import { config } from "../config";
 import { ChannelPlatform } from "../channels/identity";
-import { initAdminSchema } from "./store";
+import { initAdminSchema, getGroupRegistryMetrics, GroupRegistryMetrics } from "./store";
 
 export interface MembershipCounts {
   totalUsers: number;
@@ -93,6 +93,7 @@ export interface AdminMetrics {
   activityByUser: UserActivity[];
   payments: PaymentsSummary;
   marketPulseUsage: MarketPulseUsageSummary;
+  groupRegistry: GroupRegistryMetrics;
 }
 
 interface UserRow {
@@ -364,13 +365,14 @@ export async function listAllIdentities(): Promise<IdentityRow[]> {
 }
 
 export async function getAdminMetrics(): Promise<AdminMetrics> {
-  const [membership, networkReach, topRequests, activityByUser, payments, marketPulseUsage] = await Promise.all([
+  const [membership, networkReach, topRequests, activityByUser, payments, marketPulseUsage, groupRegistry] = await Promise.all([
     getMembershipCounts(),
     getNetworkReach(),
     getTopRequests(10, 30),
     getActivityByUser(20),
     getPaymentsSummary(),
     getMarketPulseUsageSummary(),
+    getGroupRegistryMetrics(),
   ]);
-  return { membership, networkReach, topRequests, activityByUser, payments, marketPulseUsage };
+  return { membership, networkReach, topRequests, activityByUser, payments, marketPulseUsage, groupRegistry };
 }

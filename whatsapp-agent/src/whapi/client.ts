@@ -72,6 +72,51 @@ export async function checkWhapiHealth(): Promise<WhapiHealthResult> {
   }
 }
 
+export interface WhapiGroupSummary {
+  /** Digits of the group's chat id, e.g. from "1203630...@g.us" -- the SAME extraction
+   *  convention extractIncomingMessages already uses for groupId, so a discovered group's id
+   *  matches exactly what a real webhook's source_chat_id would be. */
+  groupId: string;
+  name: string;
+  /** The full, unmapped API entry -- kept for debugging against a real response and for any
+   *  field a future need might want that isn't extracted above yet. */
+  raw: unknown;
+}
+
+/**
+ * Whapi.Cloud's documented GET /groups endpoint lists every WhatsApp group the connected
+ * channel/account can currently see — the primary group-discovery mechanism for the Group
+ * Registry sync (see admin/groupSync.ts). Same "documented but not empirically confirmed"
+ * caveat as checkWhapiHealth above: this sandbox's network egress to whapi.readme.io is
+ * blocked, so the exact response shape hasn't been confirmed against a live channel. Parsed
+ * defensively — tolerates a bare array or a {groups:[...]} envelope, and either an `id` or
+ * `chat_id` / `name` or `subject` field — and skips (with a warning, never a throw) any entry
+ * with no recognizable id, so one unexpected row can't drop the whole discovery run.
+ */
+export async function listWhapiGroups(): Promise<WhapiGroupSummary[]> {
+  if (!config.whapi.token) return [];
+  const res = await fetch(`${config.whapi.baseUrl}/groups`, {
+    method: "GET",
+    headers: { Accept: "application/json", Authorization: `Bearer ${config.whapi.token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Whapi GET /groups failed: ${res.status} ${text}`);
+  }
+  const body = (await res.json().catch(() => null)) as { groups?: unknown[] } | unknown[] | null;
+  const list: any[] = Array.isArray(body) ? body : Array.isArray((body as any)?.groups) ? (body as any).groups : [];
+  const groups: WhapiGroupSummary[] = [];
+  for (const item of list) {
+    const rawId = String(item?.id ?? item?.chat_id ?? "").trim();
+    if (!rawId) {
+      console.warn("[whapi] GET /groups returned an entry with no recognizable id, skipping:", item);
+      continue;
+    }
+    groups.push({ groupId: digitsOnly(rawId), name: String(item?.name ?? item?.subject ?? "").trim(), raw: item });
+  }
+  return groups;
+}
+
 export async function sendText(phone: string, message: string): Promise<void> {
   await post("/messages/text", {
     to: digitsOnly(phone),

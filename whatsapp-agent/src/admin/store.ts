@@ -83,6 +83,23 @@ async function createAdminSchema():Promise<void> {
     -- the actual backfill of pre-unification push-group data into this table (it, not this
     -- module, is guaranteed to run after listing_push_groups exists).
     CREATE TABLE IF NOT EXISTS admin_schema_migrations (key TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());
+
+    -- Multiple Whapi-connected WhatsApp numbers can eventually feed this same Group Registry --
+    -- a group accessible through more than one account must never be duplicated as two logical
+    -- groups, so per-account accessibility lives here, separate from the canonical
+    -- approved_groups row. Only one account exists today (config.whapi.accountLabel); this is
+    -- the seam a second one plugs into later. approved_groups.accessible is a derived summary
+    -- (true if ANY linked account currently reports accessible) -- see recordGroupAccountAccess.
+    CREATE TABLE IF NOT EXISTS group_account_access (
+      id BIGSERIAL PRIMARY KEY,
+      approved_group_id BIGINT NOT NULL REFERENCES approved_groups(id) ON DELETE CASCADE,
+      source_account TEXT NOT NULL,
+      accessible BOOLEAN NOT NULL DEFAULT true,
+      last_verified_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(approved_group_id, source_account)
+    );
   `); await client.query("COMMIT"); } catch(error){await client.query("ROLLBACK");throw error} finally{client.release()}
   const count=Number((await db().query("SELECT count(*) n FROM administrators")).rows[0].n);
   if(count===0 && config.admin.initial.username && config.admin.initial.passwordHash) await db().query("INSERT INTO administrators(name,username,email,password_hash,role) VALUES($1,$2,$3,$4,'owner')",[config.admin.initial.name,config.admin.initial.username,config.admin.initial.email,config.admin.initial.passwordHash]);
@@ -241,6 +258,131 @@ export async function recordGroupIngestion(chatId:string,ok:boolean,error?:strin
     "UPDATE approved_groups SET last_message_at=now(),last_successful_ingest_at=CASE WHEN $2 THEN now() ELSE last_successful_ingest_at END,ingestion_status=CASE WHEN $2 THEN 'ok' ELSE 'error' END,ingestion_error=$3 WHERE group_id=$1",
     [chatId,ok,ok?null:error??"unknown error"]
   );
+}
+/** Recomputes the canonical row's summary accessible flag from every linked account's own
+ *  access record -- true the moment ANY account can currently reach it, so one account losing
+ *  access never falsely reads as the group being gone entirely while another still sees it. */
+async function recomputeGroupAccessibility(approvedGroupId:number):Promise<void>{
+  await db().query(
+    `UPDATE approved_groups SET accessible=EXISTS(SELECT 1 FROM group_account_access WHERE approved_group_id=$1 AND accessible=true), updated_at=now() WHERE id=$1`,
+    [approvedGroupId]
+  );
+}
+/** Records (or updates) one account's ability to reach this group, then recomputes the
+ *  canonical summary flag -- see the group_account_access table comment (multiple Whapi-
+ *  connected numbers can each report accessibility for the SAME logical group). */
+export async function recordGroupAccountAccess(approvedGroupId:number,sourceAccount:string,accessible:boolean,lastVerifiedAt:string):Promise<void>{
+  await db().query(
+    `INSERT INTO group_account_access(approved_group_id,source_account,accessible,last_verified_at)
+     VALUES($1,$2,$3,$4)
+     ON CONFLICT (approved_group_id,source_account) DO UPDATE SET accessible=EXCLUDED.accessible,last_verified_at=EXCLUDED.last_verified_at,updated_at=now()`,
+    [approvedGroupId,sourceAccount,accessible,lastVerifiedAt]
+  );
+  await recomputeGroupAccessibility(approvedGroupId);
+}
+/**
+ * Whapi-discovery upsert -- creates a KNOWN, accessible-via-this-account row for a newly-seen
+ * group, or updates an already-known one's name/last_verified_at/access WITHOUT ever touching
+ * its monitor/push settings: discovery only ever advises that a group exists and is currently
+ * reachable, it never opts a group into monitoring or pushing on its own (real reported
+ * requirement). The FIRST account to discover a group keeps the canonical row's summary
+ * source_account label; every account's own access is still tracked precisely in
+ * group_account_access regardless.
+ */
+export async function upsertGroupFromWhapiDiscovery(input:{groupId:string;groupName:string;platform:"whatsapp"|"telegram";sourceAccount:string;lastVerifiedAt:string}):Promise<{id:number;created:boolean}>{
+  await initAdminSchema();
+  const r=await db().query(
+    `INSERT INTO approved_groups(group_name,group_id,platform,source_account,fi_is_member,last_verified_at)
+     VALUES($1,$2,$3,$4,true,$5)
+     ON CONFLICT (platform, group_id) DO UPDATE SET
+       group_name=CASE WHEN EXCLUDED.group_name<>'' THEN EXCLUDED.group_name ELSE approved_groups.group_name END,
+       source_account=COALESCE(approved_groups.source_account,EXCLUDED.source_account),
+       fi_is_member=true, last_verified_at=EXCLUDED.last_verified_at, updated_at=now()
+     RETURNING id, (xmax = 0) AS inserted`,
+    [input.groupName,input.groupId,input.platform,input.sourceAccount,input.lastVerifiedAt]
+  );
+  const id=Number(r.rows[0].id);
+  await recordGroupAccountAccess(id,input.sourceAccount,true,input.lastVerifiedAt);
+  return { id, created: Boolean(r.rows[0].inserted) };
+}
+/**
+ * A later Whapi sync for this account no longer reports these WhatsApp group ids as accessible
+ * -- marks only THIS account's access row false (never deletes, never touches monitor/push
+ * settings, and never downgrades a group still reachable through a DIFFERENT account) and
+ * recomputes each affected group's summary accessible flag. "Groups that disappear from a
+ * later sync must NOT be deleted... mark them inaccessible/unverified" (real reported
+ * requirement) -- history and configuration are preserved for if access returns.
+ */
+export async function markGroupsInaccessibleForAccount(sourceAccount:string,stillAccessibleGroupIds:string[]):Promise<number>{
+  await initAdminSchema();
+  const affected=await db().query(
+    `SELECT gaa.id AS access_id, ag.id AS group_id
+     FROM group_account_access gaa JOIN approved_groups ag ON ag.id=gaa.approved_group_id
+     WHERE gaa.source_account=$1 AND gaa.accessible=true AND ag.platform='whatsapp' AND NOT (ag.group_id = ANY($2::text[]))`,
+    [sourceAccount,stillAccessibleGroupIds]
+  );
+  if(affected.rows.length===0)return 0;
+  await db().query(`UPDATE group_account_access SET accessible=false, updated_at=now() WHERE id=ANY($1::bigint[])`,[affected.rows.map((r:any)=>r.access_id)]);
+  for(const row of affected.rows) await recomputeGroupAccessibility(Number(row.group_id));
+  return affected.rows.length;
+}
+export type GroupBulkAction="enable_monitoring"|"disable_monitoring"|"enable_push_fs"|"enable_push_wtb"|"disable_push"|"set_priority"|"set_category";
+/**
+ * Bulk admin actions (real reported requirement: "Select All, Enable Monitoring, Disable
+ * Monitoring, Enable Push FS, Enable Push WTB, Disable Push, Set Priority, Set Category") --
+ * every action still goes through this one function, never a separate ad hoc query, so bulk
+ * edits stay auditable exactly like a single manual save.
+ */
+export async function bulkUpdateGroups(actor:Administrator,ids:number[],action:GroupBulkAction,value?:unknown):Promise<number>{
+  const cleanIds=ids.map(Number).filter(Number.isInteger);
+  if(cleanIds.length===0)return 0;
+  let sql:string,params:any[];
+  switch(action){
+    case "enable_monitoring": sql=`UPDATE approved_groups SET monitoring_enabled=true, updated_at=now() WHERE id=ANY($1::bigint[])`; params=[cleanIds]; break;
+    case "disable_monitoring": sql=`UPDATE approved_groups SET monitoring_enabled=false, updated_at=now() WHERE id=ANY($1::bigint[])`; params=[cleanIds]; break;
+    case "enable_push_fs": sql=`UPDATE approved_groups SET push_enabled=true, allow_fs=true, updated_at=now() WHERE id=ANY($1::bigint[])`; params=[cleanIds]; break;
+    case "enable_push_wtb": sql=`UPDATE approved_groups SET push_enabled=true, allow_wtb=true, updated_at=now() WHERE id=ANY($1::bigint[])`; params=[cleanIds]; break;
+    case "disable_push": sql=`UPDATE approved_groups SET push_enabled=false, updated_at=now() WHERE id=ANY($1::bigint[])`; params=[cleanIds]; break;
+    case "set_priority": {
+      const p=Number(value);
+      if(!Number.isFinite(p))throw new Error("priority must be a number");
+      sql=`UPDATE approved_groups SET priority=$2, updated_at=now() WHERE id=ANY($1::bigint[])`; params=[cleanIds,p];
+      break;
+    }
+    case "set_category": sql=`UPDATE approved_groups SET category=$2, updated_at=now() WHERE id=ANY($1::bigint[])`; params=[cleanIds,String(value??"").trim()||null]; break;
+    default: throw new Error(`unknown bulk action: ${action}`);
+  }
+  const r=await db().query(sql,params);
+  await audit(actor,`group.bulk_${action}`,"approved_group",undefined,{ids:cleanIds,value});
+  return r.rowCount??0;
+}
+export interface GroupRegistryMetrics {
+  known:number; accessibleViaWhapi:number; monitoringEnabled:number; pushEnabled:number;
+  missingOrInaccessible:number; lastSeenUnder24h:number; noActivityOver7d:number;
+}
+/** Reconciliation metrics for the admin dashboard (real reported requirement) -- distinguishes
+ *  KNOWN (a row exists at all) from ACCESSIBLE (currently reachable via Whapi) from
+ *  MONITORING/PUSH enabled, exactly like isApprovedMonitoringGroup's own module comment insists
+ *  on never conflating these states. */
+export async function getGroupRegistryMetrics():Promise<GroupRegistryMetrics>{
+  await initAdminSchema();
+  const r=await db().query(`
+    SELECT
+      count(*)::int AS known,
+      count(*) FILTER (WHERE accessible)::int AS accessible,
+      count(*) FILTER (WHERE monitoring_enabled)::int AS monitoring_enabled,
+      count(*) FILTER (WHERE push_enabled)::int AS push_enabled,
+      count(*) FILTER (WHERE NOT accessible)::int AS missing,
+      count(*) FILTER (WHERE last_message_at >= now() - interval '24 hours')::int AS seen_24h,
+      count(*) FILTER (WHERE status='active' AND (last_message_at IS NULL OR last_message_at < now() - interval '7 days'))::int AS no_activity_7d
+    FROM approved_groups
+  `);
+  const row=r.rows[0];
+  return {
+    known:row.known, accessibleViaWhapi:row.accessible, monitoringEnabled:row.monitoring_enabled,
+    pushEnabled:row.push_enabled, missingOrInaccessible:row.missing, lastSeenUnder24h:row.seen_24h,
+    noActivityOver7d:row.no_activity_7d,
+  };
 }
 export async function isPostingMonitoringEnabled(posting:{source_type:string;source_chat_id:string|null;type?:"FS"|"WTB"}){
   if(posting.source_type!=="chat")return true;

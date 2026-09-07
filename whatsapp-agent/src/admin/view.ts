@@ -218,11 +218,20 @@ const GROUP_FORM = `<section class="card" id="group-form-card">
 export function renderManagementPage(kind:"users"|"groups"|"administrators"|"coverage"):string {
   const title=kind==="users"?"Approved Users":kind==="groups"?"Group Management":kind==="coverage"?"WTB Coverage / Dealer Specialists":"Administrators";
   const empty=kind==="groups"?"No approved groups yet. Add one below.":`No ${title.toLowerCase()} found.`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><script>${NAV_ACTIVE_SCRIPT}</script><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Group Registry</h2><p class="muted">The single canonical list of every group Fi knows about — monitoring (inbound ingestion) and push (outbound listing distribution) settings both live here. See also <a href="/admin/push-groups">Push Groups</a> for a push-focused view of the same data.</p>':''}<div class="toolbar"><div class="field"><label for="q">Search</label><input id="q" placeholder="Search"></div><div class="field"><label for="status">Status</label><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select></div><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}</div><div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><script>${NAV_ACTIVE_SCRIPT}</script><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Group Registry</h2><p class="muted">The single canonical list of every group Fi knows about — monitoring (inbound ingestion) and push (outbound listing distribution) settings both live here. See also <a href="/admin/push-groups">Push Groups</a> for a push-focused view of the same data.</p>':''}<div class="toolbar"><div class="field"><label for="q">Search</label><input id="q" placeholder="Search"></div><div class="field"><label for="status">Status</label><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select></div><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}${kind==='groups'?'<button onclick="groupSyncWhapi()" class="btn-outline">Sync from Whapi</button>':''}</div>${kind==='groups'?`<div class="toolbar">
+  <label class="inline"><input type="checkbox" id="grp-select-all" onchange="groupSelectAll(this.checked)"> Select all</label>
+  <button class="btn-outline" onclick="groupBulkAction('enable_monitoring')">Enable Monitoring</button>
+  <button class="btn-outline" onclick="groupBulkAction('disable_monitoring')">Disable Monitoring</button>
+  <button class="btn-outline" onclick="groupBulkAction('enable_push_fs')">Enable Push FS</button>
+  <button class="btn-outline" onclick="groupBulkAction('enable_push_wtb')">Enable Push WTB</button>
+  <button class="btn-outline" onclick="groupBulkAction('disable_push')">Disable Push</button>
+  <button class="btn-outline" onclick="groupBulkAction('set_priority')">Set Priority</button>
+  <button class="btn-outline" onclick="groupBulkAction('set_category')">Set Category</button>
+</div><pre id="grp-bulk-result" class="muted"></pre>`:''}<div id="empty" class="muted">Loading…</div><table id="table" hidden><thead></thead><tbody></tbody></table><pre id="error" class="error"></pre></section></main><script>
   const kind=${JSON.stringify(kind)}, endpoint='/admin/api/'+kind; let csrf='', lastRows=[];
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   async function ensureCsrf(){if(csrf)return csrf;const session=await fetch('/admin/api/session').then(r=>r.json());csrf=session.csrfToken||'';return csrf}
-  async function load(){await ensureCsrf();const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];lastRows=rows;document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));const cols=kind==='groups'?[...keys,'actions']:keys;table.querySelector('thead').innerHTML='<tr>'+cols.map(k=>'<th>'+esc(k)+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+(kind==='groups'?'<td><button class="btn-outline" onclick="groupEdit('+r.id+')">Edit</button> <button class="btn-danger btn-outline" onclick="groupDelete('+r.id+')">Delete</button></td>':'')+'</tr>').join('')}
+  async function load(){await ensureCsrf();const u=new URL(endpoint,location.origin);u.searchParams.set('q',document.querySelector('#q').value);u.searchParams.set('status',document.querySelector('#status').value);const response=await fetch(u);if(response.status===403){location.href='/admin';return}const data=await response.json(),rows=Array.isArray(data)?data:data.rows||[];lastRows=rows;document.querySelector('#empty').textContent=rows.length?'':${JSON.stringify(empty)};const table=document.querySelector('#table');table.hidden=!rows.length;if(!rows.length)return;const hidden=['password_hash'];const keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));const cols=kind==='groups'?['select',...keys,'actions']:keys;table.querySelector('thead').innerHTML='<tr>'+cols.map(k=>'<th>'+(k==='select'?'':esc(k))+'</th>').join('')+'</tr>';table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+(kind==='groups'?'<td><input type="checkbox" class="grp-row-check" value="'+r.id+'"></td>':'')+keys.map(k=>'<td>'+esc(Array.isArray(r[k])?r[k].join(', '):r[k])+'</td>').join('')+(kind==='groups'?'<td><button class="btn-outline" onclick="groupEdit('+r.id+')">Edit</button> <button class="btn-danger btn-outline" onclick="groupDelete('+r.id+')">Delete</button></td>':'')+'</tr>').join('')}
   load().catch(e=>document.querySelector('#error').textContent=e.message);
   ${kind==='groups'?`
   let gfEditId=null;
@@ -243,6 +252,39 @@ export function renderManagementPage(kind:"users"|"groups"|"administrators"|"cov
       if(!res.ok){document.querySelector('#gf-error').textContent=data.error||'Save failed';return}
       groupReset();load();
     }catch(e){document.querySelector('#gf-error').textContent=e.message}
+  }
+  function groupSelectAll(checked){document.querySelectorAll('.grp-row-check').forEach(c=>c.checked=checked)}
+  function groupSelectedIds(){return Array.from(document.querySelectorAll('.grp-row-check:checked')).map(c=>Number(c.value))}
+  async function groupBulkAction(action){
+    const result=document.querySelector('#grp-bulk-result');
+    result.textContent='';
+    const ids=groupSelectedIds();
+    if(!ids.length){result.textContent='Select at least one group first.';return}
+    let value;
+    if(action==='set_priority'){value=prompt('New priority (lower posts first):','100');if(value===null)return}
+    if(action==='set_category'){value=prompt('New category:','');if(value===null)return}
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/groups/bulk',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify({ids,action,value})});
+      if(res.status===403){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){result.textContent=data.error||'Bulk action failed';return}
+      result.textContent=data.updated+' group(s) updated.';
+      load();
+    }catch(e){result.textContent=e.message}
+  }
+  async function groupSyncWhapi(){
+    const result=document.querySelector('#grp-bulk-result');
+    result.textContent='Syncing…';
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/groups/sync-whapi',{method:'POST',headers:{'X-CSRF-Token':token}});
+      if(res.status===403){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){result.textContent=data.error||'Sync failed';return}
+      result.textContent='Discovered '+data.discovered+', created '+data.created+', updated '+data.updated+', marked inaccessible '+data.markedInaccessible+'.';
+      load();
+    }catch(e){result.textContent=e.message}
   }
   `:''}
   </script></body></html>`;
@@ -829,6 +871,26 @@ function renderMarketPulseUsageCard(metrics: AdminDashboardData["metrics"]): str
   </section>`;
 }
 
+function renderGroupRegistryCard(metrics: AdminDashboardData["metrics"]): string {
+  if (!metrics) return "";
+  const g = metrics.groupRegistry;
+  return `<section class="card">
+    <h2>Group Registry reconciliation</h2>
+    <dl>
+      <dt>Known groups</dt><dd>${g.known.toLocaleString()}</dd>
+      <dt>Accessible via Whapi</dt><dd>${g.accessibleViaWhapi.toLocaleString()}</dd>
+      <dt>Monitoring enabled</dt><dd>${g.monitoringEnabled.toLocaleString()}</dd>
+      <dt>Push enabled</dt><dd>${g.pushEnabled.toLocaleString()}</dd>
+      <dt>Missing / inaccessible</dt><dd>${g.missingOrInaccessible.toLocaleString()}</dd>
+      <dt>Last seen &lt;24h</dt><dd>${g.lastSeenUnder24h.toLocaleString()}</dd>
+      <dt>No activity &gt;7d (active groups)</dt><dd>${g.noActivityOver7d.toLocaleString()}</dd>
+    </dl>
+    <p class="muted">KNOWN (a row exists), ACCESSIBLE (Whapi can currently reach it), MONITORING, and PUSH are four
+      separate states, never equated -- a group can be known but no longer accessible, or accessible but neither
+      monitored nor pushed to. Manage individual groups and run a Whapi sync in <a href="/admin/groups">Groups</a>.</p>
+  </section>`;
+}
+
 function renderTopRequestsCard(metrics: AdminDashboardData["metrics"]): string {
   if (!metrics) return "";
   const rows = metrics.topRequests.length
@@ -887,6 +949,7 @@ export function renderDashboard(data: AdminDashboardData): string {
     ${renderNetworkReachCard(data.metrics)}
     ${renderPaymentsCard(data.metrics)}
     ${renderTopRequestsCard(data.metrics)}
+    ${renderGroupRegistryCard(data.metrics)}
     ${renderMarketPulseUsageCard(data.metrics)}
     ${renderMarketUpdatesCard(data.marketUpdates)}
     ${renderPostingsV4Card(data.postingsV4)}

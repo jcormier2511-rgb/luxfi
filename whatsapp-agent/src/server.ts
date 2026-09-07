@@ -69,7 +69,8 @@ import {
   readAdministratorSession,
   parseCookies,
 } from "./admin/session";
-import { Administrator, authenticate, deleteGroup, deleteUser, exportUsersCsv, getAdministrator, importUsersCsv, initAdminSchema, listAdministrators, listGroups, listUsers, resetAdministratorPassword, saveAdministrator, saveGroup, saveUser, USER_CSV_SAMPLE } from "./admin/store";
+import { Administrator, authenticate, bulkUpdateGroups, deleteGroup, deleteUser, exportUsersCsv, getAdministrator, GroupBulkAction, importUsersCsv, initAdminSchema, listAdministrators, listGroups, listUsers, resetAdministratorPassword, saveAdministrator, saveGroup, saveUser, USER_CSV_SAMPLE } from "./admin/store";
+import { syncGroupsFromWhapi } from "./admin/groupSync";
 import { buildAdminDashboardData } from "./admin/dashboard";
 import { listAllIdentities } from "./admin/metrics";
 import { renderDashboard, renderLoginPage, renderManagementPage, renderPushGroupsPage, renderToolsPage } from "./admin/view";
@@ -436,6 +437,17 @@ export function createServer() {
   app.post("/admin/api/groups",api(async(req,res,ctx)=>res.status(201).json(await saveGroup(ctx.admin,req.body)),true));
   app.put("/admin/api/groups/:id",api(async(req,res,ctx)=>res.json(await saveGroup(ctx.admin,req.body,Number(req.params.id))),true));
   app.delete("/admin/api/groups/:id",api(async(req,res,ctx)=>{await deleteGroup(ctx.admin,Number(req.params.id),req.query.confirm==='true');res.json({ok:true})},true));
+  // Whapi-driven group discovery -- see admin/groupSync.ts. Never auto-enables monitoring/push;
+  // never deletes a group that's since disappeared, only marks it inaccessible.
+  app.post("/admin/api/groups/sync-whapi",api(async(_req,res)=>res.json(await syncGroupsFromWhapi()),true));
+  // Bulk admin actions (select-all + one of: enable/disable monitoring, enable push FS/WTB,
+  // disable push, set priority, set category) -- see admin/store.ts's bulkUpdateGroups.
+  app.post("/admin/api/groups/bulk",api(async(req,res,ctx)=>{
+    const ids=Array.isArray(req.body?.ids)?req.body.ids.map(Number):[];
+    const action=String(req.body?.action||"") as GroupBulkAction;
+    const updated=await bulkUpdateGroups(ctx.admin,ids,action,req.body?.value);
+    res.json({ok:true,updated});
+  },true));
   app.get("/admin/api/listing-settings",api(async(_req,res)=>res.json({limits:await getListingLimits(),pushGroups:await listPushGroups()})));
   app.put("/admin/api/listing-settings/limits",api(async(req,res)=>res.json(await setListingLimits(req.body)),true));
   app.get("/admin/api/campaigns/fi-returning",api(async(_req,res)=>res.json(await previewFiReturningCampaign())));

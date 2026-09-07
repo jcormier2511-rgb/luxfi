@@ -120,6 +120,7 @@ test("GET /admin with a valid session renders read-only status for every require
     "Membership",
     "Payments",
     "Top requests",
+    "Group Registry reconciliation",
     "Market Pulse usage",
     "Market updates",
     "V4 postings",

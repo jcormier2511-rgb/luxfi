@@ -19,6 +19,13 @@ export const config = {
   whapi: {
     token: process.env.WHAPI_TOKEN ?? "",
     baseUrl: process.env.WHAPI_BASE_URL ?? "https://gate.whapi.cloud",
+    // Identifies which connected WhatsApp number/channel this process's WHAPI_TOKEN belongs to
+    // -- stored as approved_groups.source_account / group_account_access.source_account on
+    // every group a Whapi sync discovers (see admin/groupSync.ts), so a group later reachable
+    // through a SECOND connected number can be recorded as its own account-access row rather
+    // than overwriting or duplicating the first account's. Only one account exists today; this
+    // is the seam multiple accounts will plug into later.
+    accountLabel: process.env.WHAPI_ACCOUNT_LABEL ?? "default",
   },
   // Multi-channel scaffolding (src/channels/) alongside WhatsApp (above). Each stays inert
   // until its own credentials are set — see channels/telegram.ts / channels/sms.ts's "skip the
