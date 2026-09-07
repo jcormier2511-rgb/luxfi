@@ -148,6 +148,17 @@ export const config = {
     // Real reported ask: the initial set of match cards for one search read as too many at 5 —
     // narrowed to the 3 best rather than a longer scroll.
     maxOptionsPerItem: Number(process.env.TRIAL_MAX_OPTIONS_PER_ITEM ?? 3),
+    // Market Pulse (price/trend look-ups) is metered completely separately from approved
+    // matches (see postings/marketPulseUsage.ts) -- a price lookup is read-only and never
+    // itself an introduction, so it must never draw down or share the match-approval trial
+    // count above.
+    maxMarketPulseLookups: Number(process.env.TRIAL_MAX_MARKET_PULSE_LOOKUPS ?? 3),
+  },
+  marketPulse: {
+    // Flat weekly cap for ANY active membership tier once the free trial above is used up --
+    // unlike approved-match introductions (billing/plans.ts), which scale with plan, a Market
+    // Pulse look-up doesn't need tier-scaled room. Adjustable later once real usage data exists.
+    weeklyLimit: Number(process.env.MARKET_PULSE_WEEKLY_LIMIT ?? 10),
   },
   fiReturningCampaign: {
     publicPhoneNumber: process.env.FI_PUBLIC_PHONE_NUMBER ?? "",
@@ -187,6 +198,14 @@ export const config = {
         `It resets on a rolling 7-day basis, or message "upgrade" anytime.`
       );
     },
+    // Market Pulse (price/trend look-ups) usage gate — see postings/marketPulseUsage.ts. Kept
+    // separate from noPlanMessage/weeklyCapMessage above since a locked-out Market Pulse
+    // look-up and a locked-out match approval are two different things happening for two
+    // different reasons; conflating the copy would misdescribe which limit was actually hit.
+    marketPulseNoPlanMessage: (maxFreeLookups: number) =>
+      `You've used your ${maxFreeLookups} free Market Pulse look-ups. Message me "join" to keep checking pricing and market trends as a Fi member.`,
+    marketPulseWeeklyCapMessage: (weeklyLimit: number) =>
+      `You've used all ${weeklyLimit} of your Market Pulse look-ups this week. It resets on a rolling 7-day basis.`,
     // Sent right after a real connection reveal (never on "pending_confirmation" — nothing's
     // been revealed yet, so there's no counterparty to inspect or escrow anything with). Same
     // text everywhere it's used (v3's on-demand approval, v4's approver-side reveal, and v4's

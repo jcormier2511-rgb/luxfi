@@ -6,7 +6,8 @@ const inventory=require("../watchfacts/inventoryDb") as typeof import("../watchf
 const store=require("../postings/postingsStore") as typeof import("../postings/postingsStore");
 const {handleIncomingMessage}=require("./flow") as typeof import("./flow");
 const {resetState,getState}=require("./stateStore") as typeof import("./stateStore");
-after(async()=>{await db._closePoolForTests();await inventory._closePoolForTests();});
+const entitlements=require("../billing/entitlementStore") as typeof import("../billing/entitlementStore");
+after(async()=>{await db._closePoolForTests();await inventory._closePoolForTests();await entitlements._closePoolForTests();});
 beforeEach(async()=>{await db._resetDbForTests();await inventory._resetDbForTests();});
 async function listing(phone:string,type:"FS"|"WTB",reference:string,price:number,extra:Partial<import("../postings/postingsStore").DirectSellPostingInput>={}) {
  return store.createDirectPosting({phone,type,description:"historical raw text 999999",brand:"Rolex",model:"Daytona",reference,price,currency:"USD",...extra});
@@ -58,6 +59,10 @@ test("an account with no listings gets the network snapshot instead of a dead en
 
 test("market overview always reports the whole network, even with listings of your own",async()=>{
  const phone="telegram:551990002";resetState(phone);
+ // This test exercises 5 Market Pulse look-ups on one phone to check every accepted phrasing --
+ // well past the 3-look-up free trial (see postings/marketPulseUsage.ts) -- so it isn't itself
+ // testing usage metering, grant an override up front rather than tripping the cap mid-test.
+ await entitlements.setManualOverride(phone,true);
  await store.createDirectPosting({phone,type:"FS",description:"mine",brand:"Rolex",model:"Daytona",reference:"116500LN",price:30000,currency:"USD"});
  await store.createDirectPosting({phone:"other",type:"FS",description:"theirs",brand:"Rolex",model:"Submariner",reference:"126610LN",price:14000,currency:"USD"});
  for(const command of ["market overview","overall market","network market","market snapshot"]){

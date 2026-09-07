@@ -10,6 +10,7 @@ import { recordBillingRequested, getEntitlement, createCheckoutSession, findLate
 import { MEMBERSHIP_PLANS, PlanKey } from "../billing/plans";
 import { isAuthorizeNetConfigured } from "../billing/authorizeNet";
 import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, getApprovedMatchesSummary } from "../postings/approvalUsage";
+import { getMarketPulseUsage, evaluateMarketPulseGate, recordMarketPulseLookup, formatMarketPulseUsageNote } from "../postings/marketPulseUsage";
 import { formatPhoneForDisplay } from "../postings/notify";
 import { getOrCreateCanonicalUser } from "../postings/identity";
 import { platformForIdentity, smsIdentity, ChannelPlatform } from "../channels/identity";
@@ -2552,21 +2553,38 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     return { state, messages };
   }
   const marketReference = parseMarketReferenceCommand(commandText);
-  if (marketReference) {
-    messages.push(formatMarketPulse(await getScopedMarketPulse(
-      { brand: displayBrand(marketReference.brand) || undefined, reference: marketReference.reference },
-      { location: marketReference.location, dial: marketReference.dial, condition: marketReference.condition }
-    )));
+  const isMarketOverview = !marketReference && MARKET_OVERVIEW_COMMAND.test(commandText);
+  const isMarketBriefingOrPulse = !marketReference && !isMarketOverview && MARKET_COMMAND.test(commandText);
+  if (marketReference || isMarketOverview || isMarketBriefingOrPulse) {
+    // Market Pulse look-ups are metered completely separately from approved matches (see
+    // postings/marketPulseUsage.ts) -- a price lookup is read-only and never itself an
+    // introduction, so it must never draw down or share the match-approval trial/weekly count.
+    const usage = await getMarketPulseUsage(state.phone);
+    const gate = evaluateMarketPulseGate(usage);
+    if (!gate.allowed) {
+      messages.push(
+        gate.reason === "no_plan"
+          ? config.fiFlow.marketPulseNoPlanMessage(config.trial.maxMarketPulseLookups)
+          : config.fiFlow.marketPulseWeeklyCapMessage(gate.weeklyLimit)
+      );
+      // Read-only, and deliberately not persisted: saveState round-trips through JSON, which
+      // drops explicitly-undefined intake fields — a market lookup must not rewrite an open draft.
+      return { state, messages };
+    }
+    await recordMarketPulseLookup(usage.canonicalUserId, gate.isComplimentary);
+    const usageNote = formatMarketPulseUsageNote(usage, gate);
+    if (marketReference) {
+      messages.push(formatMarketPulse(await getScopedMarketPulse(
+        { brand: displayBrand(marketReference.brand) || undefined, reference: marketReference.reference },
+        { location: marketReference.location, dial: marketReference.dial, condition: marketReference.condition }
+      )) + usageNote);
+    } else if (isMarketOverview) {
+      messages.push(formatNetworkMarketSnapshot(await getNetworkMarketSnapshot()) + usageNote);
+    } else {
+      messages.push((await handleMarketCommand(state.phone, MARKET_BRIEFING_COMMAND.test(commandText))) + usageNote);
+    }
     // Read-only, and deliberately not persisted: saveState round-trips through JSON, which
     // drops explicitly-undefined intake fields — a market lookup must not rewrite an open draft.
-    return { state, messages };
-  }
-  if (MARKET_OVERVIEW_COMMAND.test(commandText)) {
-    messages.push(formatNetworkMarketSnapshot(await getNetworkMarketSnapshot()));
-    return { state, messages };
-  }
-  if (MARKET_COMMAND.test(commandText)) {
-    messages.push(await handleMarketCommand(state.phone, MARKET_BRIEFING_COMMAND.test(commandText)));
     return { state, messages };
   }
   if (CURRENT_INVENTORY_COMMAND.test(text.trim())) {

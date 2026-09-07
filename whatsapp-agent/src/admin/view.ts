@@ -801,6 +801,23 @@ function renderPaymentsCard(metrics: AdminDashboardData["metrics"]): string {
   </section>`;
 }
 
+function renderMarketPulseUsageCard(metrics: AdminDashboardData["metrics"]): string {
+  if (!metrics) return "";
+  const u = metrics.marketPulseUsage;
+  return `<section class="card">
+    <h2>Market Pulse usage</h2>
+    <dl>
+      <dt>Free look-ups (trial)</dt><dd>${u.maxFreeLookups}</dd>
+      <dt>Weekly limit (any membership tier)</dt><dd>${u.weeklyLimitForMembers}/week</dd>
+      <dt>Total look-ups (all time)</dt><dd>${u.totalLookupsAllTime.toLocaleString()}</dd>
+      <dt>Look-ups (last 7 days)</dt><dd>${u.lookupsLast7Days.toLocaleString()}</dd>
+    </dl>
+    <p class="muted">Metered completely separately from approved-match introductions above -- a Market Pulse price/trend
+      look-up is read-only and never itself an introduction. Every reply already tells the customer their own remaining
+      count; this card is the site-wide total. Limits adjustable via TRIAL_MAX_MARKET_PULSE_LOOKUPS / MARKET_PULSE_WEEKLY_LIMIT.</p>
+  </section>`;
+}
+
 function renderTopRequestsCard(metrics: AdminDashboardData["metrics"]): string {
   if (!metrics) return "";
   const rows = metrics.topRequests.length
@@ -859,6 +876,7 @@ export function renderDashboard(data: AdminDashboardData): string {
     ${renderNetworkReachCard(data.metrics)}
     ${renderPaymentsCard(data.metrics)}
     ${renderTopRequestsCard(data.metrics)}
+    ${renderMarketPulseUsageCard(data.metrics)}
     ${renderMarketUpdatesCard(data.marketUpdates)}
     ${renderPostingsV4Card(data.postingsV4)}
     ${renderWatchfactsCard(data.watchfacts)}

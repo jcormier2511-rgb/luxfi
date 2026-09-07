@@ -405,6 +405,19 @@ async function ensureSchema(): Promise<void> {
           PRIMARY KEY(canonical_user_id,posting_id)
         );
         CREATE INDEX IF NOT EXISTS lifecycle_due ON user_lifecycle(last_inbound_at,last_dormant_message_at);
+
+        -- Market Pulse (price/trend look-ups) usage, metered completely separately from
+        -- approved-match introductions above (see postings/marketPulseUsage.ts) -- a price
+        -- lookup is read-only and never itself an introduction, so it must never draw down or
+        -- share canonical_users.total_approved_count.
+        ALTER TABLE canonical_users ADD COLUMN IF NOT EXISTS total_market_pulse_count INTEGER NOT NULL DEFAULT 0 CHECK (total_market_pulse_count >= 0);
+        CREATE TABLE IF NOT EXISTS market_pulse_lookups (
+          id SERIAL PRIMARY KEY,
+          canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id),
+          is_complimentary BOOLEAN NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS market_pulse_lookups_recent ON market_pulse_lookups (canonical_user_id, created_at DESC);
         `
       );
   }
@@ -457,7 +470,7 @@ export async function _resetDbForTests(): Promise<void> {
       wtb_fulfillment_opportunities, wtb_coverage, canonical_notification_preferences,
       pending_identity_links,
       reconciliation_runs, postings_meta, billing_ledger, approvals, match_recipients, matches,
-      market_update_deliveries, posting_images, postings, search_requests, linked_identities,
+      market_update_deliveries, market_pulse_lookups, posting_images, postings, search_requests, linked_identities,
       briefing_posting_state, lifecycle_deliveries, fi_returning_campaign_deliveries,
       fi_returning_promotions, user_lifecycle, lifecycle_settings, canonical_users,
       listing_group_publications, listing_push_groups, listing_settings

@@ -76,12 +76,23 @@ export interface NetworkReach {
   };
 }
 
+export interface MarketPulseUsageSummary {
+  /** Configured limits, echoed here so the dashboard shows what's actually in effect. */
+  maxFreeLookups: number;
+  weeklyLimitForMembers: number;
+  /** All-time count across every account (canonical_users.total_market_pulse_count, summed). */
+  totalLookupsAllTime: number;
+  /** Look-ups recorded in the last rolling 7 days, complimentary and metered combined. */
+  lookupsLast7Days: number;
+}
+
 export interface AdminMetrics {
   membership: MembershipCounts;
   networkReach: NetworkReach;
   topRequests: TopRequest[];
   activityByUser: UserActivity[];
   payments: PaymentsSummary;
+  marketPulseUsage: MarketPulseUsageSummary;
 }
 
 interface UserRow {
@@ -292,6 +303,25 @@ async function getPaymentsSummary(): Promise<PaymentsSummary> {
   });
 }
 
+/** Aggregate view of Market Pulse usage (see postings/marketPulseUsage.ts) -- unlike
+ *  activityByUser above, this is site-wide totals, not a per-account breakdown, since the
+ *  gate itself is already visible per-conversation via the usage note on every reply. */
+async function getMarketPulseUsageSummary(): Promise<MarketPulseUsageSummary> {
+  return withSchema(async (pool) => {
+    const totals = await pool.query<{ total_all_time: string; last_7_days: string }>(
+      `SELECT
+         COALESCE((SELECT SUM(total_market_pulse_count) FROM canonical_users), 0) AS total_all_time,
+         COALESCE((SELECT COUNT(*) FROM market_pulse_lookups WHERE created_at >= now() - interval '7 days'), 0) AS last_7_days`
+    );
+    return {
+      maxFreeLookups: config.trial.maxMarketPulseLookups,
+      weeklyLimitForMembers: config.marketPulse.weeklyLimit,
+      totalLookupsAllTime: Number(totals.rows[0].total_all_time),
+      lookupsLast7Days: Number(totals.rows[0].last_7_days),
+    };
+  });
+}
+
 export interface IdentityRow {
   identity: string;
   platform: ChannelPlatform;
@@ -334,12 +364,13 @@ export async function listAllIdentities(): Promise<IdentityRow[]> {
 }
 
 export async function getAdminMetrics(): Promise<AdminMetrics> {
-  const [membership, networkReach, topRequests, activityByUser, payments] = await Promise.all([
+  const [membership, networkReach, topRequests, activityByUser, payments, marketPulseUsage] = await Promise.all([
     getMembershipCounts(),
     getNetworkReach(),
     getTopRequests(10, 30),
     getActivityByUser(20),
     getPaymentsSummary(),
+    getMarketPulseUsageSummary(),
   ]);
-  return { membership, networkReach, topRequests, activityByUser, payments };
+  return { membership, networkReach, topRequests, activityByUser, payments, marketPulseUsage };
 }

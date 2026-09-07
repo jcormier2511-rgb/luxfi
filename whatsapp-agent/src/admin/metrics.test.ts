@@ -7,6 +7,8 @@ process.env.WEBHOOK_TOKEN = "test";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { getAdminMetrics } = require("./metrics") as typeof import("./metrics");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const { config } = require("../config") as typeof import("../config");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { getOrCreateCanonicalUser } = require("../postings/identity") as typeof import("../postings/identity");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const postingsDb = require("../postings/db") as typeof import("../postings/db");
@@ -165,4 +167,23 @@ test("payments summary is always $0 -- no live payment processor exists yet", as
   assert.equal(metrics.payments.yearToDateCents, 0);
   assert.equal(metrics.payments.currentMonthCents, 0);
   assert.equal(metrics.payments.currency, "USD");
+});
+
+test("required: Market Pulse usage is a site-wide aggregate, separate from approved-match usage, and echoes the configured limits", async () => {
+  await postingsDb._resetDbForTests();
+  await entitlements._resetDbForTests();
+  const userId = await getOrCreateCanonicalUser("whatsapp", "15559990000");
+  await postingsDb.withSchema((pool) =>
+    pool.query(`UPDATE canonical_users SET total_market_pulse_count=5 WHERE id=$1`, [userId])
+  );
+  await postingsDb.withSchema((pool) =>
+    pool.query(`INSERT INTO market_pulse_lookups (canonical_user_id, is_complimentary, created_at) VALUES
+      ($1, true, now()), ($1, false, now()), ($1, false, now() - interval '8 days')`, [userId])
+  );
+
+  const metrics = await getAdminMetrics();
+  assert.equal(metrics.marketPulseUsage.totalLookupsAllTime, 5);
+  assert.equal(metrics.marketPulseUsage.lookupsLast7Days, 2, "only the 2 rows within the last 7 days count");
+  assert.equal(metrics.marketPulseUsage.maxFreeLookups, config.trial.maxMarketPulseLookups);
+  assert.equal(metrics.marketPulseUsage.weeklyLimitForMembers, config.marketPulse.weeklyLimit);
 });

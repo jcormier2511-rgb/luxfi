@@ -519,7 +519,11 @@ test("full live sequence: listings, two edits, an untouched draft, a pulse, and 
   // K/L. the briefing must scope 116500 and 116500LN to the same canonical bucket, so the FS
   // listing and the WTB request for the same watch report identical market numbers.
   const briefing = await handleIncomingMessage(phone, "market briefing");
-  const cards = briefing.messages.join("\n").split(/\n\n(?=\d+\. )/);
+  // Strip the trailing Market Pulse usage-note (postings/marketPulseUsage.ts) before splitting
+  // into per-listing cards -- it's appended once to the whole reply, not per-card, so leaving it
+  // in would spuriously attach to whichever card happens to be last.
+  const briefingText = briefing.messages.join("\n").replace(/\n\n\(Market Pulse:[^)]*\)$/, "");
+  const cards = briefingText.split(/\n\n(?=\d+\. )/);
   const daytonaFs = cards.find((c) => /^1\. FS/.test(c))!;
   const daytonaWtb = cards.find((c) => /^3\. WTB/.test(c))!;
   const numbers = (card: string) => card.replace(/^\d+\. (?:FS|WTB) — /, "").split("\n").slice(1).join("\n");
