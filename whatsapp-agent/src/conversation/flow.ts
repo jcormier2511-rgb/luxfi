@@ -1371,6 +1371,7 @@ async function handleDecision(state: ConversationState, decision: DecisionComman
   if (decision.action === "pass") {
     pending.decisions[idx] = "passed";
     messages.push(`Passing on #${displayIndex}.`);
+    state.lastReplyWasTaskCompletion = true;
     return;
   }
 
@@ -1391,6 +1392,7 @@ async function handleDecision(state: ConversationState, decision: DecisionComman
   messages.push(formatMatchApproved(pending.matches[idx], idx));
   messages.push(config.fiFlow.escrowSuggestion);
   state.pendingEscrowOffer = true;
+  state.lastReplyWasTaskCompletion = true;
 
   if (gate.isComplimentary && usage.totalApproved + 1 === config.trial.maxApprovedMatches) {
     messages.push(config.fiFlow.conversionPitch(firstName));
@@ -2238,7 +2240,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
     // above), never the actual current WTB listings/links a buyer gets shown. Runs before the
     // draft is cleared, so the search is scoped to the request just confirmed.
     messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
-    state.pendingSellIntake=undefined; state.intakeFallbackCount=0; await maybeNudgeChannelPreference(state,messages); return; }
+    state.pendingSellIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return; }
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
@@ -2268,7 +2270,7 @@ async function handleBuyIntakeAnswer(state: ConversationState, text: string, mes
     // request rather than making the buyer ask a second time. Runs before the draft is cleared,
     // so the search is scoped to the request they just confirmed.
     messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
-    state.pendingBuyIntake=undefined; state.intakeFallbackCount=0; await maybeNudgeChannelPreference(state,messages); return; }
+    state.pendingBuyIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   // See the sell handler above: the scoped answer claims the message first, and only what it
@@ -2369,6 +2371,14 @@ export async function handleIncomingMessage(phone: string, text: string, contact
 async function handleIncomingMessageInner(phone: string, text: string, contact?: Contact, imageUrl?: string): Promise<FlowResult> {
   const state = getState(phone);
   const messages: string[] = [];
+  // Real reported ask: the generic "I'm not sure I understood that" fallback read as Fi being
+  // confused right after it had just successfully finished something (a market pulse, a
+  // confirmed listing, an approve/pass decision) -- most often the very next message being a
+  // stray phantom companion (see stateStore.ts's isSuspectedPhantomCompanion) with nothing to
+  // parse. One-shot: captured and cleared here every turn, then set back to true below at each
+  // point that actually completes a task, so it only ever covers the SINGLE next reply.
+  const justCompletedTask = state.lastReplyWasTaskCompletion === true;
+  state.lastReplyWasTaskCompletion = false;
   // A name given directly in chat (see pendingNameRequest below) only ever fills in for a
   // contact WhatsApp/Telegram itself never supplied one for -- the channel's own profile name
   // always wins when it exists, so this never overrides it.
@@ -2834,10 +2844,16 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
           ? 'Reply "approve <number>" or "pass <number>" for one of the matches above, or tell me a new item to search.'
           : GREETING.test(text.trim())
             ? `Hi ${firstName}, how can I help you today?`
-            // Live-reported: this is the true "nothing matched at all" case, but it jumped
-            // straight to examples with no acknowledgment that the message wasn't understood —
-            // reading as if Fi ignored what was typed rather than that it didn't parse.
-            : 'I\'m not sure I understood that. Try "buy: Rolex Daytona" or "selling: Hermes Birkin", or say "help" to see everything I can do.';
+            : justCompletedTask
+              // Real reported ask: this exact fallback kept appearing right after Fi had just
+              // finished something (a market pulse, a confirmed listing, an approve/pass
+              // decision) -- reading as confusion about a job it had just done, not as an
+              // unrelated new message that happened not to parse.
+              ? "Anything else I can help you with today?"
+              // Live-reported: this is the true "nothing matched at all" case, but it jumped
+              // straight to examples with no acknowledgment that the message wasn't understood —
+              // reading as if Fi ignored what was typed rather than that it didn't parse.
+              : 'I\'m not sure I understood that. Try "buy: Rolex Daytona" or "selling: Hermes Birkin", or say "help" to see everything I can do.';
       const aiReply = isAiChatEnabled() ? await generateGeneralChatReply(text, unresolvedCount) : null;
       messages.push(aiReply ?? canned);
     }

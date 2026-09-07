@@ -181,6 +181,13 @@ export interface ConversationState {
   // matching flow's own reveal points in server.ts/postings/notify.ts). Cleared after that one
   // reply regardless of what it was — never nags on a later, unrelated message.
   pendingEscrowOffer?: boolean;
+  // One-shot: set right after Fi finishes a task this same turn (a confirmed buy/sell listing,
+  // an approve/pass decision) so the very next reply, if it turns out to be a stray/unparseable
+  // message (see conversation/flow.ts's justCompletedTask), reads as "anything else?" rather than
+  // the generic "I'm not sure I understood that" — which read as confusion about work Fi had just
+  // finished, not as an unrelated new message that happened not to parse. Captured and cleared at
+  // the top of every turn regardless of outcome, so it only ever covers a single reply.
+  lastReplyWasTaskCompletion?: boolean;
   // Asked once, right after the first-contact intro, ONLY when the channel itself supplied no
   // display name (contact.name) to personalize with — see conversation/flow.ts's
   // pendingNameRequest handling. Never blocks: a reply that states a real request instead of a
