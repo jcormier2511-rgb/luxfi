@@ -1,7 +1,7 @@
 import { sendText } from "../channels";
 import { withSchema } from "../postings/db";
 import { PostingRow } from "../postings/postingsStore";
-import { runImmediateMatch } from "../postings/matching";
+import { runImmediateMatch, PendingMatchNotification } from "../postings/matching";
 import { resolveNotifyIdentity } from "../postings/notificationPreferences";
 import { isDealerOutreachSuppressed } from "../config";
 import { freshInventorySql } from "../watchfacts/inventoryDb";
@@ -11,11 +11,11 @@ const norm=(v:string)=>v.toLowerCase().replace(/[^a-z0-9]/g,'');
 export function coverageMatches(c:{brand:string;model?:string;reference?:string;region?:string;min_budget?:number|null;max_budget?:number|null},w:Pick<PostingRow,'brand'|'model'|'reference'|'location'|'price'>):boolean{if(norm(c.brand)!==norm(w.brand)||Boolean(c.model)&&norm(c.model!)!==norm(w.model)||Boolean(c.reference)&&norm(c.reference!)!==norm(w.reference)||Boolean(c.region)&&norm(c.region!)!==norm(w.location))return false;const b=w.price===null?null:Number(w.price);return !(b!==null&&((c.min_budget!=null&&b<Number(c.min_budget))||(c.max_budget!=null&&b>Number(c.max_budget))));}
 
 /** One orchestration boundary for all WTB sources. Explicit FS is always searched first. */
-export async function fulfillWtb(wtb:PostingRow):Promise<{explicitMatches:number;opportunities:number;suppressed?:number}>{
-  if(wtb.type!=='WTB')return {explicitMatches:0,opportunities:0};
+export async function fulfillWtb(wtb:PostingRow,options?:{notify?:boolean}):Promise<{explicitMatches:number;opportunities:number;suppressed?:number;pendingNotifications:PendingMatchNotification[]}>{
+  if(wtb.type!=='WTB')return {explicitMatches:0,opportunities:0,pendingNotifications:[]};
   // The buyer's OWN search always runs. Suppression is about not reaching into other people's
   // inboxes from a test; it is never about giving the buyer a worse answer.
-  const explicit=(await runImmediateMatch(wtb)).matchesFound;
+  const {matchesFound:explicit,pendingNotifications}=await runImmediateMatch(wtb,{notify:options?.notify});
   const candidates=await withSchema(async db=>{const coverage=(await db.query(`SELECT c.*,coalesce(p.wtb_alerts_paused,false) all_paused,'coverage' source,NULL::text source_inventory_id,NULL::text source_detail_url,NULL::text source_ref FROM wtb_coverage c LEFT JOIN canonical_notification_preferences p USING(canonical_user_id) WHERE c.status='active' AND coalesce(p.wtb_alerts_paused,false)=false`)).rows.filter(c=>coverageMatches(c,wtb));let known:any[]=[];try{known=(await db.query(`SELECT DISTINCT ON(li.canonical_user_id) li.canonical_user_id,i.external_id source_inventory_id,i.detail_url source_detail_url,i.ref source_ref,'known_inventory' source,NULL id FROM inventory_listings i JOIN linked_identities li ON regexp_replace(li.identity,'^(sms:)?\\+?','','i')=regexp_replace(i.contact_phone,'\\+','','g') LEFT JOIN canonical_notification_preferences p ON p.canonical_user_id=li.canonical_user_id WHERE i.is_active=true AND ${freshInventorySql('i')} AND i.type='FS' AND coalesce(p.wtb_alerts_paused,false)=false AND lower(i.brand)=lower($1) AND ($2='' OR i.ref='' OR regexp_replace(lower(i.ref),'[^a-z0-9]','','g')=regexp_replace(lower($2),'[^a-z0-9]','','g')) ORDER BY li.canonical_user_id,i.last_seen_at DESC`,[wtb.brand,wtb.reference])).rows}catch(e:any){if(e?.code!=='42P01')throw e;}const unique=new Map<number,any>();for(const c of [...known,...coverage])if(!unique.has(c.canonical_user_id))unique.set(c.canonical_user_id,c);return [...unique.values()]});
   // Dry run: report what real outreach would have done, and change nothing. Deliberately
   // BEFORE the claim, not just before the send -- claiming is the irreversible half. A dealer's
@@ -24,7 +24,7 @@ export async function fulfillWtb(wtb:PostingRow):Promise<{explicitMatches:number
   if(isDealerOutreachSuppressed()){
     const would=candidates.filter(c=>c.canonical_user_id!==wtb.canonical_user_id);
     console.log(`[fulfillment] dealer outreach suppressed: ${would.length} dealer(s) would have been notified about posting ${wtb.id} (${wtb.brand}${wtb.reference?' '+wtb.reference:''}) — ${would.map(c=>`user ${c.canonical_user_id} via ${c.source}`).join(', ')||'none'}`);
-    return {explicitMatches:explicit,opportunities:0,suppressed:would.length};
+    return {explicitMatches:explicit,opportunities:0,suppressed:would.length,pendingNotifications};
   }
 
   let opportunities=0;
@@ -55,7 +55,7 @@ export async function fulfillWtb(wtb:PostingRow):Promise<{explicitMatches:number
       console.error(`[fulfillment] failed to notify dealer ${c.canonical_user_id} of WTB opportunity ${claimed.id} for posting ${wtb.id}:`,err);
     }
   }
-  return {explicitMatches:explicit,opportunities};
+  return {explicitMatches:explicit,opportunities,pendingNotifications};
 }
 
 export async function listCoverageAdmin(){return withSchema(async db=>(await db.query(`SELECT c.id,c.canonical_user_id dealer,c.brand,coalesce(nullif(c.model,''),'ANY') model,coalesce(nullif(c.reference,''),'ANY') reference,c.region,c.min_budget,c.max_budget,c.status,c.cadence,c.last_notification_at,c.notification_count FROM wtb_coverage c ORDER BY c.brand,c.canonical_user_id`)).rows)}

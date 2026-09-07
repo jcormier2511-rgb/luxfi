@@ -30,6 +30,8 @@ const whapiClient = require("../whapi/client") as typeof import("../whapi/client
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const notify = require("../postings/notify") as typeof import("../postings/notify");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { resetState } = require("./stateStore") as typeof import("./stateStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { getActivePostingsForUser } = require("../postings/postingsStore") as typeof import("../postings/postingsStore");
@@ -191,6 +193,11 @@ test("required: confirmation creates a direct FS posting and immediately matches
   assert.equal(sent.length, 0, "no match notification before confirmation");
   const confirmed = await handleIncomingMessage(phone, "yes");
   assert.match(confirmed.messages.join("\n"), /listing is active[\s\S]*found 1 potential buyer/i);
+  // handleIncomingMessage defers match-card notifications rather than sending them inline (see
+  // FlowResult.pendingMatchNotifications) -- the real dispatch layer (server.ts) sends them once
+  // this turn's own reply has gone out; calling handleIncomingMessage directly here has to do
+  // that itself.
+  for (const { matchId, revision } of confirmed.pendingMatchNotifications ?? []) await notify.notifyMatch(matchId, revision);
   assert.ok(sent.some((m)=>m.phone==="19991110000" && /Potential Match/.test(m.message)));
 });
 

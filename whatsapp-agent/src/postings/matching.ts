@@ -146,8 +146,18 @@ export async function upsertMatch(
   });
 }
 
+export interface PendingMatchNotification {
+  matchId: number;
+  revision: number;
+}
+
 export interface ImmediateMatchResult {
   matchesFound: number;
+  /** Only populated when called with {notify:false} -- the (matchId, revision) pairs that
+   *  would have been notified immediately. The caller becomes responsible for delivering them
+   *  (see notifyMatch) whenever it needs that send to happen later than usual -- e.g. after an
+   *  outbound acknowledgment it must never be overtaken by (see fulfillment/service.ts). */
+  pendingNotifications: PendingMatchNotification[];
 }
 
 /**
@@ -155,12 +165,18 @@ export interface ImmediateMatchResult {
  * posting must be tested against every eligible active posting on the other side). Called on
  * ingestion (both create and material-change) so the poster is never required to repost or
  * ask Fi to search again.
+ *
+ * {notify:false} skips the immediate notifyMatch send for a newly-created/changed match and
+ * reports it in pendingNotifications instead -- every other caller omits this option and keeps
+ * today's behavior (notified inline, as each match is found).
  */
-export async function runImmediateMatch(posting: PostingRow): Promise<ImmediateMatchResult> {
-  if (!isEligible(posting)) return { matchesFound: 0 };
+export async function runImmediateMatch(posting: PostingRow, options?: { notify?: boolean }): Promise<ImmediateMatchResult> {
+  if (!isEligible(posting)) return { matchesFound: 0, pendingNotifications: [] };
+  const notify = options?.notify !== false;
 
   const candidates = await findOppositeSideCandidates(posting);
   let matchesFound = 0;
+  const pendingNotifications: PendingMatchNotification[] = [];
 
   for (const candidate of candidates) {
     const [fs, wtb] = posting.type === "FS" ? [posting, candidate] : [candidate, posting];
@@ -170,11 +186,12 @@ export async function runImmediateMatch(posting: PostingRow): Promise<ImmediateM
     const { matchId, revision, isNewOrChanged } = await upsertMatch(fs.id, wtb.id, result);
     matchesFound++;
     if (isNewOrChanged) {
-      await notifyMatch(matchId, revision);
+      if (notify) await notifyMatch(matchId, revision);
+      else pendingNotifications.push({ matchId, revision });
     }
   }
 
-  return { matchesFound };
+  return { matchesFound, pendingNotifications };
 }
 
 export interface ReconciliationResult {

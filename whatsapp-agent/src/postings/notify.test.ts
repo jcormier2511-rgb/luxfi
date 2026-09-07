@@ -477,6 +477,41 @@ test("a locked (trial-exhausted) approval attempt never reveals or pushes anythi
   assert.equal(sent.length, 0, "a locked attempt must never reveal or push anything");
 });
 
+test("required: a buyer never receives more than maxMatchesPerListing match cards for the same WTB, even when far more candidates match — live-reported flood of near-unlimited 'Potential Match' notifications for one broad request", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+
+  const buyerPhone = "buyer-cap-1";
+  for (let i = 0; i < 5; i++) {
+    await mirrorApiFsPosting({
+      id: `wf-cap-${i}`,
+      item: "Rolex",
+      brand: "Rolex",
+      ref: `CAPREF${i}`,
+      condition: "New",
+      price: "$10,000",
+      contactName: `seller-cap-${i}`,
+      contactPhone: `seller-cap-${i}`,
+      description: "",
+    });
+  }
+  const wtb = await ingestChatPosting({
+    platform: "whatsapp",
+    chatId: "g1",
+    messageId: "wtb-cap-1",
+    senderIdentity: buyerPhone,
+    text: "WTB Rolex budget $50,000", // no reference -- matches every Rolex FS listing above on brand alone
+  });
+  await runImmediateMatch(wtb.posting!);
+
+  const matches = await db.withSchema((pool) => pool.query(`SELECT id FROM matches WHERE wtb_posting_id=$1`, [wtb.posting!.id]));
+  assert.equal(matches.rows.length, 5, "all 5 candidates must still be scored/recorded as matches");
+
+  const toBuyer = sent.filter((s) => s.phone === buyerPhone);
+  assert.equal(toBuyer.length, 3, "the buyer's inbox must be capped at maxMatchesPerListing (3), not flooded with every candidate");
+});
+
 test("a delivery failure falls back to another linked channel ONLY when the recipient opted into fallback delivery", async (t) => {
   await resetAll();
   const buyerPhone = "buyer-fallback-1";

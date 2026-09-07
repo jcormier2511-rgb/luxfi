@@ -8,7 +8,7 @@ import {
   DirectSellPostingInput,
   PostingRow,
 } from "./postingsStore";
-import { runImmediateMatch } from "./matching";
+import { runImmediateMatch, PendingMatchNotification } from "./matching";
 import { sendText } from "../channels";
 import { publishConfirmedListing } from "./groupPublishing";
 import { fulfillWtb } from "../fulfillment/service";
@@ -41,6 +41,12 @@ export async function ingestAndMatch(input: ChatPostingInput): Promise<void> {
 export interface DirectSellIngestResult {
   matchesFound: number;
   posting: PostingRow;
+  /** Match-card notifications this call intentionally did NOT send yet — live-reported bug:
+   *  they used to go out inline here, so they could reach the poster before their own "Your
+   *  WTB/FS request is active" confirmation even existed as a message. The caller (flow.ts, via
+   *  FlowResult.pendingMatchNotifications) sends these only once every message in this turn's
+   *  reply has actually gone out, guaranteeing the confirmation is never overtaken. */
+  pendingNotifications: PendingMatchNotification[];
 }
 
 /**
@@ -51,22 +57,24 @@ export interface DirectSellIngestResult {
  * Never sends its own "I'm monitoring this" acknowledgment (unlike ingestAndMatch above) — the
  * caller already sends its own item/price/photo summary in the same conversation turn; the
  * returned matchesFound count lets it fold the outcome into that one message instead of
- * stacking a second, redundant one. A found match's own notification (to either side) still
- * goes out via notifyMatch/sendText exactly as it does for any other posting.
+ * stacking a second, redundant one.
  */
 export async function ingestDirectSellPosting(input: DirectSellPostingInput): Promise<DirectSellIngestResult> {
   const posting = await createDirectPosting(input);
   await publishConfirmedListing(posting);
-  const { matchesFound } = posting.type === "WTB" ? { matchesFound: (await fulfillWtb(posting)).explicitMatches } : await runImmediateMatch(posting);
-  return { matchesFound, posting };
+  const { matchesFound, pendingNotifications } =
+    posting.type === "WTB"
+      ? await fulfillWtb(posting, { notify: false }).then(({ explicitMatches, pendingNotifications }) => ({ matchesFound: explicitMatches, pendingNotifications }))
+      : await runImmediateMatch(posting, { notify: false });
+  return { matchesFound, posting, pendingNotifications };
 }
 
 /** Saves a completed private buyer request before attempting any inventory search. */
 export async function ingestDirectBuyPosting(input: DirectSellPostingInput): Promise<DirectSellIngestResult> {
   const posting = await createDirectPosting({ ...input, type: "WTB" });
   await publishConfirmedListing(posting);
-  const { explicitMatches: matchesFound } = await fulfillWtb(posting);
-  return { matchesFound, posting };
+  const { explicitMatches: matchesFound, pendingNotifications } = await fulfillWtb(posting, { notify: false });
+  return { matchesFound, posting, pendingNotifications };
 }
 
 // A full sync is tens of thousands of listings, almost all unchanged re-syncs — mirrorApiPostingsBulk

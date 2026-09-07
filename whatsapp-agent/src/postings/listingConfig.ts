@@ -2,7 +2,7 @@ import { parse } from "csv-parse/sync";
 import { withSchema, withTransaction } from "./db";
 import { initAdminSchema, listActivePushEligibleGroups, recordGroupPushResult } from "../admin/store";
 
-export const DEFAULT_MAX_MATCHES_PER_LISTING = 5;
+export const DEFAULT_MAX_MATCHES_PER_LISTING = 3;
 export const DEFAULT_MAX_PUSH_GROUPS_PER_LISTING = 3;
 
 export interface PushGroup { group_id:string; group_name:string; platform?:"whatsapp"|"telegram"; enabled:boolean; allow_fs:boolean; allow_wtb:boolean; priority:number; notes?:string }

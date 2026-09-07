@@ -291,3 +291,40 @@ test("required regression: a content-less companion listed BEFORE its real sibli
   assert.equal(sendTextSpy.mock.callCount(), baselineReplies, "the phantom listed first must add ZERO further replies beyond what the real message alone would produce");
   assert.equal(getState(phone).pendingBuyIntake?.step, "confirm", "the real message is still processed normally, landing on confirmation");
 });
+
+/**
+ * Live-reported bug: a "Potential Match ... approve/pass" card reached the buyer on WhatsApp
+ * BEFORE their own "Your WTB request is active" confirmation for the very request that match
+ * card was about. Root cause: the match sweep used to notify inline, deep inside
+ * ingestDirectBuyPosting, well before this turn's confirmation message had even been queued —
+ * see FlowResult.pendingMatchNotifications / server.ts's post-messages send loop.
+ */
+test("required regression: the WTB confirmation is always sent before any match-card notification it triggers, never after", async (t) => {
+  // A real FS candidate for the exact reference LIVE_SENTENCE names, so confirming produces at
+  // least one match-card notification alongside the confirmation itself.
+  await createDirectPosting({
+    phone: fresh("15550782-seller").replace(/[^\d]/g, ""),
+    type: "FS",
+    description: "Rolex Daytona 116500LN black dial",
+    brand: "Rolex",
+    model: "Daytona",
+    reference: "116500LN",
+    price: 20000,
+  });
+
+  const phone = fresh("15550782").replace(/[^\d]/g, "");
+  resetState(phone);
+  await server.processIncomingMessages([{ id: "order-setup-1", phone, text: LIVE_SENTENCE, isGroup: false }]);
+  assert.equal(getState(phone).pendingBuyIntake?.step, "confirm", "precondition: the complete request went straight to confirmation");
+
+  const order: string[] = [];
+  t.mock.method(whapi, "sendText", async (_recipient: string, message: string) => { order.push(message); });
+
+  await server.processIncomingMessages([{ id: "order-confirm-1", phone, text: "confirm", isGroup: false }]);
+
+  assert.ok(order.some((m) => /Potential Match/.test(m)), "precondition: confirming this exact reference must actually trigger a match-card notification");
+  const confirmationIndex = order.findIndex((m) => /Your WTB request is active:/.test(m));
+  const firstMatchCardIndex = order.findIndex((m) => /Potential Match/.test(m));
+  assert.ok(confirmationIndex !== -1, "the confirmation itself must be sent");
+  assert.ok(confirmationIndex < firstMatchCardIndex, "the confirmation must be sent before any match-card notification, never after");
+});

@@ -29,6 +29,9 @@ const ingestModule = require("./postings/ingest") as typeof import("./postings/i
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const server = require("./server") as typeof import("./server");
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const notify = require("./postings/notify") as typeof import("./postings/notify");
+
 const { ingestChatPosting } = postingsStore;
 const { ingestDirectSellPosting } = ingestModule;
 const { tryHandleDirectPostingDecision, tryHandleV4Decision, formatApprovalOutcome } = server;
@@ -59,13 +62,17 @@ async function seedMatch(t: TestContext, sellerPhone: string) {
     text: "WTB Rolex Submariner 116610LV budget $16,000",
   });
 
-  await ingestDirectSellPosting({
+  const result = await ingestDirectSellPosting({
     phone: sellerPhone,
     senderName: "Seller",
     description: "Rolex Submariner 116610LV",
     reference: "116610LV",
     price: 14500,
   });
+  // ingestDirectSellPosting defers match-card notifications rather than sending them inline (see
+  // FlowResult.pendingMatchNotifications) -- the real dispatch layer (server.ts) sends them once
+  // this turn's own reply has gone out; a direct call here has to do that itself.
+  for (const { matchId, revision } of result.pendingNotifications) await notify.notifyMatch(matchId, revision);
 
   const sellerMsg = sent.find((s) => s.phone === sellerPhone && /Potential Match/.test(s.message));
   assert.ok(sellerMsg, "the direct-posting seller must be notified even with ENABLE_V4_POSTINGS unset");

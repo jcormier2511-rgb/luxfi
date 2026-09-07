@@ -40,7 +40,7 @@ import {
 } from "./billing/authorizeNet";
 import { recordMembershipPayment } from "./postings/approvalUsage";
 import { handleIncomingSellerPhoto } from "./matching/photoRequests";
-import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, formatPhoneForDisplay } from "./postings/notify";
+import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, formatPhoneForDisplay, notifyMatch } from "./postings/notify";
 import { runCheckoutReconciliation, activateClaimedCheckout } from "./billing/checkoutReconciliation";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
@@ -248,7 +248,7 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
       }
 
       const contact = getTierABContacts().find((c) => c.phone === message.phone);
-      const { messages, photoReply } = await handleIncomingMessage(message.phone, message.text, contact, message.imageUrl);
+      const { messages, photoReply, pendingMatchNotifications } = await handleIncomingMessage(message.phone, message.text, contact, message.imageUrl);
       for (const reply of messages) {
         // Live-reported: the seller's review arrived as a separate text bubble after their own
         // photo, instead of reading as that photo's caption. photoReply names the exact string
@@ -262,6 +262,18 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
           continue;
         }
         await sendText(message.phone, reply);
+      }
+      // Sent only now, after every reply above has actually gone out — live-reported bug: a
+      // match-card notification used to be able to reach this same contact before their own
+      // "Your WTB/FS request is active" confirmation, because it used to send inline, deep
+      // inside handleIncomingMessage, well before this turn's messages existed at all. See
+      // FlowResult.pendingMatchNotifications.
+      for (const { matchId, revision } of pendingMatchNotifications ?? []) {
+        try {
+          await notifyMatch(matchId, revision);
+        } catch (err) {
+          console.error(`[webhook] failed to send deferred match notification ${matchId} to ${message.phone}:`, err);
+        }
       }
     } catch (err) {
       console.error(`[webhook] failed handling message from ${message.phone}:`, err);

@@ -19,7 +19,7 @@ import {
   createPendingIdentityLink, consumePendingIdentityLink, channelLabel,
 } from "../postings/notificationPreferences";
 import { getActivePostingsForUser, getManageablePostingsForUser, setPostingManagementStatus, updatePostingField, PostingRow } from "../postings/postingsStore";
-import { runImmediateMatch } from "../postings/matching";
+import { runImmediateMatch, PendingMatchNotification } from "../postings/matching";
 import { logSearchRequest } from "../postings/analytics";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
@@ -954,6 +954,16 @@ export interface FlowResult {
    * as plain text, and this one specific entry as an image with that text as its caption.
    */
   photoReply?: { imageUrl: string; caption: string };
+  /**
+   * Live-reported bug: a match-card notification ("Potential Match X ... approve/pass X") could
+   * reach a buyer/seller before their OWN "Your WTB/FS request is active" confirmation, because
+   * the match sweep used to run (and notify) synchronously inside the intake-confirm handler,
+   * well before this turn's `messages` had even been sent. ingestDirectBuyPosting/
+   * ingestDirectSellPosting now defer those sends and report them here instead — the dispatch
+   * layer (server.ts) sends every entry in `messages` first, then these, so the confirmation is
+   * never overtaken.
+   */
+  pendingMatchNotifications?: PendingMatchNotification[];
 }
 
 const MARKET_COMMAND = /^(?:market pulse|market briefing|market update|market for my listing|market on my watch|price pulse|how is the market|show market data)\s*[?.!]*$/i;
@@ -2236,7 +2246,7 @@ function bailOutOfStuckIntake(state: ConversationState, messages: string[]): boo
   return true;
 }
 
-async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<void> {
+async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<PendingMatchNotification[] | undefined> {
   const p=state.pendingSellIntake!; const suppliedPhoto = Boolean(imageUrl); if(imageUrl)p.imageUrl=imageUrl;
   if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
     // Same principle as the buy side just below: show what WatchFacts already has for this
@@ -2245,7 +2255,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
     // above), never the actual current WTB listings/links a buyer gets shown. Runs before the
     // draft is cleared, so the search is scoped to the request just confirmed.
     messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
-    state.pendingSellIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return; }
+    state.pendingSellIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return result.pendingNotifications; }
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
@@ -2268,14 +2278,14 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   messages.push((await nextSell(p))??await sellSummaryWithMarketGuide(p));
 }
 
-async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<void> {
+async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<PendingMatchNotification[] | undefined> {
   const p=state.pendingBuyIntake!;
   if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
     // Confirmation is the activation boundary: show what WatchFacts already has for this exact
     // request rather than making the buyer ask a second time. Runs before the draft is cleared,
     // so the search is scoped to the request they just confirmed.
     messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
-    state.pendingBuyIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return; }
+    state.pendingBuyIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return result.pendingNotifications; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
   // See the sell handler above: the scoped answer claims the message first, and only what it
@@ -2757,15 +2767,15 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   }
 
   if (state.pendingSellIntake) {
-    await handleSellIntakeAnswer(state, text, imageUrl, messages, contact);
+    const pendingMatchNotifications = await handleSellIntakeAnswer(state, text, imageUrl, messages, contact);
     saveState(state);
-    return { state, messages, photoReply: photoReplyForSell(state, messages) };
+    return { state, messages, photoReply: photoReplyForSell(state, messages), pendingMatchNotifications };
   }
 
   if (state.pendingBuyIntake) {
-    await handleBuyIntakeAnswer(state, text, messages, contact);
+    const pendingMatchNotifications = await handleBuyIntakeAnswer(state, text, messages, contact);
     saveState(state);
-    return { state, messages };
+    return { state, messages, pendingMatchNotifications };
   }
 
   if (state.pendingPreferenceCollection) {
