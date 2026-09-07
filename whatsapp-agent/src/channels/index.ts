@@ -3,6 +3,7 @@ import * as telegram from "./telegram";
 import * as sms from "./sms";
 import { platformForIdentity } from "./identity";
 import { config, isOutboundUnrestricted, isOutboundRecipientAllowed } from "../config";
+import { recordOutboundActivity } from "../conversation/stateStore";
 
 export { platformForIdentity, telegramIdentity, smsIdentity } from "./identity";
 export type { NormalizedIncomingMessage } from "./types";
@@ -26,6 +27,10 @@ function applyOutboundRestriction(identity: string, message: string): { identity
  */
 export async function sendText(identity: string, message: string): Promise<void> {
   const target = applyOutboundRestriction(identity, message);
+  // See stateStore.ts's recordOutboundActivity -- a phantom companion webhook has been observed
+  // following Fi's own sends, not only a genuine inbound message, so every send feeds the same
+  // phantom-companion detection window an inbound message would.
+  recordOutboundActivity(target.identity);
   switch (platformForIdentity(target.identity)) {
     case "telegram":
       return telegram.sendText(target.identity, target.message);
@@ -38,6 +43,7 @@ export async function sendText(identity: string, message: string): Promise<void>
 
 export async function sendBannerImage(identity: string, imageUrl: string, caption?: string): Promise<void> {
   const target = applyOutboundRestriction(identity, caption ?? "");
+  recordOutboundActivity(target.identity);
   const targetCaption = target.message || undefined;
   switch (platformForIdentity(target.identity)) {
     case "telegram":

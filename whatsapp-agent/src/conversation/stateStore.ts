@@ -141,6 +141,22 @@ export function isSuspectedPhantomCompanion(phone: string, text: string, imageUr
   return isPhantom;
 }
 
+/**
+ * Real reported bug: the phantom companion above was also observed following a message Fi
+ * itself SENT (a scheduled morning briefing, with no inbound message anywhere nearby), not only
+ * a real inbound one -- "I'm not sure I understood that" arrived right after that outbound-only
+ * send, with no prior recorded activity for isSuspectedPhantomCompanion to compare the phantom
+ * against, so it fell through as a real, if content-less, message. Every outbound send (see
+ * channels/index.ts's sendText/sendBannerImage, the single funnel every part of the app already
+ * uses) now feeds the SAME window, so a phantom arriving shortly after Fi's own message is
+ * recognized exactly like one arriving after a genuine inbound one.
+ */
+export function recordOutboundActivity(phone: string): void {
+  const now = Date.now();
+  recentMessagesByPhone = recentMessagesByPhone.filter((r) => now - r.at < PHANTOM_COMPANION_WINDOW_MS);
+  recentMessagesByPhone.push({ phone, at: now, hadContent: true });
+}
+
 /** Test-only -- clears the in-memory phantom-companion window between tests. */
 export function _resetPhantomCompanionForTests(): void {
   recentMessagesByPhone = [];

@@ -9,7 +9,7 @@ process.env.WEBHOOK_TOKEN = "test";
 process.env.PERSIST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "luxfi-phantom-companion-test-"));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { isSuspectedPhantomCompanion, _resetPhantomCompanionForTests } = require("./stateStore") as typeof import("./stateStore");
+const { isSuspectedPhantomCompanion, recordOutboundActivity, _resetPhantomCompanionForTests } = require("./stateStore") as typeof import("./stateStore");
 
 beforeEach(() => {
   _resetPhantomCompanionForTests();
@@ -38,6 +38,31 @@ test("two different phones never interfere with each other", () => {
 test("a content-less message with an image is never flagged -- an uncaptioned photo reply is real content, not a phantom", () => {
   isSuspectedPhantomCompanion("15551234567", "please send photos");
   assert.equal(isSuspectedPhantomCompanion("15551234567", "", "https://cdn.example/a.jpg"), false);
+});
+
+/**
+ * Real reported bug: this exact fallback ("I'm not sure I understood that") also arrived right
+ * after a scheduled morning briefing -- an OUTBOUND-only send with no preceding inbound message
+ * anywhere nearby, so isSuspectedPhantomCompanion had no recorded activity to compare the
+ * phantom against and let it through. Every outbound send now feeds this same window (see
+ * channels/index.ts's sendText/sendBannerImage).
+ */
+test("required regression: a content-less message arriving right after Fi's OWN outbound send (no inbound message nearby) is flagged as a suspected phantom companion", () => {
+  recordOutboundActivity("15551234567");
+  assert.equal(isSuspectedPhantomCompanion("15551234567", "", undefined), true, "a phantom right after an outbound-only send (e.g. a scheduled morning briefing) is now recognized");
+});
+
+test("recordOutboundActivity never flags a genuinely separate later message, and never crosses phones", () => {
+  recordOutboundActivity("15551234567");
+  assert.equal(isSuspectedPhantomCompanion("15559876543", "", undefined), false, "a different phone's content-less message is never blamed on someone else's outbound send");
+
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 10_000;
+    assert.equal(isSuspectedPhantomCompanion("15551234567", "", undefined), false, "well outside the window, unrelated to the earlier outbound send");
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test("the phantom window expires -- a genuinely separate content-less message sent well after is not flagged", async () => {
