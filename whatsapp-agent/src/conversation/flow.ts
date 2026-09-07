@@ -1205,10 +1205,21 @@ function chooseListingMessage(rows: PostingRow[], purpose: string): string {
   return `Which listing would you like ${purpose} for?\n\n${rows.map((p, i) => `${i + 1}. ${p.type} — ${[p.brand,p.model,p.reference].filter(Boolean).join(" ") || "Legacy listing"}`).join("\n")}\n\nReply with the listing number.`;
 }
 
-async function handleListingEdit(phone: string, command: ListingEditCommand): Promise<string> {
+interface ListingEditResult {
+  message: string;
+  /** Only ever populated by the single-listing field-edit branch below (a re-match against
+   *  live opposite-side postings) — deferred rather than sent inline, same reasoning and same
+   *  contract as ingestDirectBuyPosting/ingestDirectSellPosting: a match-card notification for
+   *  the listing just edited must never be able to reach this same user before the "Updated: ..."
+   *  reply confirming the edit itself. See FlowResult.pendingMatchNotifications. */
+  pendingNotifications: PendingMatchNotification[];
+}
+
+async function handleListingEdit(phone: string, command: ListingEditCommand): Promise<ListingEditResult> {
+  const none = (message: string): ListingEditResult => ({ message, pendingNotifications: [] });
   let rows = await userListings(phone);
   if (command.typeHint) rows = rows.filter((p) => p.type === command.typeHint);
-  if (command.all && rows.length === 0) return "You have no listings to manage right now.";
+  if (command.all && rows.length === 0) return none("You have no listings to manage right now.");
   // "close all listings" acts on every row in this same snapshot — reuses the indices path below
   // rather than a separate loop, since "every index" and "these specific indices" are the same
   // operation once the row count is known.
@@ -1226,22 +1237,22 @@ async function handleListingEdit(phone: string, command: ListingEditCommand): Pr
         return `Listing ${idx} ${command.action === "pause" ? "paused" : command.action === "resume" ? "resumed" : "closed"}:\n\n${formatStructuredPosting(updated)}`;
       })
     );
-    return results.join("\n\n");
+    return none(results.join("\n\n"));
   }
-  if (command.index === null && rows.length !== 1) return chooseListingMessage(rows, "to manage");
+  if (command.index === null && rows.length !== 1) return none(chooseListingMessage(rows, "to manage"));
   const posting = command.index === null ? rows[0] : rows[command.index - 1];
-  if (!posting) return `I couldn't find listing ${command.index}. Say "my listings" to see the current numbers.`;
-  if (command.action === "edit") return `What would you like to change on listing ${command.index ?? 1}? You can change its price/budget, location, dial, or reference.`;
+  if (!posting) return none(`I couldn't find listing ${command.index}. Say "my listings" to see the current numbers.`);
+  if (command.action === "edit") return none(`What would you like to change on listing ${command.index ?? 1}? You can change its price/budget, location, dial, or reference.`);
   let updated: PostingRow | null;
   if (["pause","resume","close"].includes(command.action)) {
     updated = await setPostingManagementStatus(posting.id, command.action as "pause" | "resume" | "close");
-    if (!updated) return `Listing ${command.index ?? 1} is not currently eligible to ${command.action}.`;
-    return `Listing ${command.index ?? 1} ${command.action === "pause" ? "paused" : command.action === "resume" ? "resumed" : "closed"}:\n\n${formatStructuredPosting(updated)}`;
+    if (!updated) return none(`Listing ${command.index ?? 1} is not currently eligible to ${command.action}.`);
+    return none(`Listing ${command.index ?? 1} ${command.action === "pause" ? "paused" : command.action === "resume" ? "resumed" : "closed"}:\n\n${formatStructuredPosting(updated)}`);
   }
   updated = await updatePostingField(posting.id, command.action as "price" | "location" | "dial" | "reference", command.value!, posting.canonical_user_id ?? undefined);
-  if (!updated) return "That listing is no longer active.";
-  await runImmediateMatch(updated);
-  return `Updated:\n\n${formatStructuredPosting(updated)}\n\nI'll use the updated terms for matching going forward.`;
+  if (!updated) return none("That listing is no longer active.");
+  const { pendingNotifications } = await runImmediateMatch(updated, { notify: false });
+  return { message: `Updated:\n\n${formatStructuredPosting(updated)}\n\nI'll use the updated terms for matching going forward.`, pendingNotifications };
 }
 
 async function formatMarketBriefing(phone: string): Promise<string> {
@@ -2550,11 +2561,12 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   // was added to fix.
   const namesAListing = Boolean(listingEdit && (listingEdit.index !== null || listingEdit.indices?.length || listingEdit.all));
   if (listingEdit && (namesAListing || !(state.pendingBuyIntake || state.pendingSellIntake))) {
-    messages.push(await handleListingEdit(state.phone, listingEdit));
+    const editResult = await handleListingEdit(state.phone, listingEdit);
+    messages.push(editResult.message);
     // Listing edits are persisted by the postings store. Do not re-save the unrelated
     // conversation state here: JSON serialization drops explicitly-undefined intake fields,
     // which makes a management-only command silently rewrite an in-progress draft.
-    return { state, messages };
+    return { state, messages, pendingMatchNotifications: editResult.pendingNotifications };
   }
   if (CANCEL_COMMAND.test(text.trim())) {
     handleCancelCommand(state, messages);

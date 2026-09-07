@@ -619,3 +619,34 @@ test("required regression: index-less location/price/dial edit shortcuts also to
     await check(listing.id);
   }
 });
+
+/**
+ * Same bug class as the buy/sell confirmation ordering fix (postings/matching.ts's
+ * runImmediateMatch {notify:false}), applied to the listing-edit path: correcting a listing's
+ * reference/price/etc. can immediately create a brand-new match against live opposite-side
+ * demand, and that match-card notification must never be able to reach the SAME editor before
+ * their own "Updated: ..." confirmation for the edit that caused it.
+ */
+test("required regression: an edit's own re-match notification never overtakes the 'Updated:' confirmation for that same edit", async (t) => {
+  const server = require("../server") as typeof import("../server");
+  const whapi = require("../whapi/client") as typeof import("../whapi/client");
+
+  const sellerPhone = freshPhone().replace(/[^\d]/g, "");
+  const buyerPhone = freshPhone().replace(/[^\d]/g, "");
+
+  await makeListing(sellerPhone, "FS", "116500LN", 24500);
+  await makeListing(buyerPhone, "WTB", "126710BLRO", 30000);
+
+  const order: string[] = [];
+  t.mock.method(whapi, "sendText", async (_recipient: string, message: string) => { order.push(message); });
+
+  // Correcting the FS listing's reference to the WTB's exact reference creates a brand-new match
+  // that did not exist a moment ago.
+  await server.processIncomingMessages([{ id: `edit-order-1-${Date.now()}`, phone: sellerPhone, text: "edit listing 1 reference 126710BLRO", isGroup: false }]);
+
+  assert.ok(order.some((m) => /Potential Match/.test(m)), "precondition: this edit must actually trigger a new match");
+  const updateIndex = order.findIndex((m) => /^Updated:/.test(m));
+  const matchIndex = order.findIndex((m) => /Potential Match/.test(m));
+  assert.ok(updateIndex !== -1, "the 'Updated:' confirmation must be sent");
+  assert.ok(updateIndex < matchIndex, "the edit confirmation must be sent before any match-card notification it triggers, never after");
+});
