@@ -8,7 +8,7 @@ import { sendText, sendBannerImage, NormalizedIncomingMessage } from "./channels
 import { platformForIdentity } from "./channels/identity";
 import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
 import { verifyTwilioSignature, extractIncomingMessage as extractSmsMessage } from "./channels/sms";
-import { alreadyProcessed, alreadyProcessedContent, getState, resetState, markPendingEscrowOffer, listOpenDrafts } from "./conversation/stateStore";
+import { alreadyProcessed, alreadyProcessedContent, isSuspectedPhantomCompanion, getState, resetState, markPendingEscrowOffer, listOpenDrafts } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
@@ -192,9 +192,13 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
   const filtered = incoming.filter((m) => {
     const idSeen = alreadyProcessed(m.id);
     const contentSeen = !idSeen && alreadyProcessedContent(m.phone, m.text, m.imageUrl);
-    const duplicate = idSeen || contentSeen;
+    // Stopgap for a still-not-fully-root-caused bug: a content-less message arriving seconds
+    // after a real one from the same phone is very likely the phantom Whapi companion (see
+    // stateStore.ts's isSuspectedPhantomCompanion), not a genuine second message.
+    const phantom = !idSeen && !contentSeen && isSuspectedPhantomCompanion(m.phone, m.text, m.imageUrl);
+    const duplicate = idSeen || contentSeen || phantom;
     console.log(
-      `[webhook] ${duplicate ? `duplicate (${idSeen ? "id" : "content"}), skipping` : "processing"} id=${m.id} phone=${m.phone} text=${JSON.stringify(m.text.slice(0, 80))}`
+      `[webhook] ${duplicate ? `duplicate (${idSeen ? "id" : contentSeen ? "content" : "phantom-companion"}), skipping` : "processing"} id=${m.id} phone=${m.phone} text=${JSON.stringify(m.text.slice(0, 80))}`
     );
     return !duplicate;
   });

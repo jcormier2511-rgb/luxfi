@@ -172,6 +172,47 @@ test("a brand-new contact's first greeting still gets onboarding, not the short 
 });
 
 /**
+ * Real reported ask: Fi should be able to address people by name. Only asked when the channel
+ * itself supplied none (WhatsApp/Telegram already give one for most contacts), and never
+ * blocking -- a reply that states a real request instead of a name is still answered immediately.
+ */
+test('required: a contact with no channel-supplied name is asked for one after the intro, and answering it personalizes later replies', async () => {
+  const phone = freshPhone();
+  const first = await handleIncomingMessage(phone, "hi");
+  assert.match(first.messages.join("\n"), /may I have your name/i);
+
+  const named = await handleIncomingMessage(phone, "Alex");
+  assert.match(named.messages.join("\n"), /Nice to meet you, Alex/i);
+
+  const greeting = await handleIncomingMessage(phone, "hi");
+  assert.match(greeting.messages[0], /^Hi Alex, how can I help you today\?$/);
+});
+
+test("required: a contact the channel already named is never asked -- no redundant friction", async () => {
+  const phone = freshPhone();
+  const first = await handleIncomingMessage(phone, "hi", { phone, name: "Jordan Lee", tier: "A" });
+  assert.doesNotMatch(first.messages.join("\n"), /may I have your name/i);
+});
+
+test("required: ignoring the name question and stating a real request is answered immediately, never blocked on a name", async () => {
+  const phone = freshPhone();
+  const first = await handleIncomingMessage(phone, "hi");
+  assert.match(first.messages.join("\n"), /may I have your name/i);
+
+  const request = await handleIncomingMessage(phone, "WTB Rolex Daytona 116500LN budget $25,000");
+  assert.ok(request.state.pendingBuyIntake, "the real request must be handled, not swallowed by the name question");
+  assert.doesNotMatch(request.messages.join("\n"), /may I have your name/i, "one-shot -- not re-asked once already answered (with anything)");
+});
+
+test("a reply that isn't name-shaped (a question, a greeting) is never stored as a name", async () => {
+  const phone = freshPhone();
+  await handleIncomingMessage(phone, "hi");
+  const reply = await handleIncomingMessage(phone, "what's this about?");
+  assert.doesNotMatch(reply.messages.join("\n"), /Nice to meet you/i);
+  assert.equal(getState(phone).providedName, undefined);
+});
+
+/**
  * Live session: answering "any" to "What condition do you prefer?" got the SAME question back,
  * every time. A bare "any" also satisfies the dial-color pattern, so it set the dial, counted as
  * a change, and the only code that could set condition from it never ran. The interview could

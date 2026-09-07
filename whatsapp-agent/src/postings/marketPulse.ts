@@ -21,6 +21,20 @@ export interface AverageBasis {
   outliers: number;
 }
 
+/**
+ * Optional narrowing for an exact-reference pulse -- real reported ask: two listings of the
+ * "same" reference can be a black dial in North America and a white dial in Asia, priced nothing
+ * alike, and blending them into one average answers a question nobody actually asked. Each field
+ * is matched case-insensitively as a substring (never exact), since the underlying data is a mix
+ * of free text and inconsistent capitalization across sources -- a strict match would silently
+ * exclude real listings over "Black" vs "black" or "Pre-Owned" vs "pre-owned".
+ */
+export interface MarketPulseFilters {
+  location?: string;
+  dial?: string;
+  condition?: string;
+}
+
 export interface MarketPulse {
   reference: string;
   /** Exactly what the user asked for, before canonicalization — so a pulse that answered under a
@@ -37,6 +51,9 @@ export interface MarketPulse {
    *  only -- a brand- or model-wide pulse counts too many listings for a link list to mean
    *  anything. Capped, deduplicated, and validated the same way a match card's link is. */
   listingUrls?: string[];
+  /** Which of location/dial/condition actually narrowed this pulse, so the reply can say so
+   *  rather than looking like an answer about every listing when it's really a subset. */
+  appliedFilters?: MarketPulseFilters;
 }
 
 /** Enough links to be useful without turning a pulse into a link dump. */
@@ -115,10 +132,15 @@ async function validatedListingUrls(rows: PricedRow[]): Promise<string[]> {
   return checked.filter((u): u is string => Boolean(u));
 }
 
-export async function getMarketPulse(reference: string): Promise<MarketPulse> {
+export async function getMarketPulse(reference: string, filters?: MarketPulseFilters): Promise<MarketPulse> {
   const canonicalReference = canonicalizeReference(reference);
   if (!canonicalReference) throw new Error("An exact watch reference is required");
   const equivalents = referenceEquivalents(canonicalReference);
+  // Each is passed through as null (not omitted) when unset, so the "$n::text IS NULL OR ..."
+  // guard below is a no-op for it rather than needing three differently-shaped queries.
+  const location = filters?.location ?? null;
+  const dial = filters?.dial ?? null;
+  const condition = filters?.condition ?? null;
 
   await initInventorySchema();
   return withSchema(async (pool) => {
@@ -133,6 +155,9 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
          FROM postings p
          WHERE p.status='active' AND p.expires_at > now()
            AND upper(regexp_replace(COALESCE(p.reference,''), '[^A-Za-z0-9]', '', 'g')) = ANY($1::text[])
+           AND ($2::text IS NULL OR p.location ILIKE '%' || $2 || '%')
+           AND ($3::text IS NULL OR p.dial ILIKE '%' || $3 || '%')
+           AND ($4::text IS NULL OR p.condition ILIKE '%' || $4 || '%')
 
          UNION ALL
 
@@ -148,6 +173,12 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
          WHERE i.is_active=TRUE AND ${freshInventorySql("i")}
            AND upper(regexp_replace(COALESCE(i.ref,''), '[^A-Za-z0-9]', '', 'g')) = ANY($1::text[])
            AND i.type IN ('FS','WTB')
+           AND ($2::text IS NULL OR i.location ILIKE '%' || $2 || '%')
+           -- inventory_listings has no dedicated dial column (unlike postings) -- WatchFacts
+           -- listings never carry a structured dial field, only free text, so this is a
+           -- best-effort match against the item/description text rather than an exact field.
+           AND ($3::text IS NULL OR (i.item || ' ' || i.description) ILIKE '%' || $3 || '%')
+           AND ($4::text IS NULL OR i.condition ILIKE '%' || $4 || '%')
            AND NOT EXISTS (
              SELECT 1 FROM postings p
              WHERE p.source_type='api' AND p.source_platform='watchfacts_api'
@@ -156,10 +187,11 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
            )
        )
        SELECT type, amount, currency, location, detail_url, observed_at FROM current_inventory`,
-      [equivalents]
+      [equivalents, location, dial, condition]
     );
     const rows = result.rows as PricedRow[];
     const { average, basis } = await averageFsAskInUsd(rows);
+    const appliedFilters = { ...(location ? { location } : {}), ...(dial ? { dial } : {}), ...(condition ? { condition } : {}) };
     return {
       reference: canonicalReference,
       requested: reference.trim().toUpperCase(),
@@ -168,14 +200,18 @@ export async function getMarketPulse(reference: string): Promise<MarketPulse> {
       averageFsAsk: average,
       averageBasis: basis,
       listingUrls: await validatedListingUrls(rows),
+      // Only attached when at least one filter actually narrowed the pulse -- an explicit
+      // `appliedFilters: undefined` key (vs. simply absent) breaks every existing
+      // assert.deepStrictEqual against a plain MarketPulse object elsewhere in this file's tests.
+      ...(Object.keys(appliedFilters).length > 0 ? { appliedFilters } : {}),
     };
   });
 }
 
 /** Broader identity scopes expose counts only; pricing is intentionally exact-reference only. */
-export async function getScopedMarketPulse(scope: MarketScope): Promise<MarketPulse> {
+export async function getScopedMarketPulse(scope: MarketScope, filters?: MarketPulseFilters): Promise<MarketPulse> {
   if (scope.reference) {
-    const pulse = await getMarketPulse(scope.reference);
+    const pulse = await getMarketPulse(scope.reference, filters);
     return { ...pulse, label: [scope.brand, scope.model, pulse.reference].filter(Boolean).join(" "), scope: "reference" };
   }
   const model = scope.model?.trim();
@@ -294,7 +330,13 @@ export function formatMarketPulse(pulse: MarketPulse): string {
     const alias = pulse.requested && pulse.requested !== pulse.reference
       ? ` (${pulse.requested} and ${pulse.reference} are the same watch)`
       : "";
-    scopeLine = `Scope: this exact reference${alias}${bareReferenceCaveat(pulse.reference)}`;
+    // A pulse narrowed by location/dial/condition has to say so -- otherwise it reads as an
+    // answer about every listing for the reference when it's really a subset, and the reader has
+    // no way to tell "there truly are only 2 of these" from "2 matched what you actually asked".
+    const filters = pulse.appliedFilters;
+    const filterParts = filters ? [filters.dial && `${filters.dial} dial`, filters.condition, filters.location].filter(Boolean) : [];
+    const filterNote = filterParts.length > 0 ? ` (filtered to ${filterParts.join(", ")})` : "";
+    scopeLine = `Scope: this exact reference${alias}${filterNote}${bareReferenceCaveat(pulse.reference)}`;
     averageLine = averageLineFor("Average FS ask", pulse.averageFsAsk, pulse.averageBasis);
   }
 

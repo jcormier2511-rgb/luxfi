@@ -27,7 +27,7 @@ process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 const db = require("../postings/db") as typeof import("../postings/db");
 const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 const { handleIncomingMessage, parseItemRequests } = require("./flow") as typeof import("./flow");
-const { resetState, getState, _resetContentDedupeForTests } = require("./stateStore") as typeof import("./stateStore");
+const { resetState, getState, _resetContentDedupeForTests, _resetPhantomCompanionForTests } = require("./stateStore") as typeof import("./stateStore");
 const { getActivePostingsForUser, createDirectPosting } = require("../postings/postingsStore") as typeof import("../postings/postingsStore");
 const { getOrCreateCanonicalUser } = require("../postings/identity") as typeof import("../postings/identity");
 const { platformForIdentity } = require("../channels/identity") as typeof import("../channels/identity");
@@ -226,4 +226,32 @@ test("required regression: a duplicate delivery of the same message under a DIFF
   await server.processIncomingMessages([{ id: "dup-b", phone, text, isGroup: false }]);
   assert.equal(sendTextSpy.mock.callCount(), repliesFromFirstDelivery,
     "the duplicate delivery must add ZERO further replies -- without this fix it answered the just-created draft a second time (\"I kept your request draft open.\" plus the same question again)");
+});
+
+/**
+ * Real reported bug (live, recurring, not yet fully root-caused): a single COMPLETE request
+ * ("I'm looking for a pre-owned Rolex Daytona 116500LN with a black dial. I'm in Miami and don't
+ * want to spend more than $25,000.") produced the correct "I have: WTB ..." confirmation summary,
+ * then a spurious "I kept your request draft open.", then the SAME summary again -- three
+ * replies to one message, confirmed via production [whapi] raw logs to be a content-less
+ * companion delivered under a different id, same instant, immediately after every real message.
+ */
+test("required regression: a content-less companion delivered right after a real, complete request adds zero further replies", async (t) => {
+  const sendTextSpy = t.mock.method(whapi, "sendText", async () => {});
+  _resetContentDedupeForTests();
+  _resetPhantomCompanionForTests();
+  const phone = fresh("15550780").replace(/[^\d]/g, "");
+  resetState(phone);
+
+  await server.processIncomingMessages([{ id: "real-1", phone, text: LIVE_SENTENCE, isGroup: false }]);
+  const repliesFromRealMessage = sendTextSpy.mock.callCount();
+  assert.ok(repliesFromRealMessage > 0, "the real, complete request gets at least one reply");
+  assert.equal(getState(phone).pendingBuyIntake?.step, "confirm", "precondition: the complete request went straight to confirmation");
+
+  // Same phone, arriving right after, a DIFFERENT id, no text and no image -- exactly the
+  // observed live pattern, which content-dedup deliberately does NOT catch (different content).
+  await server.processIncomingMessages([{ id: "phantom-1", phone, text: "", isGroup: false }]);
+  assert.equal(sendTextSpy.mock.callCount(), repliesFromRealMessage,
+    "the content-less companion must add ZERO further replies -- without this fix it re-answered the ready-to-confirm draft (\"I kept your request draft open.\" plus the same summary again)");
+  assert.equal(getState(phone).pendingBuyIntake?.step, "confirm", "the draft itself must be completely unaffected by the phantom companion");
 });

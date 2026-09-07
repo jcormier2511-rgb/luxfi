@@ -18,7 +18,7 @@ const postingsDb = require("../postings/db") as typeof import("../postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { resetState } = require("./stateStore") as typeof import("./stateStore");
+const { resetState, getState } = require("./stateStore") as typeof import("./stateStore");
 
 after(async () => {
   await inventoryDb._closePoolForTests();
@@ -204,6 +204,41 @@ test('required: a non-affirmative reply right after a connection reveal does not
   const result = await handleIncomingMessage(phone, "status");
   assert.doesNotMatch(result.messages.join("\n"), /FI727/, "a non-affirmative reply must never get the promo code");
   assert.match(result.messages.join("\n"), /Approved matches/, "the message must still be handled normally (the 'status' command here), not swallowed");
+});
+
+/**
+ * Real reported bug: the escrow offer said "just ask and I can connect you", which is not
+ * something the deterministic router can recognize -- a reply like "connect me" (not "yes")
+ * fell straight through to the generic fallback. "escrow" (the word the suggestion now actually
+ * names) works as a real, durable command: any time, not only as a same-turn reply to a
+ * just-approved match.
+ */
+test('required regression: mentioning "escrow" at any time gets the promo code, not only as a one-shot reply right after an approval', async () => {
+  const phone = "19991110011";
+  resetState(phone);
+
+  const cold = await handleIncomingMessage(phone, "escrow");
+  assert.match(cold.messages.join("\n"), /FI727/, "\"escrow\" must work even with no pending offer at all");
+
+  // "connect me" is exactly the real reported failure -- it must never itself get the promo
+  // code (only "escrow" or the existing "yes" one-shot do), confirming this isn't a blanket
+  // "anything after an approval works" regression.
+  resetState(phone);
+  const notRecognized = await handleIncomingMessage(phone, "connect me");
+  assert.doesNotMatch(notRecognized.messages.join("\n"), /FI727/);
+});
+
+test('required regression: "escrow" mentioned mid-draft is answered directly, not swallowed as an answer to whatever the draft is asking', async () => {
+  const phone = "19991110012";
+  resetState(phone);
+
+  const started = await handleIncomingMessage(phone, "WTB Rolex Daytona");
+  assert.ok(started.state.pendingBuyIntake, "precondition: a draft is now open");
+
+  const result = await handleIncomingMessage(phone, "what about escrow");
+  assert.match(result.messages.join("\n"), /FI727/);
+  assert.doesNotMatch(result.messages.join("\n"), /kept your request draft open/, "escrow must be answered directly, not treated as a non-advancing draft answer");
+  assert.deepEqual(getState(phone).pendingBuyIntake, started.state.pendingBuyIntake, "the draft itself must be completely unaffected by the escrow question");
 });
 
 test('required (live-reported bug): "Photos2" and "approve1" (no space before the number) are recognized the same as with a space', async () => {

@@ -192,9 +192,13 @@ export const config = {
     // text everywhere it's used (v3's on-demand approval, v4's approver-side reveal, and v4's
     // one-time push to the side that was left waiting) — kept name-free since v4 has no
     // reliable first name to personalize with, unlike conversionPitch/introMessage.
+    // Real reported bug: "just ask and I can connect you" is not something the deterministic
+    // router can recognize -- a reply like "connect me" (not "yes") fell straight through to
+    // the generic fallback. Names the actual word to say ("escrow" -- see conversation/flow.ts's
+    // ESCROW_COMMAND, which always works, not only as a same-turn reply to this message).
     escrowSuggestion:
       process.env.FI_ESCROW_SUGGESTION_MESSAGE ??
-      "If you don't already know this contact, I also have escrow and inspection partners who can help verify the item and handle payment safely — just ask and I can connect you.",
+      "If you don't already know this contact, I also have escrow and inspection partners who can help verify the item and handle payment safely — just say \"escrow\" and I can connect you.",
     // Offered when either party replies "yes" to the escrow suggestion above (see
     // conversation/flow.ts's pendingEscrowOffer handling) — first service free, then a
     // recurring discount with membership. Not itself a live charge/discount system: redeeming

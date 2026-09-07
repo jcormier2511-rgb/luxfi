@@ -379,6 +379,10 @@ const MARKET_REFERENCE_COMMANDS = [
   "Market Pulse — 116500LN",
   "market pulse: 116500LN",
   "market pulse - 116500LN",
+  // Required regression: "market research X" (meant as "market pulse") fell through entirely --
+  // "research" isn't consumed by anything in the command, so it landed in the argument and
+  // failed validation for containing a non-reference word.
+  "market research 116500LN",
 ];
 
 for (const command of MARKET_REFERENCE_COMMANDS) {
@@ -419,6 +423,56 @@ test("a bare market command still uses listing context, and prose forms are not 
   assert.match(briefing.messages.join("\n"), /^Your Market Briefing/);
   const pulse = await handleIncomingMessage(phone, "market pulse");
   assert.match(pulse.messages.join("\n"), /Market Pulse — Rolex Daytona 116500LN/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// 3b. "market pulse <reference> <location/dial/condition>" narrows the same average
+// ---------------------------------------------------------------------------------------------
+
+test("required: a location named after the reference narrows the pulse to just that region, and says so", async () => {
+  const phone = freshPhone();
+  await makeListing(phone, "FS", "116500LN", 30000, { location: "North America" });
+  await makeListing("telegram:5559000010", "FS", "116500LN", 200000, { location: "Asia" });
+
+  const reply = await handleIncomingMessage(phone, "market pulse 116500LN North America");
+  const text = reply.messages.join("\n");
+  assert.match(text, /FS: 1 active listing\b/, "only the North America listing counts");
+  assert.match(text, /Average FS ask: \$30,000/);
+  assert.match(text, /filtered to.*North America/i);
+
+  const unfiltered = await handleIncomingMessage(phone, "market pulse 116500LN");
+  assert.match(unfiltered.messages.join("\n"), /FS: 2 active listings/, "without a location, both still count");
+});
+
+test("required: dial and condition both narrow the pulse, together with location", async () => {
+  const phone = freshPhone();
+  await makeListing(phone, "FS", "126710BLRO", 18000, { dialColor: "black", condition: "pre-owned", location: "USA" });
+  await makeListing("telegram:5559000011", "FS", "126710BLRO", 25000, { dialColor: "white", condition: "new", location: "USA" });
+
+  const black = await handleIncomingMessage(phone, "market pulse 126710BLRO black dial");
+  assert.match(black.messages.join("\n"), /FS: 1 active listing\b/);
+  assert.match(black.messages.join("\n"), /Average FS ask: \$18,000/);
+
+  const preOwned = await handleIncomingMessage(phone, "market pulse 126710BLRO pre-owned");
+  assert.match(preOwned.messages.join("\n"), /FS: 1 active listing\b/);
+  assert.match(preOwned.messages.join("\n"), /Average FS ask: \$18,000/);
+
+  const both = await handleIncomingMessage(phone, "market pulse 126710BLRO black dial pre-owned USA");
+  const text = both.messages.join("\n");
+  assert.match(text, /FS: 1 active listing\b/);
+  assert.match(text, /filtered to black dial, pre-owned, USA/i);
+});
+
+test("a reference with no location/dial/condition match reports zero, not an error, and never falls into pending intake", async () => {
+  const phone = freshPhone();
+  await makeListing(phone, "FS", "116500LN", 30000, { location: "North America" });
+  const draftBefore = await openBuyDraft(phone);
+
+  const reply = await handleIncomingMessage(phone, "market pulse 116500LN Asia");
+  const text = reply.messages.join("\n");
+  assert.match(text, /FS: 0 active listings/);
+  assert.doesNotMatch(text, /kept your request draft open/i);
+  assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), draftBefore, "the WTB draft must be untouched");
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -181,6 +181,13 @@ export interface ConversationState {
   // matching flow's own reveal points in server.ts/postings/notify.ts). Cleared after that one
   // reply regardless of what it was — never nags on a later, unrelated message.
   pendingEscrowOffer?: boolean;
+  // Asked once, right after the first-contact intro, ONLY when the channel itself supplied no
+  // display name (contact.name) to personalize with — see conversation/flow.ts's
+  // pendingNameRequest handling. Never blocks: a reply that states a real request instead of a
+  // name is still answered immediately, one-shot regardless of what they said.
+  pendingNameRequest?: boolean;
+  /** A name given directly in chat, only ever used when the channel supplied none of its own. */
+  providedName?: string;
   // "listings" command — set while waiting for the contact to pick 1/2/3 off the menu (see
   // conversation/flow.ts). One-shot: cleared after that one reply regardless of what it was.
   pendingListingsMenu?: boolean;

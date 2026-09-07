@@ -285,10 +285,47 @@ function parsePhotoRequestCommand(text: string): number | null {
 // while help must always return the complete deterministic menu without consuming onboarding.
 const MENU_COMMAND = /^(?:help|menu)\b/i;
 const CANCEL_COMMAND = /^cancel\b/i;
+// Real reported bug: the escrow offer said "just ask and I can connect you", which is not
+// something the deterministic router can recognize -- a customer replying "connect me" (not
+// "yes") fell straight through to the generic "I'm not sure I understood that" fallback. Anyone
+// mentioning "escrow" now always reaches this, not only as a one-shot reply immediately after an
+// approval -- the config text (config.fiFlow.escrowSuggestion) was updated to match, spelling
+// out the actual word to say.
+const ESCROW_COMMAND = /\bescrow\b/i;
+
+function formatEscrowOffer(): string {
+  return `Great — use code ${config.fiFlow.escrowPromoCode} for your first escrow/inspection service free, and 50% off future services with a Fi membership.`;
+}
 
 /** A message that is ONLY a greeting — nothing else in it to act on. "hi, I want a Daytona"
  *  deliberately does not match; that message has a real request in it. */
 const BARE_GREETING = /^(?:hi|hello|hey|hiya|yo|sup|good\s+(?:morning|afternoon|evening))(?:\s+(?:there|fi|bot))?\s*[!.,?]*$/i;
+
+/** Common conversational words that are letters-only and could otherwise slip through the
+ *  shape check below (e.g. "how's it going" is 3 apostrophe/letter-only words) but are never
+ *  themselves a name. */
+const NAME_EXCLUDED_WORDS = new Set([
+  "how", "what", "when", "where", "why", "who", "going", "doing", "up", "ok", "okay",
+  "fine", "good", "great", "yes", "no", "sure", "thanks", "thank", "you", "help", "status",
+]);
+
+/** Whether a reply to "may I have your name?" is actually a name -- a short, 1-2 word phrase of
+ *  letters (apostrophes/hyphens allowed for names like O'Brien or Smith-Jones), never a greeting,
+ *  question, or small talk a person might send instead of answering. Deliberately narrow: this
+ *  only ever GATES whether to store and acknowledge it as a name, never blocks anything -- a
+ *  reply that fails this check just falls through to being handled normally. */
+function looksLikeName(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 40) return false;
+  if (!/^[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,1}$/.test(t)) return false;
+  // A contraction ("how's", "what's", "isn't", "I'm") is conversational text, never a name -- a
+  // real apostrophe-name (O'Brien, D'Angelo) is always followed by a capital letter, never one
+  // of these lowercase suffixes.
+  if (/'(?:s|t|re|m|ll|ve|d)\b/i.test(t)) return false;
+  const words = t.toLowerCase().split(/\s+/);
+  if (words.some((w) => NAME_EXCLUDED_WORDS.has(w))) return false;
+  return !INTENT_TOKENS.has(t.toLowerCase()) && !BARE_GREETING.test(t) && !MENU_COMMAND.test(t) && !CANCEL_COMMAND.test(t);
+}
 
 /**
  * Account-level intents: questions about the USER — their membership, their plan, their usage —
@@ -925,8 +962,15 @@ const MARKET_OVERVIEW_COMMAND = /^(?:market overview|overall market|whole market
 // with no space before it ("market pulse: 116500LN") is consumed as part of THIS alternative
 // instead of forcing a backtrack to the bare "market" alternative (which would then leave a
 // stray "pulse:" stuck to the front of the argument, failing validation downstream).
+// Live-reported: "market research patek 5711/1a" (meant as "market pulse") fell through
+// entirely -- "research" isn't consumed by anything here, so it landed in the argument
+// ("research patek 5711/1a"), which then failed validation for containing a non-reference word.
+// "market research" has to be listed BEFORE the bare "market" alternative below: since this is
+// alternation, not a separate optional word, whichever one matches first at this position wins
+// and the engine never backtracks once the rest of the pattern also succeeds -- bare "market"
+// would otherwise match first and leave "research patek 5711/1a" as the very same broken leftover.
 const MARKET_REFERENCE_COMMAND =
-  /^(?:(?:what'?s|what\s+is|how'?s|how\s+is)\s+the\s+)?(?:market\s+pulse|price\s+pulse|market\s+price|market\s+data|market\s+check|market|pulse)[\s:–—-]+(?:on\s+|for\s+)?(.+)$/i;
+  /^(?:(?:what'?s|what\s+is|how'?s|how\s+is)\s+the\s+)?(?:market\s+pulse|market\s+research|price\s+pulse|market\s+price|market\s+data|market\s+check|market|pulse)[\s:–—-]+(?:on\s+|for\s+)?(.+)$/i;
 
 /**
  * "market pulse 116500LN", "market pulse Rolex 116500LN", "market 116500LN", "price pulse
@@ -947,7 +991,9 @@ const MARKET_REFERENCE_COMMAND =
 // a request about the reference alone, never a second identifying detail to preserve.
 const BARE_REFERENCE_NICKNAMES = new Set(["sub", "subs", "submariner"]);
 
-function parseMarketReferenceCommand(text: string): { reference: string; brand?: string } | null {
+interface MarketReferenceCommandResult { reference: string; brand?: string; location?: string; dial?: string; condition?: string }
+
+function parseMarketReferenceCommand(text: string): MarketReferenceCommandResult | null {
   const m = text.trim().replace(/\s*[?.!]+$/, "").match(MARKET_REFERENCE_COMMAND);
   if (!m) return null;
   // Tolerate a stylistic separator between the command keyword and its argument -- "market pulse
@@ -966,8 +1012,38 @@ function parseMarketReferenceCommand(text: string): { reference: string; brand?:
   // argument (allowing a trailing bare-reference nickname, see above), so "market pulse daytona"
   // isn't silently treated as a reference lookup.
   if (normalizeReference(reference) === normalizeReference(candidate)) return { reference, ...(brand ? { brand } : {}) };
-  const leftover = candidate.replace(new RegExp(reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), "").trim().toLowerCase();
+  const leftoverRaw = candidate.replace(new RegExp(reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), "").trim();
+  const leftover = leftoverRaw.toLowerCase();
   if (leftover && BARE_REFERENCE_NICKNAMES.has(leftover)) return { reference, ...(brand ? { brand } : {}) };
+  // Real reported ask: "market pulse 116500LN North America" / "... black dial pre-owned" must
+  // narrow the pulse rather than being rejected outright for "not a reference" -- reuses the
+  // exact same location/dial/condition extraction the buy/sell intake questions already answer
+  // with, so a location/dial/condition word is recognized identically everywhere in this file.
+  // Deliberately lenient about anything ELSE left over (a trailing "please", a stray word) --
+  // silently ignoring it beats rejecting the whole command over one extra word.
+  if (leftoverRaw) {
+    const slots = intakeSlots(leftoverRaw, reference);
+    // intakeSlots' own location extraction is built for a full buy/sell REQUEST sentence -- it
+    // requires either a locative preposition ("in Asia") or buy/sell-keyword context, neither of
+    // which is present in a bare trailing location like "market pulse 116500LN North America".
+    // Strip whatever dial/condition phrase was already found and check whether what's left is a
+    // genuine bare place name, the same way the intake flow's own bare-location-answer fallback
+    // already does for a location question's reply.
+    let locationCandidate = leftoverRaw;
+    if (slots.dial) locationCandidate = locationCandidate.replace(new RegExp(`\\b${slots.dial}\\b\\s*(?:dial|colou?r)?`, "i"), " ");
+    if (slots.condition) locationCandidate = locationCandidate.replace(new RegExp(slots.condition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
+    locationCandidate = locationCandidate.replace(/\s+/g, " ").trim();
+    const location = slots.location ?? (locationCandidate && looksLikePlace(locationCandidate) ? locationCandidate : undefined);
+    if (location || slots.dial || slots.condition) {
+      return {
+        reference,
+        ...(brand ? { brand } : {}),
+        ...(location ? { location } : {}),
+        ...(slots.dial ? { dial: slots.dial } : {}),
+        ...(slots.condition ? { condition: slots.condition } : {}),
+      };
+    }
+  }
   return null;
 }
 
@@ -2293,7 +2369,10 @@ export async function handleIncomingMessage(phone: string, text: string, contact
 async function handleIncomingMessageInner(phone: string, text: string, contact?: Contact, imageUrl?: string): Promise<FlowResult> {
   const state = getState(phone);
   const messages: string[] = [];
-  const firstName = contact?.name?.trim().split(/\s+/)[0] || "there";
+  // A name given directly in chat (see pendingNameRequest below) only ever fills in for a
+  // contact WhatsApp/Telegram itself never supplied one for -- the channel's own profile name
+  // always wins when it exists, so this never overrides it.
+  const firstName = contact?.name?.trim().split(/\s+/)[0] || state.providedName?.split(/\s+/)[0] || "there";
   // Telegram commonly prefixes bot commands with "/" (and may append "@botname"). Keep one
   // normalized deterministic-command surface across Telegram, WhatsApp, and SMS.
   const commandText = text.trim().replace(/^\/([a-z]+)(?:@[a-z0-9_]+)?\b/i, "$1");
@@ -2464,7 +2543,10 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   }
   const marketReference = parseMarketReferenceCommand(commandText);
   if (marketReference) {
-    messages.push(formatMarketPulse(await getScopedMarketPulse({ brand: displayBrand(marketReference.brand) || undefined, reference: marketReference.reference })));
+    messages.push(formatMarketPulse(await getScopedMarketPulse(
+      { brand: displayBrand(marketReference.brand) || undefined, reference: marketReference.reference },
+      { location: marketReference.location, dial: marketReference.dial, condition: marketReference.condition }
+    )));
     // Read-only, and deliberately not persisted: saveState round-trips through JSON, which
     // drops explicitly-undefined intake fields — a market lookup must not rewrite an open draft.
     return { state, messages };
@@ -2521,6 +2603,16 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     return { state, messages };
   }
 
+  // Checked BEFORE the one-shot "yes" case just below, and regardless of whether an offer is
+  // even pending — "escrow" (the exact word the suggestion itself now names) always works, not
+  // only as a same-turn reply to a just-approved match.
+  if (ESCROW_COMMAND.test(text)) {
+    state.pendingEscrowOffer = false;
+    messages.push(formatEscrowOffer());
+    saveState(state);
+    return { state, messages };
+  }
+
   // One-shot: only the reply immediately after an escrow/inspection suggestion is checked for
   // a "yes" — cleared regardless of what they said, so it never nags on a later, unrelated
   // message, and so this can't misfire against natural-language decision interpretation
@@ -2529,9 +2621,7 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   if (state.pendingEscrowOffer) {
     state.pendingEscrowOffer = false;
     if (/^(yes|yeah|yep|yup|sure|ok|okay)\b/i.test(text.trim())) {
-      messages.push(
-        `Great — use code ${config.fiFlow.escrowPromoCode} for your first escrow/inspection service free, and 50% off future services with a Fi membership.`
-      );
+      messages.push(formatEscrowOffer());
       saveState(state);
       return { state, messages };
     }
@@ -2685,6 +2775,22 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   const resolved = await resolveItemRequests(phone, text);
   const parsed = resolved.items;
 
+  // One-shot, checked BEFORE anything else once armed: only ever set right below, for a contact
+  // WhatsApp/Telegram itself gave no display name for. Never blocks -- a reply that's a real
+  // request (parsed.length > 0) is answered immediately regardless of whether it also looks
+  // like a name; only a bare, name-shaped reply with nothing else in it is stored and
+  // acknowledged.
+  if (state.pendingNameRequest) {
+    state.pendingNameRequest = false;
+    if (parsed.length === 0 && looksLikeName(text)) {
+      state.providedName = text.trim();
+      messages.push(`Nice to meet you, ${state.providedName.split(/\s+/)[0]}!`);
+      saveState(state);
+      return { state, messages };
+    }
+    // Not name-shaped, or a real request came in instead -- fall through, handled normally.
+  }
+
   // Onboarding belongs after deterministic commands: help/status/listing management/etc. must
   // always retain their command semantics on a brand-new account. The first ordinary inbound
   // message consumes this one-shot state and may then continue into normal intent handling.
@@ -2692,6 +2798,15 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     messages.push(config.fiFlow.introMessage);
     state.stage = "active";
     if (parsed.length === 0) {
+      // Only asked when the channel itself supplied no display name (WhatsApp/Telegram already
+      // give one for most contacts) AND this first message is a plain greeting/small talk with
+      // nothing else to act on -- never appended after a real request's own reply content,
+      // which would otherwise land the name question in the MIDDLE of that reply instead of
+      // being its own, separate exchange.
+      if (!contact?.name?.trim()) {
+        messages.push("By the way, may I have your name?");
+        state.pendingNameRequest = true;
+      }
       saveState(state);
       return { state, messages };
     }

@@ -111,6 +111,41 @@ export function _resetContentDedupeForTests(): void {
   recentContent = [];
 }
 
+/** How long after a REAL message a content-less companion is treated as suspect. Confirmed live
+ *  (Railway [whapi] raw logs) as arriving in the same second as the real message every time --
+ *  wide enough to absorb that, narrow enough that a person's own second, later, genuinely
+ *  content-less message (e.g. a document sent seconds after unrelated text) is very unlikely to
+ *  fall inside it. */
+const PHANTOM_COMPANION_WINDOW_MS = 4_000;
+let recentMessagesByPhone: { phone: string; at: number; hadContent: boolean }[] = [];
+
+/**
+ * Real reported bug, still not fully root-caused: every genuine WhatsApp text message is
+ * followed by a SECOND webhook delivery -- same phone, same instant, a different id, with no
+ * text and no image -- confirmed via production [whapi] raw logs added specifically to chase
+ * this. The existing document/sticker catch-all (whapi/client.ts) lets that empty companion
+ * through as a real, if content-less, message, which produces "I kept your ... draft open" or
+ * "I'm not sure I understood that" immediately after a perfectly correct reply -- observed on
+ * essentially every single exchange. The raw `type` this companion actually carries is still
+ * unidentified (which would allow a precise, type-based exclusion the same way "reaction" is
+ * already excluded); this is a deliberate stopgap in the meantime, trading away a genuine
+ * back-to-back content-less message (rare) to stop a bug that was firing on every real message
+ * (not rare at all).
+ */
+export function isSuspectedPhantomCompanion(phone: string, text: string, imageUrl?: string): boolean {
+  const now = Date.now();
+  recentMessagesByPhone = recentMessagesByPhone.filter((r) => now - r.at < PHANTOM_COMPANION_WINDOW_MS);
+  const hasContent = Boolean(text.trim()) || Boolean(imageUrl);
+  const isPhantom = !hasContent && recentMessagesByPhone.some((r) => r.phone === phone && r.hadContent);
+  recentMessagesByPhone.push({ phone, at: now, hadContent: hasContent });
+  return isPhantom;
+}
+
+/** Test-only -- clears the in-memory phantom-companion window between tests. */
+export function _resetPhantomCompanionForTests(): void {
+  recentMessagesByPhone = [];
+}
+
 export interface OpenDraftSummary {
   phone: string;
   type: "WTB" | "FS";
