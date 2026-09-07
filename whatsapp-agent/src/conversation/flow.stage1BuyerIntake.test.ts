@@ -255,3 +255,39 @@ test("required regression: a content-less companion delivered right after a real
     "the content-less companion must add ZERO further replies -- without this fix it re-answered the ready-to-confirm draft (\"I kept your request draft open.\" plus the same summary again)");
   assert.equal(getState(phone).pendingBuyIntake?.step, "confirm", "the draft itself must be completely unaffected by the phantom companion");
 });
+
+/**
+ * Real reported bug, root-caused via live Railway deploy logs: two entries in the SAME webhook
+ * batch, same phone, same second -- one content-less, one real -- both logged as "processing"
+ * (neither flagged duplicate/phantom). The content-less one was listed FIRST in the batch, and
+ * the existing phantom-companion check only ever looks backward at prior activity, so it found
+ * nothing yet recorded for this phone and let the phantom through as a real, if content-less,
+ * message. This must be caught regardless of which order Whapi lists the two entries in.
+ */
+test("required regression: a content-less companion listed BEFORE its real sibling in the SAME webhook batch is still recognized as the phantom", async (t) => {
+  const sendTextSpy = t.mock.method(whapi, "sendText", async () => {});
+  _resetContentDedupeForTests();
+  _resetPhantomCompanionForTests();
+
+  // Baseline: the real, complete request alone -- establishes how many replies it normally
+  // produces (a summary plus a confirmation prompt is more than one message, which is normal
+  // and has nothing to do with the phantom bug).
+  const baselinePhone = fresh("15550781a").replace(/[^\d]/g, "");
+  resetState(baselinePhone);
+  await server.processIncomingMessages([{ id: "real-baseline-1", phone: baselinePhone, text: LIVE_SENTENCE, isGroup: false }]);
+  const baselineReplies = sendTextSpy.mock.callCount();
+  assert.ok(baselineReplies > 0, "precondition: the real, complete request alone gets at least one reply");
+
+  // Single batch, single processIncomingMessages call -- the phantom (empty text) listed BEFORE
+  // the real message, exactly the order confirmed live.
+  sendTextSpy.mock.resetCalls();
+  const phone = fresh("15550781b").replace(/[^\d]/g, "");
+  resetState(phone);
+  await server.processIncomingMessages([
+    { id: "phantom-before-1", phone, text: "", isGroup: false },
+    { id: "real-after-1", phone, text: LIVE_SENTENCE, isGroup: false },
+  ]);
+
+  assert.equal(sendTextSpy.mock.callCount(), baselineReplies, "the phantom listed first must add ZERO further replies beyond what the real message alone would produce");
+  assert.equal(getState(phone).pendingBuyIntake?.step, "confirm", "the real message is still processed normally, landing on confirmation");
+});

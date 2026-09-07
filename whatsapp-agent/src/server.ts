@@ -186,6 +186,17 @@ export async function tryHandleV4Extend(phone: string, text: string): Promise<st
  * same normalized shape (channels/types.ts's NormalizedIncomingMessage) before calling this.
  */
 export async function processIncomingMessages(incoming: NormalizedIncomingMessage[]): Promise<void> {
+  // Root-caused via live Railway logs: the phantom Whapi companion (see stateStore.ts's
+  // isSuspectedPhantomCompanion) does NOT reliably arrive after its real sibling -- confirmed
+  // live, same second, same phone, the content-less companion listed BEFORE the real message in
+  // the same webhook batch. The time-windowed check below only ever looks backward at prior
+  // activity, so a phantom arriving before its real sibling within the SAME batch slipped through
+  // undetected roughly half the time. A whole batch is fully known before any of it is
+  // processed, so this doesn't need a timing heuristic at all: any content-less message sharing
+  // a batch with ANOTHER entry for the same phone that DOES have content is the phantom,
+  // regardless of which one Whapi listed first.
+  const phonesWithContentInBatch = new Set(incoming.filter((m) => m.text.trim() || m.imageUrl).map((m) => m.phone));
+
   // Logged for every message BEFORE dedup decides anything -- the only way to tell, from
   // Railway's own deploy logs, whether a live "duplicate reply" report is a genuine second
   // webhook delivery (a different id, same phone/text) versus something else entirely, without
@@ -193,13 +204,16 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
   const filtered = incoming.filter((m) => {
     const idSeen = alreadyProcessed(m.id);
     const contentSeen = !idSeen && alreadyProcessedContent(m.phone, m.text, m.imageUrl);
+    const hasContent = Boolean(m.text.trim() || m.imageUrl);
+    const batchSibling = !idSeen && !contentSeen && !hasContent && phonesWithContentInBatch.has(m.phone);
     // Stopgap for a still-not-fully-root-caused bug: a content-less message arriving seconds
-    // after a real one from the same phone is very likely the phantom Whapi companion (see
-    // stateStore.ts's isSuspectedPhantomCompanion), not a genuine second message.
-    const phantom = !idSeen && !contentSeen && isSuspectedPhantomCompanion(m.phone, m.text, m.imageUrl);
-    const duplicate = idSeen || contentSeen || phantom;
+    // after a real one from the same phone is very likely the phantom Whapi companion, not a
+    // genuine second message. Only reached when the same-batch check above didn't already
+    // resolve it (a phantom arriving in a SEPARATE webhook delivery from its real sibling).
+    const phantom = !idSeen && !contentSeen && !batchSibling && isSuspectedPhantomCompanion(m.phone, m.text, m.imageUrl);
+    const duplicate = idSeen || contentSeen || batchSibling || phantom;
     console.log(
-      `[webhook] ${duplicate ? `duplicate (${idSeen ? "id" : contentSeen ? "content" : "phantom-companion"}), skipping` : "processing"} id=${m.id} phone=${m.phone} text=${JSON.stringify(m.text.slice(0, 80))}`
+      `[webhook] ${duplicate ? `duplicate (${idSeen ? "id" : contentSeen ? "content" : batchSibling ? "phantom-companion-batch" : "phantom-companion"}), skipping` : "processing"} id=${m.id} phone=${m.phone} text=${JSON.stringify(m.text.slice(0, 80))}`
     );
     return !duplicate;
   });
