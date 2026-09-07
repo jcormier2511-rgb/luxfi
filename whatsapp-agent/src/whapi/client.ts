@@ -37,13 +37,14 @@ export interface WhapiHealthResult {
 }
 
 /**
- * Whapi.Cloud's documented GET /health endpoint (https://whapi.readme.io/reference/checkhealth)
- * reports channel status — {health:{status:{code,text},version,...}}, with status.text "AUTH"
- * meaning fully connected — without sending anything, so it's safe to call from a read-only
- * admin panel. The exact shape is taken from Whapi's public docs; this sandbox's network egress
- * to whapi.readme.io is blocked, so it hasn't been confirmed against a live channel — same
- * "documented but not empirically confirmed" caveat this project already carries for other
- * Whapi/WatchFacts integrations (see README).
+ * Whapi.Cloud's GET /health endpoint reports channel status without sending anything, so it's
+ * safe to call from a read-only admin panel. Confirmed live against a real, authorized channel
+ * (this sandbox's network egress to Whapi is otherwise blocked, so this is the one exception to
+ * the "documented but not empirically confirmed" caveat this project's other Whapi/WatchFacts
+ * integrations carry — see README): the real shape is flat, `{status:"OK",channel:"<id>",
+ * code:200}` — NOT the nested `{health:{status:{code,text},version}}` shape the docs/older
+ * code assumed, which is why the admin dashboard previously showed "UNKNOWN" for a channel that
+ * was actually authorized and healthy. There is no version field in this response at all.
  */
 export async function checkWhapiHealth(): Promise<WhapiHealthResult> {
   if (!config.whapi.token) {
@@ -57,14 +58,14 @@ export async function checkWhapiHealth(): Promise<WhapiHealthResult> {
     if (!res.ok) {
       return { configured: true, reachable: false, authorized: null, statusText: null, version: null, error: `HTTP ${res.status}` };
     }
-    const body = (await res.json().catch(() => null)) as { health?: { status?: { text?: string }; version?: string } } | null;
-    const statusText = body?.health?.status?.text ?? null;
+    const body = (await res.json().catch(() => null)) as { status?: string; channel?: string; code?: number } | null;
+    const statusText = body?.status ?? null;
     return {
       configured: true,
       reachable: true,
-      authorized: statusText ? statusText === "AUTH" : null,
+      authorized: statusText ? statusText === "OK" : null,
       statusText,
-      version: body?.health?.version ?? null,
+      version: null,
       error: null,
     };
   } catch (err) {
