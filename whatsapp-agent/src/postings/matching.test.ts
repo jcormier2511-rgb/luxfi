@@ -11,7 +11,7 @@ const store = require("./postingsStore") as typeof import("./postingsStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const matching = require("./matching") as typeof import("./matching");
 const { scoreMatch, upsertMatch, runImmediateMatch, runReconciliation } = matching;
-const { ingestChatPosting } = store;
+const { ingestChatPosting, createDirectPosting } = store;
 
 after(() => db._closePoolForTests());
 
@@ -102,6 +102,33 @@ test("scoreMatch: no match when brands differ and WTB did specify a brand", () =
   const fs = posting({ brand: "Omega", reference: "" });
   const wtb = posting({ brand: "Rolex", reference: "" });
   assert.equal(scoreMatch(fs, wtb), null);
+});
+
+test("required regression: a WTB naming a specific model must not match an FS recorded under a different model of the same brand", () => {
+  const fs = posting({ brand: "Rolex", model: "Datejust", reference: "" });
+  const wtb = posting({ type: "WTB", brand: "Rolex", model: "Daytona", reference: "" });
+  assert.equal(scoreMatch(fs, wtb), null, "WTB Rolex Daytona must not match an FS Rolex Datejust just because both are Rolex");
+});
+
+test("scoreMatch: same brand AND same stated model still matches, with a model reason", () => {
+  const fs = posting({ brand: "Rolex", model: "Daytona", reference: "" });
+  const wtb = posting({ type: "WTB", brand: "Rolex", model: "Daytona", reference: "" });
+  const result = scoreMatch(fs, wtb);
+  assert.ok(result);
+  assert.equal(result!.score, 20);
+  assert.ok(result!.reasons.some((r) => r === "Model: Daytona"));
+});
+
+test("a stated WTB model doesn't reject an FS listing that never recorded a model (unknown, not conflicting)", () => {
+  const fs = posting({ brand: "Rolex", model: "", reference: "" });
+  const wtb = posting({ type: "WTB", brand: "Rolex", model: "Daytona", reference: "" });
+  assert.ok(scoreMatch(fs, wtb), "a listing that never recorded a model isn't a conflict");
+});
+
+test("a WTB with no specific model preference (\"any\"/\"either\") doesn't filter by model at all", () => {
+  const fs = posting({ brand: "Rolex", model: "Datejust", reference: "" });
+  const wtb = posting({ type: "WTB", brand: "Rolex", model: "any", reference: "" });
+  assert.ok(scoreMatch(fs, wtb), "an explicit \"any model\" WTB preference must still match every model of the requested brand");
 });
 
 test("scoreMatch: a hard max bid is respected even on an otherwise-exact reference match", () => {
@@ -273,6 +300,40 @@ test("an image lookup failure on one candidate never aborts matching against the
 
   const result = await runImmediateMatch(wtb.posting!);
   assert.equal(result.matchesFound, 3, "every eligible candidate must still be matched even though each notification's image lookup fails");
+});
+
+test("required regression: a live-reported bug — a direct WTB for \"Rolex Daytona\" (no reference given) must not match FS listings for other Rolex models", async () => {
+  await db._resetDbForTests();
+  const wtb = await createDirectPosting({
+    phone: "15550001234",
+    type: "WTB",
+    description: "Rolex Daytona",
+    brand: "Rolex",
+    model: "Daytona",
+    reference: null,
+    price: 35000,
+  });
+  await createDirectPosting({
+    phone: "15559998888",
+    type: "FS",
+    description: "Rolex Datejust 36",
+    brand: "Rolex",
+    model: "Datejust",
+    reference: "126231",
+    price: 12000,
+  });
+  await createDirectPosting({
+    phone: "15559997777",
+    type: "FS",
+    description: "Rolex Oyster Perpetual",
+    brand: "Rolex",
+    model: "Oyster Perpetual",
+    reference: "124300",
+    price: 6500,
+  });
+
+  const result = await runImmediateMatch(wtb);
+  assert.equal(result.matchesFound, 0, "a Datejust and an Oyster Perpetual are not a Daytona and must not be surfaced as matches");
 });
 
 test("runImmediateMatch never matches a user against their own opposite-side posting", async () => {

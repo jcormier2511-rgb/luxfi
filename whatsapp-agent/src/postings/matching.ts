@@ -46,12 +46,21 @@ export function scoreMatch(fs: PostingRow, wtb: PostingRow): ScoreResult | null 
     return null; // no structured basis for a match
   }
 
-  // A blank fs.dial/fs.condition means the source listing never recorded one (common — e.g.
-  // thecollective_inventory.auctions frequently has no dial_color, and the DB-direct sync has
-  // no condition_id lookup yet) — that's "unknown," not "conflicting," so it must not disqualify
-  // an otherwise-strong reference match. Only an FS value that actively DIFFERS from what the
-  // WTB side asked for rejects the match.
+  // A blank fs.dial/fs.condition/fs.model means the source listing never recorded one (common —
+  // e.g. thecollective_inventory.auctions frequently has no dial_color, and the DB-direct sync
+  // has no condition_id lookup yet) — that's "unknown," not "conflicting," so it must not
+  // disqualify an otherwise-strong reference match. Only an FS value that actively DIFFERS from
+  // what the WTB side asked for rejects the match.
   const canonical = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  // A WTB naming a specific model (e.g. "Daytona") must not match an FS recorded under a
+  // different model just because both are the same brand — "same brand" alone is a weak signal
+  // (score 20, see above) that a stated model has to survive, not override. This is what stops a
+  // WTB "Rolex Daytona" from matching a Datejust or Oyster Perpetual FS listing.
+  const requestedModel = canonical(wtb.model || "");
+  if (requestedModel && requestedModel !== "any" && requestedModel !== "either") {
+    if (fs.model && canonical(fs.model) !== requestedModel) return null;
+    if (fs.model) reasons.push(`Model: ${wtb.model}`);
+  }
   const requestedDial = canonical(wtb.dial || "");
   if (requestedDial && requestedDial !== "any" && requestedDial !== "either") {
     if (fs.dial && canonical(fs.dial) !== requestedDial) return null;
