@@ -140,14 +140,25 @@ async function tryInterpretPostingsDecisionNaturally(
   canonicalUserId: number,
   sourceType?: "direct"
 ): Promise<{ matchId: number; action: "approve" | "pass" } | null> {
-  if (!isAiMatchingEnabledForPhone(phone)) return null;
+  if (!isAiMatchingEnabledForPhone(phone)) {
+    console.log(`[postings-decision] natural-language decision skipped for ${phone}: not on the AI-matching test-phone allowlist (or AI matching not enabled/configured)`);
+    return null;
+  }
   const options = await getPendingMatchesForRecipient(canonicalUserId, sourceType ? { sourceType } : undefined);
-  if (options.length === 0) return null;
+  if (options.length === 0) {
+    console.log(`[postings-decision] natural-language decision skipped for ${phone}: no pending${sourceType ? ` ${sourceType}-sourced` : ""} match found to decide on`);
+    return null;
+  }
+  console.log(`[postings-decision] interpreting "${text}" for ${phone} against ${options.length} pending match(es): ${options.map((o) => `${o.matchId}=${o.counterpartName || "(unnamed)"}`).join(", ")}`);
   const interpreted = await interpretPostingsDecision(text, options);
-  if (!interpreted?.action) return null;
+  if (!interpreted?.action) {
+    console.log(`[postings-decision] AI did not resolve "${text}" to a decision (result: ${JSON.stringify(interpreted)})`);
+    return null;
+  }
   // No specific match identifiable from the text -> the most recently presented pending match,
   // same "latest unresolved" default the deterministic bare approve/pass already falls back to.
   const matchId = interpreted.matchId ?? options[0].matchId;
+  console.log(`[postings-decision] resolved "${text}" to ${interpreted.action} match ${matchId}${interpreted.matchId === null ? " (defaulted to most recent, no specific match named)" : ""}`);
   return { matchId, action: interpreted.action };
 }
 
