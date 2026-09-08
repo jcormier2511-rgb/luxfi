@@ -9,6 +9,28 @@ export interface ScoreResult {
   reasons: string[];
 }
 
+// Well-known dial/bezel/material nicknames that name a specific variant of the SAME model, not
+// a different one -- a buyer saying "Pikachu Daytona" means the same watch as an FS listing
+// recorded simply as "Daytona" (WatchFacts' own model field rarely captures the nickname), so
+// requiring an exact model-string match rejected a real match over nothing but which words were
+// used to say the same watch. Stripped from BOTH sides before comparing below, never treated as
+// their own separate identity requirement -- narrow and explicit, same bar as
+// BARE_REFERENCE_NICKNAMES (conversation/flow.ts).
+const MODEL_NICKNAMES = new Set([
+  "pikachu", "panda", "hulk", "batman", "kermit", "sprite", "smurf", "smurfs",
+  "pepsi", "coke", "cola", "rootbeer", "starbucks",
+]);
+function stripModelNicknames(model: string): string {
+  const stripped = model
+    .split(/\s+/)
+    .filter((word) => !MODEL_NICKNAMES.has(word.toLowerCase()))
+    .join(" ")
+    .trim();
+  // A model that named ONLY the nickname would otherwise strip down to nothing -- fall back to
+  // the original rather than comparing two blanks as if they'd agreed on an unnamed model.
+  return stripped || model;
+}
+
 /**
  * Structured matching only (spec §7) — reference-number exact match is highest priority; a
  * broader match is allowed only when the WTB side gave no reference/brand at all (so a vague
@@ -56,11 +78,18 @@ export function scoreMatch(fs: PostingRow, wtb: PostingRow): ScoreResult | null 
   // different model just because both are the same brand — "same brand" alone is a weak signal
   // (score 20, see above) that a stated model has to survive, not override. This is what stops a
   // WTB "Rolex Daytona" from matching a Datejust or Oyster Perpetual FS listing.
-  const requestedModel = canonical(wtb.model || "");
+  const requestedModel = canonical(stripModelNicknames(wtb.model || ""));
   if (requestedModel && requestedModel !== "any" && requestedModel !== "either") {
-    if (fs.model && canonical(fs.model) !== requestedModel) return null;
+    if (fs.model && canonical(stripModelNicknames(fs.model)) !== requestedModel) return null;
     if (fs.model) reasons.push(`Model: ${wtb.model}`);
   }
+  // A stated year is a real, hard constraint the same way a stated reference/dial/condition is
+  // -- a buyer who names a specific year wants THAT year, not "close enough." A blank fs.year
+  // means the source listing never recorded one (common for API-mirrored inventory), which is
+  // unknown, not conflicting, so it never disqualifies an otherwise-good match on its own.
+  const requestedYear = (wtb.year || "").trim();
+  if (requestedYear && fs.year && fs.year.trim() !== requestedYear) return null;
+  if (requestedYear && fs.year) reasons.push(`Year: ${fs.year}`);
   const requestedDial = canonical(wtb.dial || "");
   if (requestedDial && requestedDial !== "any" && requestedDial !== "either") {
     if (fs.dial && canonical(fs.dial) !== requestedDial) return null;

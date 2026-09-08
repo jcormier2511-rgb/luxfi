@@ -156,7 +156,7 @@ export interface MatchPresentation {
  * it's already public. A private WhatsApp user's contact_name falls back to their raw phone
  * number when no display name was ever captured (see postingsStore.ts's `senderName || phone`),
  * and that number must never be shown pre-approval — the real reported bug this guards against
- * was a buyer's/seller's own phone number appearing in the very first "Potential Match" card,
+ * was a buyer's/seller's own phone number appearing in the very first "Match ID#" card,
  * before they had any chance to decide whether to connect at all. A digit-only string can never
  * be a real display name, so this is a safe, simple filter rather than a phone-format parser.
  */
@@ -192,7 +192,10 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
   if (match.identity) lines.push(`${roleLabel}: ${match.identity}`);
   if (match.activeGroupCount) lines.push(`Active in ${match.activeGroupCount} monitored dealer group${match.activeGroupCount === 1 ? "" : "s"}`);
   const watch = [match.brand, match.model, match.reference].filter(Boolean).join(" ");
-  if (watch) lines.push(watch);
+  // Labeled the same way every other field on this card is -- an unlabeled bare reference
+  // ("126505" with no brand/model recorded) otherwise read as a stray floating number with no
+  // indication of what it even was.
+  if (watch) lines.push(`Watch: ${watch}`);
   if (match.dial) lines.push(`Dial/Color: ${match.dial}`);
   const details = [match.year, match.boxPapers, match.condition].filter(Boolean);
   if (details.length) lines.push(details.join(" • "));
@@ -208,7 +211,7 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
 }
 
 /**
- * Spec §9.1's Potential Match format, minus the "Fi Intelligence" block (dealer
+ * Spec §9.1's Match ID# format, minus the "Fi Intelligence" block (dealer
  * reputation/price trend/market range/authenticity) — no data source for any of that exists,
  * same honest omission the v3 flow's Match Card already makes. `matchId` is embedded in the
  * reply instructions since notifications are server-pushed, not part of a synchronous
@@ -227,8 +230,8 @@ export function formatMatchMessage(
   return (
     // Keep the established notification discriminator as well as the numeric ID. Besides being
     // useful to people scanning a chat, downstream channel consumers and the PR #20 regression
-    // suite intentionally recognize automatic notifications by the "Potential Match" heading.
-    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl, activeGroupCount), "Potential Match") +
+    // suite intentionally recognize automatic notifications by the "Match ID#" heading.
+    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl, activeGroupCount), "Match ID#") +
     (reasons.length ? `\n\nWhy it matched:\n${reasons.map((r) => `• ${r}`).join("\n")}` : "") +
     `\n\nReply "approve ${matchId}" to connect, or "pass ${matchId}" to skip.`
   );

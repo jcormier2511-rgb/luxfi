@@ -644,9 +644,9 @@ test("required regression: an edit's own re-match notification never overtakes t
   // that did not exist a moment ago.
   await server.processIncomingMessages([{ id: `edit-order-1-${Date.now()}`, phone: sellerPhone, text: "edit listing 1 reference 126710BLRO", isGroup: false }]);
 
-  assert.ok(order.some((m) => /Potential Match/.test(m)), "precondition: this edit must actually trigger a new match");
+  assert.ok(order.some((m) => /Match ID#/.test(m)), "precondition: this edit must actually trigger a new match");
   const updateIndex = order.findIndex((m) => /^Updated:/.test(m));
-  const matchIndex = order.findIndex((m) => /Potential Match/.test(m));
+  const matchIndex = order.findIndex((m) => /Match ID#/.test(m));
   assert.ok(updateIndex !== -1, "the 'Updated:' confirmation must be sent");
   assert.ok(updateIndex < matchIndex, "the edit confirmation must be sent before any match-card notification it triggers, never after");
 });

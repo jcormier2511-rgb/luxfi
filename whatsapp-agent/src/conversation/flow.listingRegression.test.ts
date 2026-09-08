@@ -331,6 +331,26 @@ test("required regression: a blank dial or a city-vs-region location mismatch ne
   assert.match(last, /116500LN/);
 });
 
+test('required regression: a genuine cross-continent location conflict IS excluded on the current-listings step -- real reported bug: "Location: US" still returned listings in "Asia"/"Hong Kong"', async (t) => {
+  const phone = "15550002014"; resetState(phone);
+  const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
+  t.mock.method(inventory, "getActiveListings", async () => [
+    { id: "asia", type: "FS" as const, category: "watches", item: "Daytona", brand: "Rolex", ref: "116500LN",
+      condition: "Used", price: "24000", location: "Hong Kong", contactName: "Dealer", contactPhone: "1",
+      source: "WF", rating: "", description: "Rolex Daytona 116500LN" },
+    { id: "same-continent", type: "FS" as const, category: "watches", item: "Daytona", brand: "Rolex", ref: "116500LN",
+      condition: "Used", price: "24500", location: "Canada", contactName: "Dealer", contactPhone: "2",
+      source: "WF", rating: "", description: "Rolex Daytona 116500LN" },
+  ]);
+  await handleIncomingMessage(phone, "wtb rolex daytona 116500LN for 25000");
+  await handleIncomingMessage(phone, "any"); // dial
+  await handleIncomingMessage(phone, "US"); // location (condition defaults silently, never asked as its own step)
+  const result = await handleIncomingMessage(phone, "yes"); // confirm
+  const last = result.messages.join("\n");
+  assert.doesNotMatch(last, /Hong Kong/, "a listing on the opposite side of the world from the stated location must be excluded, not just ranked lower");
+  assert.match(last, /Canada/, "a same-continent listing must still be shown");
+});
+
 test("current inventory compares formatted references canonically", async (t) => {
   const phone = "15550002015"; resetState(phone);
   const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");

@@ -96,7 +96,7 @@ test("requirement: a chat WTB immediately matches an existing live WatchFacts FS
 
   await ingestAndMatch(watchTb());
 
-  const matchMsg = sent.find((s) => s.phone === "buyer-1" && /Potential Match/.test(s.message));
+  const matchMsg = sent.find((s) => s.phone === "buyer-1" && /Match ID#/.test(s.message));
   assert.ok(matchMsg, "the buyer should be notified of a match against the live WatchFacts FS listing");
   assert.match(matchMsg!.message, /WatchFacts Seller/);
 });
@@ -110,7 +110,7 @@ test("requirement: a WatchFacts FS sync (new listing) triggers a match against a
 
   await ingestApiFsSync([apiFsListing({ id: "wf-2" })]); // the sync that should reverse-match
 
-  const matchMsg = sent.find((s) => s.phone === "buyer-2" && /Potential Match/.test(s.message));
+  const matchMsg = sent.find((s) => s.phone === "buyer-2" && /Match ID#/.test(s.message));
   assert.ok(matchMsg, "a fresh FS sync must reverse-match against the already-active chat WTB monitor");
 });
 
@@ -125,7 +125,7 @@ test("required regression: a WatchFacts WTB sync (real dealer buy request) trigg
     apiFsListing({ id: "wf-wtb-1", contactName: "WatchFacts Dealer", contactPhone: "20000000000", price: "$30,000" }),
   ]);
 
-  const matchMsg = sent.find((s) => s.phone === "seller-1" && /Potential Match/.test(s.message));
+  const matchMsg = sent.find((s) => s.phone === "seller-1" && /Match ID#/.test(s.message));
   assert.ok(matchMsg, "a fresh WTB sync must reverse-match against the already-active chat FS listing");
 });
 
@@ -137,7 +137,7 @@ test("required regression: a chat FS listing already in postings is immediately 
 
   await ingestAndMatch(watchFs({ senderIdentity: "seller-2" }));
 
-  const matchMsg = sent.find((s) => s.phone === "seller-2" && /Potential Match/.test(s.message));
+  const matchMsg = sent.find((s) => s.phone === "seller-2" && /Match ID#/.test(s.message));
   assert.ok(matchMsg, "the seller should be notified of a match against the live WatchFacts WTB demand");
 });
 
@@ -148,8 +148,8 @@ test("requirement: chat FS and chat WTB match each other directly, with no API l
   await ingestAndMatch(watchFs());
   await ingestAndMatch(watchTb({ senderIdentity: "buyer-3" }));
 
-  assert.ok(sent.some((s) => s.phone === "buyer-3" && /Potential Match/.test(s.message)), "buyer should be notified");
-  assert.ok(sent.some((s) => s.phone === "seller-1" && /Potential Match/.test(s.message)), "seller should be notified");
+  assert.ok(sent.some((s) => s.phone === "buyer-3" && /Match ID#/.test(s.message)), "buyer should be notified");
+  assert.ok(sent.some((s) => s.phone === "seller-1" && /Match ID#/.test(s.message)), "seller should be notified");
 });
 
 test("requirement: a duplicate chat webhook redelivery does not produce a duplicate match notification", async (t) => {
@@ -160,11 +160,11 @@ test("requirement: a duplicate chat webhook redelivery does not produce a duplic
   await ingestApiFsSync([apiFsListing({ id: "wf-dup" })]);
 
   await ingestAndMatch(input);
-  assert.equal(sent.filter((s) => /Potential Match/.test(s.message)).length, 1);
+  assert.equal(sent.filter((s) => /Match ID#/.test(s.message)).length, 1);
 
   await ingestAndMatch(input); // exact duplicate webhook redelivery — same messageId, same text
   assert.equal(
-    sent.filter((s) => /Potential Match/.test(s.message)).length,
+    sent.filter((s) => /Match ID#/.test(s.message)).length,
     1,
     "a duplicate webhook must never re-send the match notification"
   );
@@ -179,11 +179,11 @@ test("requirement: a repeated, unchanged WatchFacts FS sync does not produce a d
 
   const listing = apiFsListing({ id: "wf-repeat" });
   await ingestApiFsSync([listing]);
-  assert.equal(sent.filter((s) => /Potential Match/.test(s.message)).length, 1);
+  assert.equal(sent.filter((s) => /Match ID#/.test(s.message)).length, 1);
 
   await ingestApiFsSync([listing]); // identical re-sync, listing unchanged
   assert.equal(
-    sent.filter((s) => /Potential Match/.test(s.message)).length,
+    sent.filter((s) => /Match ID#/.test(s.message)).length,
     1,
     "an unchanged re-sync must never re-trigger the match notification"
   );
@@ -209,5 +209,5 @@ test("requirement: once a match exists, a group post gets the match notification
   await handleGroupMessage("m2", "g1", "buyer-7", "Alex", "WTB Rolex Daytona 116500LN budget $30,000");
 
   assert.equal(sent.length, 1, "a match found on ingestion produces exactly one message, not an ack plus a notification");
-  assert.match(sent[0].message, /Potential Match/);
+  assert.match(sent[0].message, /Match ID#/);
 });

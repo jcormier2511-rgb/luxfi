@@ -24,11 +24,11 @@ import { logSearchRequest } from "../postings/analytics";
 import { interpretQuery, toSearchPreferences } from "../ai/queryInterpreter";
 import { interpretDecision } from "../ai/decisionInterpreter";
 import { generateGeneralChatReply } from "../ai/chatReply";
-import { detectCurrency, convertMoneyToUsd, CurrencyCode } from "../matching/currency";
+import { detectCurrency, convertMoneyToUsd, CurrencyCode, SUPPORTED_CURRENCIES } from "../matching/currency";
 
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
-import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch, canonicalizeReference, normalizeReference, splitLeadingBrand, INTENT_TOKENS, isOnlyNonModelLanguage, identityForReference } from "../postings/normalize";
+import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch, canonicalizeReference, normalizeReference, splitLeadingBrand, INTENT_TOKENS, isOnlyNonModelLanguage, identityForReference, regionsConflict } from "../postings/normalize";
 import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
@@ -782,13 +782,20 @@ async function handleCurrentInventoryCommand(state: ConversationState, text: str
     priceFiltered = withPrice.filter((l): l is InventoryListing => l !== null);
   }
 
-  // Dial/location are informational only, not exclusionary — same reasoning as
+  // Dial/location are informational only for an ordinary granularity gap — same reasoning as
   // matching/engine.ts's softPreferenceScore: WatchFacts data is often sparse (no dial_color) or
   // only continent-level (region, not city), so treating a mismatch there as disqualifying would
-  // drop otherwise-relevant listings over nothing but missing/coarse data.
+  // drop otherwise-relevant listings over nothing but missing/coarse data. A genuine cross-
+  // continent conflict is different, same as postings/matching.ts's scoreMatch: the real reported
+  // bug this closes is a stated "US" location still surfacing listings in "Asia"/"Hong Kong" —
+  // the opposite side of the world, not a granularity gap. See regionsConflict for why an
+  // unrecognized value (a bare city name) is never treated as one.
   const statedDial = (context.dialColor ?? context.dial ?? "").trim().toLowerCase();
   const statedLocation = (context.location ?? "").trim().toLowerCase();
-  const relevant = priceFiltered
+  const regionFiltered = statedLocation
+    ? priceFiltered.filter((listing) => !listing.location || !regionsConflict(listing.location, statedLocation))
+    : priceFiltered;
+  const relevant = regionFiltered
     .map((listing) => {
       let score = 0;
       if (statedDial && `${listing.description} ${listing.item}`.toLowerCase().includes(statedDial)) score += 1;
@@ -964,7 +971,7 @@ export interface FlowResult {
    */
   photoReply?: { imageUrl: string; caption: string };
   /**
-   * Live-reported bug: a match-card notification ("Potential Match X ... approve/pass X") could
+   * Live-reported bug: a match-card notification ("Match ID# X ... approve/pass X") could
    * reach a buyer/seller before their OWN "Your WTB/FS request is active" confirmation, because
    * the match sweep used to run (and notify) synchronously inside the intake-confirm handler,
    * well before this turn's `messages` had even been sent. ingestDirectBuyPosting/
@@ -1641,13 +1648,28 @@ function extractListingRange(text: string): { low: number; high: number } | null
  * willing to start at ("min"), so a range there keeps the low end and the listing stays visible
  * to every buyer who could actually transact on it. Absent a range both agree, and this is the
  * single marked-or-trailing amount as before. */
+// A trailing ISO currency CODE ("70,000 USD") is just as much a price marker as a leading
+// symbol ("$70,000") -- detectCurrency already recognizes it (matching/currency.ts), but the
+// amount regexes below didn't, so a bare "70,000 USD" answer matched neither `marked` (which
+// only ever looked for a symbol, never a code) nor `trailing` (anchored to end-of-string, and
+// the code word was the actual last token) and the whole answer was silently dropped.
+const TRAILING_CURRENCY_CODE = SUPPORTED_CURRENCIES.join("|");
+
 function extractListingAmount(text: string, reference: string | null, prefer: "max" | "min" = "max"): number | undefined {
   const range = extractListingRange(text);
   if (range) return prefer === "max" ? range.high : range.low;
   const marked = text.match(/(?:under|max(?:imum)?|budget|asking|price|for|up\s+to|(?:no\s+)?more\s+than|around|about|spend(?:ing)?|[$€£])(?:\s+is)?\s*[$€£]?\s*([\d,.]+\s*k?)/i);
-  const trailing = text.match(/(?:^|\s)([\d,.]+\s*k?)\s*$/i);
+  const trailing = text.match(new RegExp(`(?:^|\\s)([\\d,.]+\\s*k?)\\s*(?:${TRAILING_CURRENCY_CODE})?\\s*$`, "i"));
   const raw = marked?.[1] ?? trailing?.[1];
-  if (!raw || raw.toUpperCase() === reference?.toUpperCase()) return undefined;
+  if (!raw) return undefined;
+  // A digit run immediately followed by a letter, with no separating space, is a reference like
+  // "116518LN" rather than a price -- the live bug this fixes: "looking for 116518LN" matched
+  // "for" as a budget marker and read off just the digits before "LN" as if it were the amount.
+  // The exact-match guard below never caught this, because it only ever captures the digits
+  // ("116518"), never the letter suffix the reference itself carries ("116518LN") -- the two
+  // strings are never equal even though they're the same token.
+  if (new RegExp(`${raw.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[A-Za-z]`).test(text)) return undefined;
+  if (raw.toUpperCase() === reference?.toUpperCase()) return undefined;
   return normalizePriceShorthand(raw) ?? undefined;
 }
 
@@ -1905,8 +1927,14 @@ function applyNamedIdentityCorrections(p: PendingSellIntake | PendingBuyIntake, 
  *
  * The model step is deliberately not handled here — it has its own broader vocabulary
  * (NO_MODEL_PREFERENCE, which also accepts skip/none/unsure) and its own modelSkipped flag.
+ *
+ * "all" is included alongside "any" for the same reason NO_MODEL_PREFERENCE already treats them
+ * as synonyms -- the real reported bug this closes: a location reply of "all" fell through to
+ * the free-text location fallback (looksLikePlace accepts it, since it isn't a greeting/amount/
+ * account question) and got stored as the literal, meaningless location "all" instead of being
+ * recognized as "no preference" the same way "any" already is (mapped to "Global" below).
  */
-const BARE_QUALIFIER = /^(?:any|anything|either|whatever|no\s+pref(?:erence)?|don'?t\s+care|doesn'?t\s+matter|not\s+fussed)\s*[.!]*$/i;
+const BARE_QUALIFIER = /^(?:any|all|anything|either|whatever|no\s+pref(?:erence)?|don'?t\s+care|doesn'?t\s+matter|not\s+fussed)\s*[.!]*$/i;
 
 function applyBareQualifier(p: PendingSellIntake | PendingBuyIntake, text: string): boolean {
   if (!BARE_QUALIFIER.test(text.trim())) return false;
@@ -2303,7 +2331,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
 
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<PendingMatchNotification[] | undefined> {
   const p=state.pendingBuyIntake!;
-  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
+  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,year:p.year}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
     // Confirmation is the activation boundary: show what WatchFacts already has for this exact
     // request rather than making the buyer ask a second time. Runs before the draft is cleared,
     // so the search is scoped to the request they just confirmed.
@@ -2384,7 +2412,7 @@ const phoneMessageQueues = new Map<string, Promise<unknown>>();
  * that alreadyProcessed's id-based dedup can't catch) each independently called the file-based
  * getState/saveState below with no locking between them — a classic read-modify-write race.
  * Live-reported symptom: after replying "CONFIRM" to a buy-intake draft, the user got BOTH a
- * real "Potential Match" (the confirm path's own search) AND a stale "I kept your request draft
+ * real "Match ID#" card (the confirm path's own search) AND a stale "I kept your request draft
  * open... Should I start monitoring?" (a second, overlapping call that read the SAME pre-
  * confirmation state and never saw the first call's save) — two contradictory replies for one
  * action. Serializing every call through this same-phone queue means a second call's getState

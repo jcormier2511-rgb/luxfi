@@ -199,7 +199,7 @@ test("required: confirmation creates a direct FS posting and immediately matches
   // this turn's own reply has gone out; calling handleIncomingMessage directly here has to do
   // that itself.
   for (const { matchId, revision } of confirmed.pendingMatchNotifications ?? []) await notify.notifyMatch(matchId, revision);
-  assert.ok(sent.some((m)=>m.phone==="19991110000" && /Potential Match/.test(m.message)));
+  assert.ok(sent.some((m)=>m.phone==="19991110000" && /Match ID#/.test(m.message)));
 });
 
 test("required regression: FS confirmation also shows current matching WTB listings on WatchFacts, same as buy confirmation already does for FS listings", async (t) => {

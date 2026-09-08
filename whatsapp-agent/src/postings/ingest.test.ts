@@ -62,7 +62,7 @@ test("a brand-new posting that immediately matches gets the match notification i
   });
 
   assert.ok(!sent.some((s) => /monitoring this request/i.test(s.message)), "no generic ack once a match was found");
-  assert.ok(sent.some((s) => /Potential Match/.test(s.message)), "the buyer should get a match notification");
+  assert.ok(sent.some((s) => /Match ID#/.test(s.message)), "the buyer should get a match notification");
 });
 
 test("re-editing a message that still finds nothing does not re-send the acknowledgment", async (t) => {

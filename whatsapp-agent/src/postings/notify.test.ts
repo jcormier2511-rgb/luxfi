@@ -407,7 +407,7 @@ test("once both sides approve, the second approver is revealed immediately and t
   });
 
   const { matchId } = await createChatVsChatMatch("buyer-mutual-2", "seller-mutual-2");
-  sent.length = 0; // ignore the "Potential Match" notifications from matching itself
+  sent.length = 0; // ignore the "Match ID#" notifications from matching itself
 
   const first = await approveMatch(matchId, "buyer-mutual-2");
   assert.equal(first.status, "pending_confirmation");
@@ -489,7 +489,7 @@ test("a locked (trial-exhausted) approval attempt never reveals or pushes anythi
   sent.length = 0;
 
   const { matchId } = await createChatVsChatMatch(buyer, "seller-mutual-locked");
-  sent.length = 0; // clear the "Potential Match" notifications createChatVsChatMatch itself sends
+  sent.length = 0; // clear the "Match ID#" notifications createChatVsChatMatch itself sends
 
   const outcome = await approveMatch(matchId, buyer);
   assert.equal(outcome.status, "locked");
@@ -497,7 +497,7 @@ test("a locked (trial-exhausted) approval attempt never reveals or pushes anythi
   assert.equal(sent.length, 0, "a locked attempt must never reveal or push anything");
 });
 
-test("required: a buyer never receives more than maxMatchesPerListing match cards for the same WTB, even when far more candidates match — live-reported flood of near-unlimited 'Potential Match' notifications for one broad request", async (t) => {
+test("required: a buyer never receives more than maxMatchesPerListing match cards for the same WTB, even when far more candidates match — live-reported flood of near-unlimited 'Match ID#' notifications for one broad request", async (t) => {
   await resetAll();
   const sent: { phone: string; message: string }[] = [];
   t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));

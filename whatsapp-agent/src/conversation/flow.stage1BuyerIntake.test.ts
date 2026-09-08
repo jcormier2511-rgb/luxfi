@@ -309,7 +309,7 @@ test("required regression: a content-less companion listed BEFORE its real sibli
 });
 
 /**
- * Live-reported bug: a "Potential Match ... approve/pass" card reached the buyer on WhatsApp
+ * Live-reported bug: a "Match ID# ... approve/pass" card reached the buyer on WhatsApp
  * BEFORE their own "Your WTB request is active" confirmation for the very request that match
  * card was about. Root cause: the match sweep used to notify inline, deep inside
  * ingestDirectBuyPosting, well before this turn's confirmation message had even been queued —
@@ -338,9 +338,61 @@ test("required regression: the WTB confirmation is always sent before any match-
 
   await server.processIncomingMessages([{ id: "order-confirm-1", phone, text: "confirm", isGroup: false }]);
 
-  assert.ok(order.some((m) => /Potential Match/.test(m)), "precondition: confirming this exact reference must actually trigger a match-card notification");
+  assert.ok(order.some((m) => /Match ID#/.test(m)), "precondition: confirming this exact reference must actually trigger a match-card notification");
   const confirmationIndex = order.findIndex((m) => /Your WTB request is active:/.test(m));
-  const firstMatchCardIndex = order.findIndex((m) => /Potential Match/.test(m));
+  const firstMatchCardIndex = order.findIndex((m) => /Match ID#/.test(m));
   assert.ok(confirmationIndex !== -1, "the confirmation itself must be sent");
   assert.ok(confirmationIndex < firstMatchCardIndex, "the confirmation must be sent before any match-card notification, never after");
+});
+
+test('required regression: a budget answered with a trailing currency CODE ("70,000 USD") is recognized, not just a leading symbol ("$70,000") -- real reported bug', async () => {
+  const identity = fresh();
+  resetState(identity);
+  await handleIncomingMessage(identity, "hi");
+  await handleIncomingMessage(identity, "WTB pikachu daytona");
+  await handleIncomingMessage(identity, "Rolex pikachu daytona");
+  const answered = await handleIncomingMessage(identity, "70,000 USD");
+  assert.equal(getState(identity).pendingBuyIntake?.budget, 70000, "a number followed by a currency code must be recognized the same as one preceded by a $ sign");
+  assert.equal(getState(identity).pendingBuyIntake?.currency, "USD");
+  assert.doesNotMatch(answered.messages.join("\n"), /kept your request draft open|What's your maximum budget/i, "must not silently fail to parse and re-ask the same question");
+});
+
+test('required regression: a stated year is captured and carried through to the activated WTB posting -- real reported ask: "if a year is mentioned, only search for those"', async () => {
+  const identity = fresh();
+  resetState(identity);
+  await handleIncomingMessage(identity, "hi");
+  await handleIncomingMessage(identity, "WTB pikachu daytona");
+  await handleIncomingMessage(identity, "Rolex pikachu daytona 2024");
+  await handleIncomingMessage(identity, "$70,000");
+  await handleIncomingMessage(identity, "US");
+  assert.equal(getState(identity).pendingBuyIntake?.year, "2024", "the stated year must be captured into the draft");
+
+  await handleIncomingMessage(identity, "confirm");
+  const userId = await getOrCreateCanonicalUser(platformForIdentity(identity), identity);
+  const active = await getActivePostingsForUser(userId);
+  assert.equal(active.length, 1);
+  assert.equal(active[0].year, "2024", "the year must survive onto the actual activated posting, not just the in-progress draft");
+});
+
+test('required regression: a bare reference ending in a letter suffix ("116518LN") is never misread as the budget -- real reported bug: "I am looking for 116518LN" silently set Maximum: $116,518 and skipped the budget question', async () => {
+  const identity = fresh();
+  resetState(identity);
+  await handleIncomingMessage(identity, "hi");
+  const answered = await handleIncomingMessage(identity, "I am looking for 116518LN");
+  assert.equal(getState(identity).pendingBuyIntake?.reference, "116518LN");
+  assert.equal(getState(identity).pendingBuyIntake?.budget, undefined, "the digits in front of the reference's letter suffix must not be read as a price");
+  assert.equal(getState(identity).pendingBuyIntake?.step, "budget", "the budget question must still be asked, never silently skipped");
+  assert.match(answered.messages.join("\n"), /maximum budget/i);
+});
+
+test('required regression: a location reply of "all" is treated as no preference (same as "any"), not stored as the literal location "all" -- real reported ask: for location change \'all\' to \'global\'', async () => {
+  const identity = fresh();
+  resetState(identity);
+  await handleIncomingMessage(identity, "hi");
+  await handleIncomingMessage(identity, "WTB pikachu daytona");
+  await handleIncomingMessage(identity, "Rolex pikachu daytona");
+  await handleIncomingMessage(identity, "$70,000");
+  assert.equal(getState(identity).pendingBuyIntake?.step, "location");
+  await handleIncomingMessage(identity, "all");
+  assert.equal(getState(identity).pendingBuyIntake?.location, "Global", 'a bare "all" answer must map to the same "no preference" location as "any", never be stored as the literal word "all"');
 });

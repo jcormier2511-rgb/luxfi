@@ -35,7 +35,7 @@ export async function interpretDecision(text: string, matchCount: number): Promi
   return result;
 }
 
-/** One of the user's own pending "Potential Match" cards (postings/notify.ts's
+/** One of the user's own pending "Match ID#" cards (postings/notify.ts's
  *  formatMatchMessage) -- named by its counterpart's identity rather than a position, since each
  *  card is its own message (not a numbered list) and carries its own real match id already. */
 export interface PostingsDecisionOption {
@@ -59,7 +59,7 @@ export interface InterpretedPostingsDecision {
   matchId: number | null;
 }
 
-const POSTINGS_DECISION_SYSTEM = `The user has one or more pending "Potential Match" cards from Fi, each offering to connect them with a specific counterpart and asking them to reply "approve <id>" or "pass <id>" -- but people often answer more naturally instead ("yes, connect me with the seller", "let's do it", "not interested", "connect me with ABC Watches").
+const POSTINGS_DECISION_SYSTEM = `The user has one or more pending "Match ID#" cards from Fi, each offering to connect them with a specific counterpart and asking them to reply "approve <id>" or "pass <id>" -- but people often answer more naturally instead ("yes, connect me with the seller", "let's do it", "not interested", "connect me with ABC Watches").
 Rules:
 - action is "approve" if they want to connect/proceed/accept one of the listed matches, "pass" if they want to skip/decline one, or null if the message isn't actually a decision about one of the listed matches at all (a new search, a greeting, a question, small talk).
 - matchId is the id of the SPECIFIC match listed below that they mean, if identifiable (e.g. by counterpart name, brand, or model named in their reply). Use null if no specific match is identifiable from the text alone (e.g. a bare "yes"/"pass" with only one match listed, or nothing to distinguish which one among several).

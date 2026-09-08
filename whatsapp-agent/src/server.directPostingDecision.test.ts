@@ -74,7 +74,7 @@ async function seedMatch(t: TestContext, sellerPhone: string) {
   // this turn's own reply has gone out; a direct call here has to do that itself.
   for (const { matchId, revision } of result.pendingNotifications) await notify.notifyMatch(matchId, revision);
 
-  const sellerMsg = sent.find((s) => s.phone === sellerPhone && /Potential Match/.test(s.message));
+  const sellerMsg = sent.find((s) => s.phone === sellerPhone && /Match ID#/.test(s.message));
   assert.ok(sellerMsg, "the direct-posting seller must be notified even with ENABLE_V4_POSTINGS unset");
   const matchId = Number(sellerMsg!.message.match(/approve (\d+)/)?.[1]);
   assert.ok(Number.isInteger(matchId), "the match message must carry a numeric match id");
@@ -177,7 +177,7 @@ test("required (privacy): approving a direct-posting match never leaks the other
   });
   for (const { matchId, revision } of result.pendingNotifications) await notify.notifyMatch(matchId, revision);
 
-  const sellerMsg = sent.find((s) => s.phone === sellerPhone && /Potential Match/.test(s.message));
+  const sellerMsg = sent.find((s) => s.phone === sellerPhone && /Match ID#/.test(s.message));
   assert.ok(sellerMsg);
   assert.doesNotMatch(sellerMsg!.message, new RegExp(buyerPhone), "the initial match card must never leak the buyer's raw phone number");
   const matchId = Number(sellerMsg!.message.match(/approve (\d+)/)?.[1]);

@@ -439,3 +439,24 @@ test("cross-currency budgets are converted before comparison", async (t) => {
   assert.ok(await matching.scoreMatchWithCurrency(fs, enough));
   assert.equal(await matching.scoreMatchWithCurrency(fs, tooLow), null);
 });
+
+test('required regression: a well-known nickname ("Pikachu") in the WTB\'s stated model must not reject a match against an FS listing recorded under the plain model name -- real reported bug: "Rolex pikachu daytona" found nothing even though matching Pikachu Daytona listings existed', () => {
+  const wtb = posting({ type: "WTB", brand: "Rolex", model: "Pikachu Daytona" });
+  const fs = posting({ brand: "Rolex", model: "Daytona" });
+  assert.ok(scoreMatch(fs, wtb), "the nickname must be stripped before comparing, not required to appear verbatim in the FS listing's own model field");
+});
+
+test("required: nickname stripping applies to either side, and a genuinely different model is still rejected", () => {
+  const baseWtb = posting({ type: "WTB", brand: "Rolex", model: "Daytona" });
+  assert.ok(scoreMatch(posting({ brand: "Rolex", model: "Pikachu Daytona" }), baseWtb), "an FS listing's own model carrying the nickname must also match a WTB that named the plain model");
+  assert.equal(scoreMatch(posting({ brand: "Rolex", model: "Pikachu Explorer" }), baseWtb), null, "stripping a nickname must never let a genuinely different model through");
+});
+
+test("required regression: a stated year is a hard constraint, the same as reference/dial/condition -- real reported ask: \"if a year is mentioned, only search for those\"", () => {
+  const baseWtb = posting({ type: "WTB", reference: "116500LN", year: "2024" });
+  assert.equal(scoreMatch(posting({ reference: "116500LN", year: "2020" }), baseWtb), null, "a different stated year must reject the match");
+  assert.ok(scoreMatch(posting({ reference: "116500LN", year: "2024" }), baseWtb), "the same stated year must still match");
+  assert.ok(scoreMatch(posting({ reference: "116500LN", year: "" }), baseWtb), "an FS listing that never recorded a year is unknown, not conflicting, and must not be excluded");
+  const wtbNoYear = posting({ type: "WTB", reference: "116500LN" });
+  assert.ok(scoreMatch(posting({ reference: "116500LN", year: "2019" }), wtbNoYear), "a WTB that never stated a year at all must not filter by year, regardless of what the FS listing recorded");
+});

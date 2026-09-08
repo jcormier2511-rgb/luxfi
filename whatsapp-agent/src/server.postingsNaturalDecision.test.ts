@@ -6,7 +6,7 @@ import path from "path";
 
 /**
  * Live-reported: replying "Yes, connect me with the seller" (or naming the seller) to a
- * "Potential Match ... approve/pass <id>" card did nothing — only the literal "approve <id>"/
+ * "Match ID# ... approve/pass <id>" card did nothing — only the literal "approve <id>"/
  * "pass <id>" format was ever recognized for the postings-based match system. A natural-language
  * fallback already existed for the OLDER, in-session numbered-match-list flow (conversation/
  * flow.ts's interpretDecision), but nothing equivalent covered these match cards at all.
@@ -85,7 +85,7 @@ async function seedMatch(t: TestContext, sellerPhone: string): Promise<{ matchId
   });
   for (const { matchId, revision } of result.pendingNotifications) await notify.notifyMatch(matchId, revision);
 
-  const sellerMsg = sent.find((s) => s.phone === sellerPhone && /Potential Match/.test(s.message));
+  const sellerMsg = sent.find((s) => s.phone === sellerPhone && /Match ID#/.test(s.message));
   assert.ok(sellerMsg, "precondition: the seller must actually be notified of a pending match");
   const matchId = Number(sellerMsg!.message.match(/approve (\d+)/)?.[1]);
   assert.ok(Number.isInteger(matchId), "precondition: the match message must carry a numeric match id");
