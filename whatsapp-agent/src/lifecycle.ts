@@ -63,9 +63,9 @@ async function currentMatches(posting:PostingRow, all:PostingRow[]):Promise<numb
 function title(p:PostingRow){ return [p.type,"—",p.brand,p.model,p.reference,p.dial].filter(Boolean).join(" "); }
 export function formatBriefing(firstName:string|null, summaries:{posting:PostingRow;count:number;newCount:number;hasPrior:boolean}[], omitted=0):string {
   const greeting=`Good morning${firstName?`, ${firstName}`:""}. Here’s your Fi update:`;
-  const blocks=summaries.map(({posting:p,count,newCount,hasPrior})=>`${title(p)}\n${count===0?"No active matches yet.":`${count} active ${p.type==="WTB"?"sellers":"buyers"} currently match your ${p.type==="WTB"?"request":"listing"}${hasPrior&&newCount>0?`\n+${newCount} new since yesterday`:""}`}`);
+  const blocks=summaries.map(({posting:p,count,newCount,hasPrior},i)=>`${i+1}. ${title(p)}\n${count===0?"No active matches yet.":`${count} active ${p.type==="WTB"?"sellers":"buyers"} currently match your ${p.type==="WTB"?"request":"listing"}${hasPrior&&newCount>0?`\n+${newCount} new since yesterday`:""}`}`);
   if(omitted) blocks.push(`Plus ${omitted} more active task${omitted===1?"":"s"} I’m monitoring.`);
-  return `${greeting}\n\n${blocks.join("\n\n")}\n\n${summaries.some(s=>s.count)?"I’ll keep working 24/7 and let you know when I find strong new opportunities.":"I’m still monitoring for you."}`;
+  return `${greeting}\n\n${blocks.join("\n\n")}\n\n${summaries.some(s=>s.count)?"I’ll keep working 24/7 and let you know when I find strong new opportunities.":"I’m still monitoring for you."}\n\nYou can also check current listings anytime at watchfacts.com.`;
 }
 
 export async function runMorningBriefings(now=new Date()):Promise<{sent:number;skipped:number}> {
