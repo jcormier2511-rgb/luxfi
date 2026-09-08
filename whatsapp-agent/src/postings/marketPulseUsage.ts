@@ -55,6 +55,12 @@ export async function getMarketPulseUsage(phone: string): Promise<MarketPulseUsa
     const isComplimentary = totalLookups < config.trial.maxMarketPulseLookups;
     const weeklyLimit = entitlement.manualOverrideEnabled ? null : entitlement.plan ? config.marketPulse.weeklyLimit : 0;
     const weeklyUsed = !isComplimentary && weeklyLimit !== null ? await getWeeklyMarketPulseCount(pool, canonicalUserId) : 0;
+    // Diagnostic only — a live-reported bug showed the trial note stuck at "0 of 3 free
+    // look-ups left" across several consecutive calls instead of blocking on the 4th, which
+    // could only happen if canonicalUserId resolves differently between calls from what looks
+    // like the same phone, or the increment in recordMarketPulseLookup below silently didn't
+    // persist. This makes both visible in the logs the next time it happens.
+    console.log(`[market-pulse-usage] phone=${phone} canonicalUserId=${canonicalUserId} totalLookups=${totalLookups} isComplimentary=${isComplimentary} weeklyLimit=${weeklyLimit} weeklyUsed=${weeklyUsed}`);
     return { canonicalUserId, totalLookups, isComplimentary, weeklyLimit, weeklyUsed };
   });
 }
@@ -73,7 +79,14 @@ export function evaluateMarketPulseGate(usage: MarketPulseUsageSnapshot): Market
 export async function recordMarketPulseLookup(canonicalUserId: number, isComplimentary: boolean): Promise<void> {
   return withSchema(async (pool) => {
     await pool.query(`INSERT INTO market_pulse_lookups (canonical_user_id, is_complimentary) VALUES ($1,$2)`, [canonicalUserId, isComplimentary]);
-    await pool.query(`UPDATE canonical_users SET total_market_pulse_count = total_market_pulse_count + 1 WHERE id=$1`, [canonicalUserId]);
+    const updated = await pool.query(
+      `UPDATE canonical_users SET total_market_pulse_count = total_market_pulse_count + 1 WHERE id=$1 RETURNING total_market_pulse_count`,
+      [canonicalUserId]
+    );
+    // Diagnostic only — see getMarketPulseUsage above. "rows=0" would mean canonicalUserId
+    // didn't match any canonical_users row at all, which would explain the counter never
+    // advancing even though every individual call reports success.
+    console.log(`[market-pulse-usage] recorded look-up for canonicalUserId=${canonicalUserId}, rows=${updated.rowCount}, new total=${updated.rows[0]?.total_market_pulse_count ?? "N/A"}`);
   });
 }
 
@@ -86,6 +99,10 @@ export function formatMarketPulseUsageNote(usage: MarketPulseUsageSnapshot, gate
   if (!gate.allowed) return "";
   if (gate.isComplimentary) {
     const remaining = Math.max(0, config.trial.maxMarketPulseLookups - (usage.totalLookups + 1));
+    // This call itself just spent the last complimentary look-up -- surface the upgrade offer
+    // now, on this same reply, rather than silently saying "0 of 3 left" and only mentioning
+    // upgrading once the customer tries again and gets blocked.
+    if (remaining === 0) return `\n\n${config.fiFlow.marketPulseNoPlanMessage(config.trial.maxMarketPulseLookups)}`;
     return `\n\n(Market Pulse: ${remaining} of ${config.trial.maxMarketPulseLookups} free look-ups left in your trial.)`;
   }
   if (usage.weeklyLimit === null) return "";

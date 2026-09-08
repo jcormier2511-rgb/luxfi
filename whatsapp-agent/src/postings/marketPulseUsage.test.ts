@@ -173,7 +173,8 @@ test("formatMarketPulseUsageNote: advises usage on every allowed reply, not only
     { canonicalUserId: 1, totalLookups: 2, isComplimentary: true, weeklyLimit: 0, weeklyUsed: 0 },
     { allowed: true, isComplimentary: true }
   );
-  assert.match(lastFreeOne, /0 of 3 free look-ups left/);
+  assert.match(lastFreeOne, /used your 3 free Market Pulse look-ups/i, "the exhausting call surfaces the upgrade offer immediately, not a plain '0 of 3 left' note");
+  assert.match(lastFreeOne, /"join"/, "must name the actual word to say, same as the blocked-attempt message");
 
   const memberNote = formatMarketPulseUsageNote(
     { canonicalUserId: 1, totalLookups: 3, isComplimentary: false, weeklyLimit: 10, weeklyUsed: 4 },
