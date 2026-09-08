@@ -240,7 +240,7 @@ test("the reported interview completes with 'any' answered to every question", a
   const draft = getState(phone).pendingBuyIntake!;
   assert.equal(draft.step, "confirm", "answering every question must finish the interview");
   assert.equal(draft.condition, "pre-owned", "condition is no longer its own asked step -- defaults silently rather than being set by a bare qualifier");
-  assert.equal(draft.location, "any");
+  assert.equal(draft.location, "Global");
 });
 
 const BARE_QUALIFIERS = ["any", "either", "no preference", "doesn't matter", "whatever"];
@@ -257,7 +257,7 @@ for (const qualifier of BARE_QUALIFIERS) {
 
     await handleIncomingMessage(phone, qualifier);
     const draft = getState(phone).pendingBuyIntake!;
-    assert.equal(draft.location, "any", `"${qualifier}" must answer location`);
+    assert.equal(draft.location, "Global", `"${qualifier}" must answer location`);
     assert.equal(draft.step, "confirm", "and must not re-ask it");
   });
 }

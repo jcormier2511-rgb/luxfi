@@ -379,6 +379,26 @@ test("the first side to approve a real chat-vs-chat match gets pending_confirmat
   assert.equal(outcome.counterpart, undefined, "must not reveal the counterpart's contact info before they've also confirmed");
 });
 
+test("required (privacy): a private WhatsApp user's own phone number is never shown as an 'identity' before approval — real reported bug, since contact_name falls back to the raw phone when no display name was ever captured", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+
+  const buyerPhone = "15551234567";
+  const sellerPhone = "15557654321";
+  const { matchId } = await createChatVsChatMatch(buyerPhone, sellerPhone);
+
+  const potentialMatchCards = sent.map((s) => s.message);
+  for (const card of potentialMatchCards) {
+    assert.doesNotMatch(card, new RegExp(buyerPhone), "the very first match card must never leak a counterpart's raw phone number");
+    assert.doesNotMatch(card, new RegExp(sellerPhone), "the very first match card must never leak a counterpart's raw phone number");
+  }
+
+  const outcome = await approveMatch(matchId, buyerPhone);
+  assert.equal(outcome.status, "pending_confirmation");
+  assert.equal(outcome.match?.identity, undefined, "no display name was ever captured, so the fallback (the raw phone) must not be surfaced as an identity");
+});
+
 test("once both sides approve, the second approver is revealed immediately and the first is sent a one-time introduction", async (t) => {
   await resetAll();
   const sent: { phone: string; message: string }[] = [];

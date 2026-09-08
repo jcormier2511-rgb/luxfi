@@ -421,6 +421,14 @@ test("location is informational only and never gates a match — inventory ships
   assert.ok(scoreMatch({ ...baseFs, location: "" }, baseWtb), "a listing with no location recorded must not block a match either");
 });
 
+test("required regression: a genuine cross-continent location mismatch rejects the match, even on an exact reference — real reported bug: a buyer who stated USA was shown an FS listing recorded as Asia", () => {
+  const baseWtb = posting({ type: "WTB", reference: "116500LN", location: "USA" });
+  assert.equal(scoreMatch(posting({ reference: "116500LN", location: "Asia" }), baseWtb), null, "USA vs Asia is a real, known-different continent, not a granularity gap");
+  assert.equal(scoreMatch(posting({ reference: "116500LN", location: "Hong Kong" }), baseWtb), null, "a specific country/city that itself resolves to Asia must reject just the same");
+  assert.ok(scoreMatch(posting({ reference: "116500LN", location: "North America" }), baseWtb), "same-region (USA vs North America) must still match");
+  assert.ok(scoreMatch(posting({ reference: "116500LN", location: "Miami" }), baseWtb), "an unrecognized city on the FS side must never be treated as a region conflict");
+});
+
 test("cross-currency budgets are converted before comparison", async (t) => {
   const currency = require("../matching/currency") as typeof import("../matching/currency");
   currency.setExchangeRateProviderForTests(async (code) => code === "EUR" ? 1.2 : null);

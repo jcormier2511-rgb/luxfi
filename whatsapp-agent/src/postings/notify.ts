@@ -151,9 +151,23 @@ export interface MatchPresentation {
   activeGroupCount?: number;
 }
 
+/**
+ * A dealer/business name ("ABC Watches") is fine to surface before either side has approved —
+ * it's already public. A private WhatsApp user's contact_name falls back to their raw phone
+ * number when no display name was ever captured (see postingsStore.ts's `senderName || phone`),
+ * and that number must never be shown pre-approval — the real reported bug this guards against
+ * was a buyer's/seller's own phone number appearing in the very first "Potential Match" card,
+ * before they had any chance to decide whether to connect at all. A digit-only string can never
+ * be a real display name, so this is a safe, simple filter rather than a phone-format parser.
+ */
+function isRealDisplayName(value: string): boolean {
+  return /[a-zA-Z]/.test(value);
+}
+
 function presentationFor(posting: PostingRow, photoUrl?: string | null, activeGroupCount?: number): MatchPresentation {
+  const rawIdentity = posting.contact_name || posting.source_identity || undefined;
   return {
-    identity: posting.contact_name || posting.source_identity || undefined,
+    identity: rawIdentity && isRealDisplayName(rawIdentity) ? rawIdentity : undefined,
     brand: posting.brand || undefined,
     model: posting.model || undefined,
     reference: posting.reference || undefined,

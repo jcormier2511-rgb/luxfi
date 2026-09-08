@@ -15,6 +15,7 @@ import {
   isOnlyNonModelLanguage,
   splitLeadingBrand,
   containsKnownBrand,
+  regionsConflict,
 } from "./normalize";
 
 test("classifyText recognizes FS keywords", () => {
@@ -351,4 +352,13 @@ test("required regression: a year stated before the reference is not mistaken fo
   // A bare year-shaped token IS still the reference when it's the only reference-shaped thing in
   // the message — vintage Rolex references (e.g. 1016, the Explorer) genuinely look like a year.
   assert.equal(extractReference("Rolex 1016 for sale"), "1016");
+});
+
+test("regionsConflict: only a genuine, known-different continent counts as a conflict", () => {
+  assert.equal(regionsConflict("USA", "Asia"), true);
+  assert.equal(regionsConflict("USA", "Hong Kong"), true, "a specific country/city resolves to its own broad region too");
+  assert.equal(regionsConflict("USA", "North America"), false, "an alias and its own bucket are the same region");
+  assert.equal(regionsConflict("Miami", "North America"), false, "an unrecognized city is never confidently placed in any region, so it can't conflict");
+  assert.equal(regionsConflict("Miami", "Asia"), false, "same — an unrecognized value on either side never conflicts");
+  assert.equal(regionsConflict("", "Asia"), false, "a blank location can never conflict");
 });

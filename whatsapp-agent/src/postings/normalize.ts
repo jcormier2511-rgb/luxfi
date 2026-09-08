@@ -179,6 +179,44 @@ export function splitLeadingBrand(text: string): { brand: string | null; rest: s
   return { brand, rest: trimmed.slice(brand.length).trim() };
 }
 
+// Broad continent/region classification used to reject a genuine cross-continent location
+// mismatch (postings/matching.ts) without ever penalizing an ordinary city-vs-country/region
+// granularity gap. WatchFacts' own `location` field is usually continent-level ("North
+// America"/"Asia"/"Europe", see watchfacts/api.ts) or a specific country/city ("Hong Kong",
+// "Singapore") that still resolves to one of those broad buckets; a buyer's stated location is
+// free text ("USA", "Miami", "UK/EU") that may or may not resolve to a known bucket at all. Only
+// a location that DOES resolve to a known bucket ever participates in a region comparison — an
+// unrecognized value (a bare city name never bucketed here) is never treated as conflicting with
+// anything, since there's no confident basis for it (the real reported bug this exists to catch
+// was a stated "USA" matched against an FS listing recorded as "Asia" — the opposite side of the
+// world, not a granularity gap).
+const REGION_ALIASES: Record<string, string> = {
+  usa: "north america", us: "north america", "u.s.": "north america", "u.s.a.": "north america",
+  "united states": "north america", america: "north america", canada: "north america", mexico: "north america",
+  uk: "europe", "united kingdom": "europe", england: "europe", eu: "europe", switzerland: "europe",
+  "hong kong": "asia", hk: "asia", singapore: "asia", sg: "asia", japan: "asia", china: "asia", "mainland china": "asia",
+  australia: "oceania", "new zealand": "oceania",
+  uae: "middle east", dubai: "middle east", "united arab emirates": "middle east",
+  brazil: "south america",
+};
+const KNOWN_REGIONS = new Set(["north america", "south america", "europe", "asia", "middle east", "africa", "oceania"]);
+
+/** Resolves free-text location to one of the broad buckets above, or null when it can't be
+ *  confidently placed in any of them (a bare city name, an unrecognized country, etc). */
+function canonicalRegion(raw: string): string | null {
+  const normalized = raw.trim().toLowerCase();
+  const mapped = REGION_ALIASES[normalized] ?? normalized;
+  return KNOWN_REGIONS.has(mapped) ? mapped : null;
+}
+
+/** True only when both locations resolve to a KNOWN broad region and those regions differ — see
+ *  canonicalRegion above for why an unmapped value never counts as a conflict. */
+export function regionsConflict(a: string, b: string): boolean {
+  const ra = canonicalRegion(a);
+  const rb = canonicalRegion(b);
+  return ra !== null && rb !== null && ra !== rb;
+}
+
 export type PostingType = "FS" | "WTB";
 
 /**

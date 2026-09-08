@@ -1,7 +1,7 @@
 import { withSchema } from "./db";
 import { PostingRow, findOppositeSideCandidates, isEligible } from "./postingsStore";
 import { notifyMatch } from "./notify";
-import { normalizeReference, referencesMatch } from "./normalize";
+import { normalizeReference, referencesMatch, regionsConflict } from "./normalize";
 import { convertMoneyToUsd } from "../matching/currency";
 
 export interface ScoreResult {
@@ -71,11 +71,15 @@ export function scoreMatch(fs: PostingRow, wtb: PostingRow): ScoreResult | null 
     if (fs.condition && canonical(fs.condition) !== requestedCondition) return null;
     if (fs.condition) reasons.push(`Condition: ${wtb.condition}`);
   }
-  // Location is informational only, never a match gate — inventory routinely ships nationally/
-  // internationally, and FS listings are tagged with broad regions (e.g. "North America") while
-  // a WTB request typically names a city, so exact-string comparison would reject a real match
-  // over a granularity mismatch rather than an actual location conflict.
+  // Location is informational for an ordinary granularity gap — inventory routinely ships
+  // nationally/internationally, and FS listings are tagged with broad regions (e.g. "North
+  // America") while a WTB request typically names a city, so exact-string comparison would
+  // reject a real match over nothing but that mismatch. A genuine cross-continent conflict (a
+  // stated "USA" against an FS listing recorded as "Asia") is different — that's an actual,
+  // known-different location, not a granularity gap, so it does reject the match. See
+  // regionsConflict for why an unrecognized value (a bare city name) is never treated as one.
   if (fs.location && wtb.location) {
+    if (regionsConflict(fs.location, wtb.location)) return null;
     reasons.push(`FS in ${fs.location}, requested ${wtb.location}`);
   }
 

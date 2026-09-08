@@ -150,6 +150,43 @@ test("approval replies identify the exact presented match and its available deta
   assert.match(reply, /Miami, USA/);
 });
 
+test("required (privacy): approving a direct-posting match never leaks the other side's raw phone number before they've also confirmed", async (t) => {
+  assert.equal(config.postingsV4.enabled, false);
+  await db._resetDbForTests();
+  const sellerPhone = "19990000006";
+  const buyerPhone = "19990000007";
+  const sent = mockSends(t);
+  // No senderName given — contact_name falls back to the raw phone (see postingsStore.ts's
+  // `senderName || senderIdentity`), the real reported bug: a first-time buyer with no captured
+  // WhatsApp display name had their own phone number echoed straight back to them as an
+  // "identity" in the seller's pending-confirmation reply, before the buyer had ever agreed to
+  // connect with anyone.
+  await ingestChatPosting({
+    platform: "whatsapp",
+    chatId: "group-1",
+    messageId: "wtb-privacy-1",
+    senderIdentity: buyerPhone,
+    text: "WTB Rolex Submariner 116610LV budget $16,000",
+  });
+  const result = await ingestDirectSellPosting({
+    phone: sellerPhone,
+    senderName: "Seller",
+    description: "Rolex Submariner 116610LV",
+    reference: "116610LV",
+    price: 14500,
+  });
+  for (const { matchId, revision } of result.pendingNotifications) await notify.notifyMatch(matchId, revision);
+
+  const sellerMsg = sent.find((s) => s.phone === sellerPhone && /Potential Match/.test(s.message));
+  assert.ok(sellerMsg);
+  assert.doesNotMatch(sellerMsg!.message, new RegExp(buyerPhone), "the initial match card must never leak the buyer's raw phone number");
+  const matchId = Number(sellerMsg!.message.match(/approve (\d+)/)?.[1]);
+
+  const reply = await tryHandleDirectPostingDecision(sellerPhone, `approve ${matchId}`);
+  assert.ok(reply);
+  assert.doesNotMatch(reply!, new RegExp(buyerPhone), "the pending-confirmation reply must never leak the buyer's raw phone number either");
+});
+
 test("tryHandleDirectPostingDecision falls through (returns null) for a phone with no direct-sourced posting on the match", async (t) => {
   assert.equal(config.postingsV4.enabled, false);
   await db._resetDbForTests();

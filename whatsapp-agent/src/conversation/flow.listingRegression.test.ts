@@ -277,7 +277,7 @@ test("first contact intro is shared by Telegram and WhatsApp identities and sent
   }
 });
 
-test("current WatchFacts command uses active opposite-side inventory, deduplicates, and caps at five", async (t) => {
+test("current WatchFacts command uses active opposite-side inventory, deduplicates, and caps at three", async (t) => {
   const phone = "15550002011"; resetState(phone);
   await handleIncomingMessage(phone, "WTB Rolex Daytona 126500LN for 40000");
   const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
@@ -289,9 +289,9 @@ test("current WatchFacts command uses active opposite-side inventory, deduplicat
   rows.splice(1, 0, { ...rows[0], id: "duplicate" });
   t.mock.method(inventory, "getActiveListings", async (type?: "FS" | "WTB") => rows.filter((row) => !type || row.type === type));
   const result = await handleIncomingMessage(phone, "show current listings");
-  assert.match(result.messages.at(-1)!, /5 current WatchFacts listings/);
+  assert.match(result.messages.at(-1)!, /3 current WatchFacts listings/);
   assert.match(result.messages.at(-1)!, /126500LN/);
-  assert.doesNotMatch(result.messages.at(-1)!, /6\. /);
+  assert.doesNotMatch(result.messages.at(-1)!, /4\. /);
 });
 
 test("required regression: a stated budget/ask on the current-listings step is a real constraint — a $25,000 budget must not surface $29,500+ listings", async (t) => {

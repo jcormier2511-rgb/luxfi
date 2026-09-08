@@ -798,7 +798,7 @@ async function handleCurrentInventoryCommand(state: ConversationState, text: str
     })
     .sort((a, b) => b.score - a.score)
     .map((r) => r.listing)
-    .slice(0, 5);
+    .slice(0, 3);
   const label = [context.brand, context.model, explicitReference || context.reference].filter(Boolean).join(" ") || "this request";
   return formatCurrentInventory(relevant, label);
 }
@@ -1601,7 +1601,7 @@ async function handleNaturalFollowUpAnswer(state: ConversationState, text: strin
 const SELL_DETAILS_QUESTION = "Tell me a bit more about what you're selling — brand, model, and reference number if you have it.";
 const SELL_PRICE_QUESTION = "What's your asking price?";
 const SELL_LOCATION_QUESTION = "Where is the watch located? (city or country)";
-const BUY_LOCATION_QUESTION = "Any location preference? (city or country, or say any)";
+const BUY_LOCATION_QUESTION = "Any location preference? (country, or say any)";
 const BUY_BUDGET_QUESTION = "What's your maximum budget?";
 const DIAL_INTAKE_QUESTION = "Do you prefer the black dial, white dial, or either?";
 const SELL_PHOTO_QUESTION = 'Would you like to attach a photo? Send it now, or reply "skip" or "no photo".';
@@ -1911,7 +1911,7 @@ const BARE_QUALIFIER = /^(?:any|anything|either|whatever|no\s+pref(?:erence)?|do
 function applyBareQualifier(p: PendingSellIntake | PendingBuyIntake, text: string): boolean {
   if (!BARE_QUALIFIER.test(text.trim())) return false;
   if (p.step === "dial") { p.dialColor = "either"; return true; }
-  if (p.step === "location") { p.location = "any"; return true; }
+  if (p.step === "location") { p.location = "Global"; return true; }
   return false;
 }
 
