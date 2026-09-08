@@ -54,7 +54,16 @@ const PRICE_PATTERN = new RegExp(
 // Up to FOUR trailing letters: Rolex's current GMT/Daytona/Sub families end in four
 // ("126710BLRO", "126711CHNR", "126720VTNR") and were not recognised as references at all with
 // a three-letter cap — a dealer's "Need these three: 116500LN, 126710BLRO, 5712G" lost one.
-const REFERENCE_PATTERN = /(?<!\$\s?)\b(\d{4,6}[A-Z]{0,4}(?:[-/.][A-Z0-9]+)*|\d{3}(?:\.[A-Z0-9]+){2,})\b/i;
+// Live-reported: a real A. Lange & Söhne reference ("191.039") is 3 digits + a SINGLE dot-group
+// -- neither existing alternative matched it (the first requires a 4-6 digit lead, the second
+// requires 2+ dot-groups), so it was never recognized as a reference at all. With no reference
+// extracted, extractListingAmount's bare-trailing-number fallback (nothing else claims it) then
+// misread it as a PRICE -- $191,039 -- which then leaked into a later, unrelated draft once the
+// user typed a brand it actually recognized. Added as its own alternative (3 digits, one
+// dot-group of 2-4 alphanumerics) rather than loosening the 2-group alternative, so a genuine
+// 3-part reference still requires 2+ groups and this doesn't also start swallowing a bare
+// European-formatted price like "250.000" typed with no other digits around it.
+const REFERENCE_PATTERN = /(?<!\$\s?)\b(\d{4,6}[A-Z]{0,4}(?:[-/.][A-Z0-9]+)*|\d{3}(?:\.[A-Z0-9]+){2,}|\d{3}\.[A-Z0-9]{2,4})\b/i;
 const BRAND_LIST = [
   "rolex",
   "patek philippe",
@@ -69,6 +78,25 @@ const BRAND_LIST = [
   "vacheron constantin",
   "tudor",
   "omega",
+  "a. lange & söhne",
+  "a. lange & sohne",
+  "lange & söhne",
+  "lange",
+  "breitling",
+  "jaeger-lecoultre",
+  "jaeger lecoultre",
+  "zenith",
+  "chopard",
+  "piaget",
+  "blancpain",
+  "hublot",
+  "franck muller",
+  "girard-perregaux",
+  "breguet",
+  "grand seiko",
+  "bvlgari",
+  "bulgari",
+  "ulysse nardin",
 ];
 
 /**

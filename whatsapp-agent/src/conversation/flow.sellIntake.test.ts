@@ -397,3 +397,19 @@ test("known limitation: a phrasing that never states a reference number or the b
   assert.doesNotMatch(text, /MARKET GUIDE/);
   assert.equal(result.state.pendingSellIntake?.reference, undefined);
 });
+
+test('required regression: an A. Lange & Söhne reference ("191.039") is recognized immediately, never misread as a price that could leak into a later, unrelated draft', async (t) => {
+  const phone = "19992220026"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests(); mockSends(t);
+  await handleIncomingMessage(phone, "hi");
+  const result = await handleIncomingMessage(phone, "WTS Lange 1 191.039");
+  assert.equal(result.state.pendingSellIntake?.reference, "191.039", 'the reference must be recognized, not swallowed as an unrecognized "brand"');
+  assert.equal(result.state.pendingSellIntake?.price, undefined, "no price was ever stated -- it must not be invented from the reference");
+  assert.equal(result.state.pendingSellIntake?.step, "price", "brand + reference recognized -> straight to the price question, not stuck re-asking for details");
+
+  // Live-reported failure: a second, unrelated watch (a brand Fi DOES recognize) sent while still
+  // mid-draft must never let the FIRST watch's misread reference become the second watch's price.
+  const pivot = await handleIncomingMessage(phone, "Patek Philippe 5167A");
+  assert.equal(pivot.state.pendingSellIntake?.reference, "191.039", "an unscoped reply at the price step must not silently replace the identity already captured");
+  const priced = await handleIncomingMessage(phone, "$85,000");
+  assert.equal(priced.state.pendingSellIntake?.price, 85000, "the stated price must be the one actually typed, never 191039");
+});

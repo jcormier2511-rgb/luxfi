@@ -657,6 +657,11 @@ function displayBrand(value?: string | null): string {
     rolex: "Rolex", omega: "Omega", cartier: "Cartier", tudor: "Tudor", panerai: "Panerai", iwc: "IWC",
     patek: "Patek", "patek philippe": "Patek Philippe", "audemars piguet": "Audemars Piguet",
     "richard mille": "Richard Mille", "vacheron constantin": "Vacheron Constantin", hermes: "Hermes", "hermès": "Hermès",
+    "a. lange & söhne": "A. Lange & Söhne", "a. lange & sohne": "A. Lange & Söhne", "lange & söhne": "A. Lange & Söhne", lange: "A. Lange & Söhne",
+    breitling: "Breitling", "jaeger-lecoultre": "Jaeger-LeCoultre", "jaeger lecoultre": "Jaeger-LeCoultre",
+    zenith: "Zenith", chopard: "Chopard", piaget: "Piaget", blancpain: "Blancpain", hublot: "Hublot",
+    "franck muller": "Franck Muller", "girard-perregaux": "Girard-Perregaux", breguet: "Breguet",
+    "grand seiko": "Grand Seiko", bvlgari: "Bvlgari", bulgari: "Bulgari", "ulysse nardin": "Ulysse Nardin",
   };
   return value ? (brandNames[value.trim().toLowerCase()] ?? value.trim()) : "";
 }

@@ -14,6 +14,7 @@ import {
   isOnlyIntentLanguage,
   isOnlyNonModelLanguage,
   splitLeadingBrand,
+  containsKnownBrand,
 } from "./normalize";
 
 test("classifyText recognizes FS keywords", () => {
@@ -157,6 +158,25 @@ test("normalizeText never captures a $-prefixed price as the reference field", (
 test("required regression: extractReference handles references with periods and chained separators", () => {
   assert.equal(extractReference("Patek Nautilus 3510.50"), "3510.50");
   assert.equal(extractReference("Patek 5712/1A-001 steel"), "5712/1A-001");
+});
+
+test('required regression: extractReference recognizes a 3-digit A. Lange & Söhne reference ("191.039"), never misread as a price', () => {
+  assert.equal(extractReference("Lange 1 191.039"), "191.039");
+  assert.equal(extractReference("A. Lange & Söhne Lange 1 191.039"), "191.039");
+  assert.equal(extractReference("WTS Lange 1 191.039"), "191.039");
+  // Still requires 2+ dot-groups to treat a 3-digit lead as a chained reference -- a single
+  // group is this new alternative's own job, so the two must not double-match or diverge.
+  assert.equal(extractReference("716.079"), "716.079");
+});
+
+test("required regression: previously-missing luxury brands are recognized (live-reported: A. Lange & Söhne got stuck in an endless \"tell me more\" loop)", () => {
+  for (const text of ["Lange 1 191.039", "A. Lange & Söhne Lange 1 191.039", "A. Lange & Sohne Lange 1 191.039"]) {
+    assert.ok(containsKnownBrand(text), `must recognize a brand in "${text}"`);
+    assert.ok(splitLeadingBrand(text).brand?.includes("lange"), `"${text}" must split to a recognized Lange brand string, got: ${splitLeadingBrand(text).brand}`);
+  }
+  for (const brand of ["Breitling", "Jaeger-LeCoultre", "Zenith", "Chopard", "Piaget", "Blancpain", "Hublot", "Franck Muller", "Girard-Perregaux", "Breguet", "Grand Seiko", "Bulgari", "Ulysse Nardin"]) {
+    assert.ok(containsKnownBrand(`${brand} reference 12345`), `must recognize ${brand} as a known brand`);
+  }
 });
 
 test("referencesMatch: a bare base reference matches a suffixed variant of the same watch", () => {
