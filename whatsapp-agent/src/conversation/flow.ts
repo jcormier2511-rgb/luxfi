@@ -2593,7 +2593,31 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   const marketReference = parseMarketReferenceCommand(commandText);
   const isMarketOverview = !marketReference && MARKET_OVERVIEW_COMMAND.test(commandText);
   const isMarketBriefingOrPulse = !marketReference && !isMarketOverview && MARKET_COMMAND.test(commandText);
-  if (marketReference || isMarketOverview || isMarketBriefingOrPulse) {
+  // Live-reported gap: MARKET_REFERENCE_COMMAND is a narrow, fixed set of trigger words
+  // ("market"/"pulse"/"price"/"what's the market for") — genuinely natural phrasings like "what
+  // the value of 116500LN" or "how many buyers are available for 116500LN" matched nothing here,
+  // and worse, "how many sellers are selling X" then fell through to the buy/sell classifier
+  // below and silently started a sell-listing draft instead of just answering the question. Only
+  // tried once every deterministic pattern above has already missed, and only for the AI-matching
+  // test phone (same isAiMatchingEnabledForPhone gate every other AI-routed feature uses) — this
+  // never changes behavior for anyone else. A confident "price_check" reading WITH a reference
+  // number is required; a vague/low-confidence read, or one with no reference at all, still falls
+  // through to the ordinary buy/sell/general-chat handling below exactly as before.
+  let aiMarketReference: MarketReferenceCommandResult | null = null;
+  if (!marketReference && !isMarketOverview && !isMarketBriefingOrPulse && isAiMatchingEnabledForPhone(phone)) {
+    const extraction = await extractIntent(commandText);
+    if (extraction && isConfidentIntent(extraction) && extraction.intent.intent === "price_check" && extraction.intent.reference) {
+      aiMarketReference = {
+        reference: extraction.intent.reference,
+        brand: extraction.intent.brand ?? undefined,
+        location: extraction.intent.location ?? undefined,
+        dial: extraction.intent.dial ?? undefined,
+        condition: extraction.intent.condition ?? undefined,
+      };
+    }
+  }
+  const effectiveMarketReference = marketReference ?? aiMarketReference;
+  if (effectiveMarketReference || isMarketOverview || isMarketBriefingOrPulse) {
     // Market Pulse look-ups are metered completely separately from approved matches (see
     // postings/marketPulseUsage.ts) -- a price lookup is read-only and never itself an
     // introduction, so it must never draw down or share the match-approval trial/weekly count.
@@ -2611,10 +2635,10 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     }
     await recordMarketPulseLookup(usage.canonicalUserId, gate.isComplimentary);
     const usageNote = formatMarketPulseUsageNote(usage, gate);
-    if (marketReference) {
+    if (effectiveMarketReference) {
       messages.push(formatMarketPulse(await getScopedMarketPulse(
-        { brand: displayBrand(marketReference.brand) || undefined, reference: marketReference.reference },
-        { location: marketReference.location, dial: marketReference.dial, condition: marketReference.condition }
+        { brand: displayBrand(effectiveMarketReference.brand) || undefined, reference: effectiveMarketReference.reference },
+        { location: effectiveMarketReference.location, dial: effectiveMarketReference.dial, condition: effectiveMarketReference.condition }
       )) + usageNote);
     } else if (isMarketOverview) {
       messages.push(formatNetworkMarketSnapshot(await getNetworkMarketSnapshot()) + usageNote);
