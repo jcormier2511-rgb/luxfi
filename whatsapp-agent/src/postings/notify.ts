@@ -55,6 +55,58 @@ async function getMatchWithPostings(
   });
 }
 
+export interface PendingMatchOption {
+  matchId: number;
+  counterpartName: string;
+  brand: string;
+  model: string;
+  reference: string;
+}
+
+/**
+ * Every match currently awaiting this user's own approve/pass decision (delivered to them, not
+ * yet decided), most recently presented first — feeds server.ts's natural-language decision
+ * fallback (ai/decisionInterpreter.ts's interpretPostingsDecision), so a reply like "yes, connect
+ * me with the seller" can resolve to a specific matchId the same way "approve <id>" already does.
+ * `sourceType`, when given, restricts to matches where THIS recipient's own side of the match
+ * (not the counterpart's) was created via that source — e.g. "direct" for
+ * tryHandleDirectPostingDecision's narrower scope.
+ */
+export async function getPendingMatchesForRecipient(
+  canonicalUserId: number,
+  filter?: { sourceType?: PostingRow["source_type"] }
+): Promise<PendingMatchOption[]> {
+  const rows = await withSchema((pool) =>
+    pool.query<{ match_id: number }>(
+      `SELECT match_id FROM (
+         SELECT DISTINCT ON (mr.match_id) mr.match_id, mr.notified_at
+         FROM match_recipients mr
+         WHERE mr.recipient_canonical_user_id = $1 AND mr.decision = 'pending' AND mr.delivered_at IS NOT NULL
+         ORDER BY mr.match_id, mr.match_revision DESC
+       ) latest
+       ORDER BY notified_at DESC, match_id DESC
+       LIMIT 20`,
+      [canonicalUserId]
+    )
+  );
+  const options: PendingMatchOption[] = [];
+  for (const { match_id } of rows.rows) {
+    const data = await getMatchWithPostings(match_id);
+    if (!data) continue;
+    const mine = data.fs.canonical_user_id === canonicalUserId ? data.fs : data.wtb;
+    const counterpart = mine === data.fs ? data.wtb : data.fs;
+    if (filter?.sourceType && mine.source_type !== filter.sourceType) continue;
+    options.push({
+      matchId: match_id,
+      counterpartName: counterpart.contact_name || "",
+      brand: counterpart.brand,
+      model: counterpart.model,
+      reference: counterpart.reference,
+    });
+  }
+  return options;
+}
+
 /**
  * Cosmetic only — the raw digits-only phone stored on a posting (e.g. "12134492911") is never
  * altered for matching/sending, only for how it reads once two sides are actually connected. A

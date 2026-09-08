@@ -512,6 +512,64 @@ test("required: a buyer never receives more than maxMatchesPerListing match card
   assert.equal(toBuyer.length, 3, "the buyer's inbox must be capped at maxMatchesPerListing (3), not flooded with every candidate");
 });
 
+/** Same shape as createMatch above, but with the brand held fixed by the caller — createMatch
+ *  always uses "Rolex", so two calls for the same buyer would both fall back to the same
+ *  broad "same brand" match against BOTH FS listings (chat-parsed free text never actually
+ *  captures "REF1"/"REF2" as a real reference, so the exact-reference branch never engages);
+ *  a different brand per call keeps the two matches genuinely isolated. */
+async function createMatchWithBrand(buyerPhone: string, brand: string): Promise<{ matchId: number }> {
+  const n = ++counter;
+  const sellerPhone = `seller-${n}`;
+  await mirrorApiFsPosting({
+    id: `wf-${n}`, item: brand, brand, ref: `REF${n}`, condition: "New", price: "$10,000",
+    contactName: sellerPhone, contactPhone: sellerPhone, description: "",
+  });
+  const wtb = await ingestChatPosting({
+    platform: "whatsapp", chatId: "g1", messageId: `wtb-${n}`, senderIdentity: buyerPhone,
+    text: `WTB ${brand} budget $12,000`,
+  });
+  await runImmediateMatch(wtb.posting!);
+  const matches = await db.withSchema((pool) => pool.query(`SELECT id FROM matches WHERE wtb_posting_id=$1`, [wtb.posting!.id]));
+  return { matchId: matches.rows[0].id };
+}
+
+test("getPendingMatchesForRecipient lists a user's own pending (delivered, undecided) matches, most recently presented first", async (t) => {
+  await resetAll();
+  t.mock.method(whapiClient, "sendText", async () => {});
+  const buyerPhone = "buyer-pending-1";
+  const { matchId: firstMatchId } = await createMatchWithBrand(buyerPhone, "Rolex");
+  const { matchId: secondMatchId } = await createMatchWithBrand(buyerPhone, "Omega");
+
+  const canonicalUserId = await identity.getOrCreateCanonicalUser("whatsapp", buyerPhone);
+  const options = await notify.getPendingMatchesForRecipient(canonicalUserId);
+  assert.deepEqual(options.map((o) => o.matchId), [secondMatchId, firstMatchId], "most recently presented first");
+});
+
+test("getPendingMatchesForRecipient excludes a match the user already decided on", async (t) => {
+  await resetAll();
+  t.mock.method(whapiClient, "sendText", async () => {});
+  const buyerPhone = "buyer-pending-2";
+  const { matchId } = await createMatch(buyerPhone);
+  await passMatch(matchId, buyerPhone);
+
+  const canonicalUserId = await identity.getOrCreateCanonicalUser("whatsapp", buyerPhone);
+  assert.deepEqual(await notify.getPendingMatchesForRecipient(canonicalUserId), []);
+});
+
+test("getPendingMatchesForRecipient's sourceType filter restricts to matches where the RECIPIENT's own side was created that way", async (t) => {
+  await resetAll();
+  t.mock.method(whapiClient, "sendText", async () => {});
+  const buyerPhone = "buyer-pending-3";
+  // createMatch's WTB (buyer) side is chat-sourced, not 'direct'.
+  await createMatch(buyerPhone);
+  const canonicalUserId = await identity.getOrCreateCanonicalUser("whatsapp", buyerPhone);
+  assert.deepEqual(
+    await notify.getPendingMatchesForRecipient(canonicalUserId, { sourceType: "direct" }),
+    [],
+    "a chat-sourced posting must not pass a 'direct' filter"
+  );
+});
+
 test("a delivery failure falls back to another linked channel ONLY when the recipient opted into fallback delivery", async (t) => {
   await resetAll();
   const buyerPhone = "buyer-fallback-1";

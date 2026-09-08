@@ -2,7 +2,7 @@ import express from "express";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { config, isConciergeAdminPhone } from "./config";
+import { config, isConciergeAdminPhone, isAiMatchingEnabledForPhone } from "./config";
 import { extractIncomingMessages, IncomingWebhook } from "./whapi/client";
 import { sendText, sendBannerImage, NormalizedIncomingMessage } from "./channels";
 import { platformForIdentity } from "./channels/identity";
@@ -40,7 +40,8 @@ import {
 } from "./billing/authorizeNet";
 import { recordMembershipPayment } from "./postings/approvalUsage";
 import { handleIncomingSellerPhoto } from "./matching/photoRequests";
-import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, formatPhoneForDisplay, notifyMatch } from "./postings/notify";
+import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, formatPhoneForDisplay, notifyMatch, getPendingMatchesForRecipient } from "./postings/notify";
+import { interpretPostingsDecision } from "./ai/decisionInterpreter";
 import { runCheckoutReconciliation, activateClaimedCheckout } from "./billing/checkoutReconciliation";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
@@ -105,23 +106,61 @@ export function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number)
   }
 }
 
+/** Executes an already-resolved approve/pass decision — shared by the deterministic "approve
+ *  <id>"/"pass <id>" parser and the natural-language fallback below, so a decision reached
+ *  either way goes through the exact same approveMatch/passMatch calls and produces the exact
+ *  same reply. */
+async function applyPostingsDecision(matchId: number, action: "approve" | "pass", phone: string): Promise<string | null> {
+  if (action === "approve") {
+    const outcome = await approveMatch(matchId, phone);
+    if (outcome.status === "invalid") return null; // not a real match id either — fall through
+    if (outcome.status === "approved" && outcome.counterpart) markPendingEscrowOffer(phone);
+    return formatApprovalOutcome(outcome, matchId);
+  }
+  const result = await passMatch(matchId, phone);
+  if (result === "invalid") return null;
+  return result === "passed" ? `Passing on match ${matchId}.` : `You already decided on match ${matchId}.`;
+}
+
+/**
+ * Fi Concierge Stage 3, extended from the v3 in-session numbered list (conversation/flow.ts's
+ * interpretDecision) to the postings-based match system: people rarely type the literal
+ * "approve <id>"/"pass <id>" they were shown — "yes, connect me with the seller", "I'll take
+ * it", "connect me with ABC Watches" all mean the same thing. Only tried once the deterministic
+ * pattern above found nothing, only when this phone actually has a pending match to decide on,
+ * and only for the AI matching test phone (same isAiMatchingEnabledForPhone gate the v3
+ * fallback already uses — this is not a broad rollout). Can never approve/reveal/charge
+ * anything beyond what applyPostingsDecision (the SAME code the deterministic path uses)
+ * already allows, and can only ever resolve to a matchId this exact recipient was actually
+ * shown (see getPendingMatchesForRecipient) — it only maps words to one of those ids.
+ */
+async function tryInterpretPostingsDecisionNaturally(
+  phone: string,
+  text: string,
+  canonicalUserId: number,
+  sourceType?: "direct"
+): Promise<{ matchId: number; action: "approve" | "pass" } | null> {
+  if (!isAiMatchingEnabledForPhone(phone)) return null;
+  const options = await getPendingMatchesForRecipient(canonicalUserId, sourceType ? { sourceType } : undefined);
+  if (options.length === 0) return null;
+  const interpreted = await interpretPostingsDecision(text, options);
+  if (!interpreted?.action) return null;
+  // No specific match identifiable from the text -> the most recently presented pending match,
+  // same "latest unresolved" default the deterministic bare approve/pass already falls back to.
+  const matchId = interpreted.matchId ?? options[0].matchId;
+  return { matchId, action: interpreted.action };
+}
+
 export async function tryHandleV4Decision(phone: string, text: string): Promise<string | null> {
   if (!config.postingsV4.enabled) return null; // whole v4 surface stays inert until verified
   if (getState(phone).pendingMatches) return null; // v3 flow owns this reply
   const m = text.trim().match(V4_DECISION_PATTERN);
-  if (!m) return null;
-  const matchId = parseInt(m[2], 10);
+  if (m) return applyPostingsDecision(parseInt(m[2], 10), m[1].toLowerCase() === "approve" ? "approve" : "pass", phone);
 
-  if (m[1].toLowerCase() === "approve") {
-    const outcome = await approveMatch(matchId, phone);
-    if (outcome.status === "invalid") return null; // not a real v4 match id either — fall through
-    if (outcome.status === "approved" && outcome.counterpart) markPendingEscrowOffer(phone);
-    return formatApprovalOutcome(outcome, matchId);
-  }
-
-  const result = await passMatch(matchId, phone);
-  if (result === "invalid") return null;
-  return result === "passed" ? `Passing on match ${matchId}.` : `You already decided on match ${matchId}.`;
+  const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
+  const natural = await tryInterpretPostingsDecisionNaturally(phone, text, canonicalUserId);
+  if (!natural) return null;
+  return applyPostingsDecision(natural.matchId, natural.action, phone);
 }
 
 /**
@@ -133,28 +172,23 @@ export async function tryHandleV4Decision(phone: string, text: string): Promise<
  * server.v4Decision.test.ts requires: it must stay a total no-op while the flag is off) for
  * every other posting. Scoping is by ownership + source_type: only a match where the sender
  * owns a 'direct'-sourced side is handled here; anything else falls through (returns null) so
- * tryHandleV4Decision (when enabled) or the ordinary flow gets a turn at it.
+ * tryHandleV4Decision (when enabled) or the ordinary flow gets a turn at it. The natural-language
+ * fallback below is scoped the exact same way (sourceType:"direct").
  */
 export async function tryHandleDirectPostingDecision(phone: string, text: string): Promise<string | null> {
   if (getState(phone).pendingMatches) return null; // v3 flow owns this reply
-  const m = text.trim().match(V4_DECISION_PATTERN);
-  if (!m) return null;
-  const matchId = parseInt(m[2], 10);
-
   const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
-  const mine = await getOwnPostingForMatch(matchId, canonicalUserId);
-  if (!mine || mine.source_type !== "direct") return null; // not a direct-sourced decision
-
-  if (m[1].toLowerCase() === "approve") {
-    const outcome = await approveMatch(matchId, phone);
-    if (outcome.status === "invalid") return null;
-    if (outcome.status === "approved" && outcome.counterpart) markPendingEscrowOffer(phone);
-    return formatApprovalOutcome(outcome, matchId);
+  const m = text.trim().match(V4_DECISION_PATTERN);
+  if (m) {
+    const matchId = parseInt(m[2], 10);
+    const mine = await getOwnPostingForMatch(matchId, canonicalUserId);
+    if (!mine || mine.source_type !== "direct") return null; // not a direct-sourced decision
+    return applyPostingsDecision(matchId, m[1].toLowerCase() === "approve" ? "approve" : "pass", phone);
   }
 
-  const result = await passMatch(matchId, phone);
-  if (result === "invalid") return null;
-  return result === "passed" ? `Passing on match ${matchId}.` : `You already decided on match ${matchId}.`;
+  const natural = await tryInterpretPostingsDecisionNaturally(phone, text, canonicalUserId, "direct");
+  if (!natural) return null;
+  return applyPostingsDecision(natural.matchId, natural.action, phone);
 }
 
 const V4_EXTEND_PATTERN = /^extend\s+(\d+)\b/i;
