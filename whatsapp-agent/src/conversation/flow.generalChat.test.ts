@@ -80,6 +80,6 @@ test("START clears conversational work and never repeats the approve/pass dead e
   assert.equal(result.state.pendingMatches, undefined);
   assert.equal(result.state.pendingPreferenceCollection, undefined);
   assert.equal(result.state.pendingNaturalFollowUp, undefined);
-  assert.match(result.messages[0], /tell me naturally/i);
+  assert.match(result.messages[0], /personal luxury concierge/i);
   assert.doesNotMatch(result.messages[0], /approve|pass/i);
 });

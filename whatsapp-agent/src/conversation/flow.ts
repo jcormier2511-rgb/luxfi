@@ -2465,9 +2465,12 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
 
   // START is a universal conversational reset, not only an opt-out recovery command. A user
   // with old pending matches must be able to begin again instead of being trapped behind the
-  // approve/pass reminder shown in the reported live conversation.
+  // approve/pass reminder shown in the reported live conversation. Real reported gap: a bare
+  // "start" (what Telegram's own Start button sends, with no leading slash) got a shorter,
+  // different reply than "/start" -- the same word meant two different things depending on
+  // punctuation the customer never typed themselves. Both now show the same full onboarding
+  // menu, on either channel.
   if (normalize(commandText) === "start") {
-    const slashStart = /^\/start(?:@[a-z0-9_]+)?\b/i.test(text.trim());
     state.stage = "active";
     state.pendingMatches = undefined;
     state.pendingPreferenceCollection = undefined;
@@ -2476,14 +2479,7 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     state.pendingBuyIntake = undefined;
     state.pendingReplacementRequest = undefined;
     saveState(state);
-    return {
-      state,
-      messages: [
-        slashStart
-          ? config.fiFlow.introMessage
-          : "Hi, I'm Fi — here's what I can do: tell me naturally what you're looking to buy or sell, or ask me anything about your listings.",
-      ],
-    };
+    return { state, messages: [config.fiFlow.introMessage] };
   }
 
   if (isOptOut(text)) {

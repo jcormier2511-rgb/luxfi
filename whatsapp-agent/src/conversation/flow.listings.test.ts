@@ -114,7 +114,8 @@ test('required (live-reported bug): "start" (for a contact who was never opted o
   await freshRequest(phone, "buy: Rolex Daytona 116500LN");
 
   const result = await handleIncomingMessage(phone, "start");
-  assert.match(result.messages.join("\n"), /here's what I can do/i);
+  assert.match(result.messages.join("\n"), /personal luxury concierge/i);
+  assert.doesNotMatch(result.messages.join("\n"), /approve|pass/i);
 });
 
 test('"start" still reactivates an actually-opted-out contact (unaffected by folding it into the menu command)', async () => {
