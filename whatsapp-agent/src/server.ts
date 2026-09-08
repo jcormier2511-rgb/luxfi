@@ -76,7 +76,7 @@ import { buildAdminDashboardData } from "./admin/dashboard";
 import { listAllIdentities } from "./admin/metrics";
 import { renderDashboard, renderLoginPage, renderManagementPage, renderPushGroupsPage, renderToolsPage } from "./admin/view";
 import { deletePushGroup, exportPushGroupsCsv, getListingLimits, importPushGroupsCsv, listPushGroups, PUSH_GROUP_CSV_SAMPLE, savePushGroup, setListingLimits } from "./postings/listingConfig";
-import { getLifecycleSettings, recordInboundActivity, setLifecycleSettings } from "./lifecycle";
+import { getLifecycleSettings, recordInboundActivity, resendMorningBriefingToAll, setLifecycleSettings } from "./lifecycle";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
 // (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
@@ -1163,6 +1163,29 @@ export function createServer() {
   app.post("/admin/lifecycle-settings", express.json(), async (req,res)=>{
     if(isValidAdminToken(String(req.query.token??""))===false)return res.status(401).json({error:"invalid token"});
     try{await setLifecycleSettings(req.body??{});res.json({ok:true,settings:await getLifecycleSettings()});}catch(e){res.status(400).json({error:(e as Error).message});}
+  });
+
+  // One-time, admin-triggered broadcast: sends TODAY'S morning briefing (whatever format is
+  // currently deployed) to every subscribed user right now, regardless of their own local
+  // morning hour -- e.g. rolling a briefing format change out to everyone immediately instead of
+  // waiting for each person's own next local morning. See lifecycle.ts's
+  // resendMorningBriefingToAll for exactly what this does and does not touch -- a forced resend
+  // intentionally CAN double-send someone whose local morning already passed today; that's the
+  // point of "resend to everyone right now", not a bug. Preview first (no token change needed,
+  // GET, never sends anything); the real send is POST + confirm:true, the same bar the
+  // fi-returning campaign broadcast already uses for "message a lot of real people at once".
+  app.get("/admin/lifecycle/morning-briefing-resend/preview", async (req,res)=>{
+    if(isValidAdminToken(String(req.query.token??""))===false)return res.status(401).json({error:"invalid token"});
+    const testRecipient=typeof req.query.testRecipient==="string"?req.query.testRecipient:undefined;
+    res.json(await resendMorningBriefingToAll(new Date(),{dryRun:true,testRecipient}));
+  });
+  app.post("/admin/lifecycle/morning-briefing-resend", express.json(), async (req,res)=>{
+    if(isValidAdminToken(String(req.query.token??""))===false)return res.status(401).json({error:"invalid token"});
+    const testRecipient=typeof req.body?.testRecipient==="string"?req.body.testRecipient:undefined;
+    if(!testRecipient&&req.body?.confirm!==true){
+      return res.status(400).json({error:"confirm:true is required to resend to everyone (or pass testRecipient to trial-send to just one identity first)"});
+    }
+    res.json(await resendMorningBriefingToAll(new Date(),{testRecipient}));
   });
 
   // Fi Concierge expansion, Stage 1: Group Registry (additive to the existing

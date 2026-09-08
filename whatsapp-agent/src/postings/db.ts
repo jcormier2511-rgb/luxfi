@@ -404,6 +404,13 @@ async function ensureSchema(): Promise<void> {
           known_match_ids INTEGER[] NOT NULL DEFAULT '{}',
           PRIMARY KEY(canonical_user_id,posting_id)
         );
+        -- Yesterday's Market Pulse snapshot for this posting's own reference (see
+        -- postings/marketPulse.ts's getMarketPulse), so the next morning briefing can show how
+        -- supply/demand/price actually MOVED, not just today's raw counts. Null until a posting
+        -- has been through one briefing with a resolvable reference.
+        ALTER TABLE briefing_posting_state ADD COLUMN IF NOT EXISTS fs_count INTEGER;
+        ALTER TABLE briefing_posting_state ADD COLUMN IF NOT EXISTS wtb_count INTEGER;
+        ALTER TABLE briefing_posting_state ADD COLUMN IF NOT EXISTS avg_fs_ask_usd DOUBLE PRECISION;
         CREATE INDEX IF NOT EXISTS lifecycle_due ON user_lifecycle(last_inbound_at,last_dormant_message_at);
 
         -- Market Pulse (price/trend look-ups) usage, metered completely separately from

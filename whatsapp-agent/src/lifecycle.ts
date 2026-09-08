@@ -3,6 +3,7 @@ import { platformForIdentity } from "./channels/identity";
 import { getOrCreateCanonicalUser } from "./postings/identity";
 import { PostingRow } from "./postings/postingsStore";
 import { scoreMatchWithCurrency } from "./postings/matching";
+import { getMarketPulse } from "./postings/marketPulse";
 import { withSchema } from "./postings/db";
 import { initAdminSchema } from "./admin/store";
 import { getState } from "./conversation/stateStore";
@@ -61,11 +62,82 @@ async function currentMatches(posting:PostingRow, all:PostingRow[]):Promise<numb
   return [...new Set(ids)];
 }
 function title(p:PostingRow){ return [p.type,"—",p.brand,p.model,p.reference,p.dial].filter(Boolean).join(" "); }
-export function formatBriefing(firstName:string|null, summaries:{posting:PostingRow;count:number;newCount:number;hasPrior:boolean}[], omitted=0):string {
+
+/** This posting's own reference's network-wide supply/demand/price, day-over-day -- distinct
+ *  from `count` above (candidates that concretely MATCH this account's specific price/dial/
+ *  condition), the same way Market Pulse's own FS/WTB counts are a broader, reference-level
+ *  read than a personalized match list. Deltas are only ever shown once a PRIOR day's snapshot
+ *  exists for this exact posting -- a brand-new posting's first briefing has nothing to compare
+ *  against yet, so it just states today's numbers plainly. */
+export interface BriefingTrend { fsCount:number; wtbCount:number; averageFsAsk:number|null; fsDelta:number|null; wtbDelta:number|null; priceDelta:number|null }
+
+function countDeltaLabel(delta:number|null):string {
+  if (delta===null) return "";
+  if (delta===0) return " (no change since yesterday)";
+  return ` (${delta>0?"+":""}${delta} since yesterday)`;
+}
+function priceLabel(value:number|null):string {
+  return value===null ? "Unavailable" : new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(value);
+}
+function priceDeltaLabel(delta:number|null):string {
+  if (delta===null) return "";
+  if (delta===0) return " (no change since yesterday)";
+  const formatted=new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(Math.abs(delta));
+  return ` (${delta>0?"+":"-"}${formatted} since yesterday)`;
+}
+
+export function formatBriefing(firstName:string|null, summaries:{posting:PostingRow;count:number;newCount:number;hasPrior:boolean;trend?:BriefingTrend|null}[], omitted=0):string {
   const greeting=`Good morning${firstName?`, ${firstName}`:""}. Here’s your Fi update:`;
-  const blocks=summaries.map(({posting:p,count,newCount,hasPrior},i)=>`${i+1}. ${title(p)}\n${count===0?"No active matches yet.":`${count} active ${p.type==="WTB"?"sellers":"buyers"} currently match your ${p.type==="WTB"?"request":"listing"}${hasPrior&&newCount>0?`\n+${newCount} new since yesterday`:""}`}`);
+  const blocks=summaries.map(({posting:p,count,newCount,hasPrior,trend},i)=>{
+    const matchLine=count===0?"No active matches yet.":`${count} active ${p.type==="WTB"?"sellers":"buyers"} currently match your ${p.type==="WTB"?"request":"listing"}${hasPrior&&newCount>0?`\n+${newCount} new since yesterday`:""}`;
+    // A blank line + its own header, not just appended lines, so this network-wide reference
+    // trend never reads as part of the personalized match count right above it -- easy to
+    // confuse otherwise, since both can legitimately show the same small number for different
+    // reasons (count above is candidates that match YOUR specific price/dial/condition; these
+    // are the total active listings/requests for this reference across the whole network).
+    const trendLines=trend
+      ? `\n\nMarket trend for this reference:\nSupply: ${trend.fsCount} active listing${trend.fsCount===1?"":"s"}${countDeltaLabel(trend.fsDelta)}\nDemand: ${trend.wtbCount} active buyer request${trend.wtbCount===1?"":"s"}${countDeltaLabel(trend.wtbDelta)}\nAvg ask: ${priceLabel(trend.averageFsAsk)}${priceDeltaLabel(trend.priceDelta)}`
+      : "";
+    return `${i+1}. ${title(p)}\n${matchLine}${trendLines}`;
+  });
   if(omitted) blocks.push(`Plus ${omitted} more active task${omitted===1?"":"s"} I’m monitoring.`);
   return `${greeting}\n\n${blocks.join("\n\n")}\n\n${summaries.some(s=>s.count)?"I’ll keep working 24/7 and let you know when I find strong new opportunities.":"I’m still monitoring for you."}\n\nYou can also check current listings anytime at watchfacts.com.`;
+}
+
+/** Builds each posting's match/trend summary AND persists today's briefing_posting_state
+ *  snapshot for it -- shared by the regular per-local-hour scheduler and the forced
+ *  send-to-everyone-now broadcast below, so a resend computes numbers exactly the same way and
+ *  still leaves tomorrow's regular briefing with a correct day-over-day delta to diff against. */
+async function buildBriefingSummaries(canonicalUserId:number, postings:PostingRow[], now:Date) {
+  const all=(await withSchema(db=>db.query<PostingRow>("SELECT * FROM postings WHERE status='active' AND expires_at>$1",[now]))).rows;
+  const summaries=[];
+  for(const posting of postings){
+    const ids=await currentMatches(posting,all);
+    const prior=(await withSchema(db=>db.query("SELECT known_match_ids, fs_count, wtb_count, avg_fs_ask_usd FROM briefing_posting_state WHERE canonical_user_id=$1 AND posting_id=$2",[canonicalUserId,posting.id]))).rows[0];
+    const known:number[]=prior?.known_match_ids??[];
+    // Reference-level supply/demand/price, same source Market Pulse itself reads from -- never
+    // touches that command's own trial/weekly usage counter (marketPulseUsage.ts), since this is
+    // Fi pushing it proactively, not the customer spending a look-up on it.
+    let pulse:{fsCount:number;wtbCount:number;averageFsAsk:number|null}|null=null;
+    if(posting.reference){ try{ pulse=await getMarketPulse(posting.reference); }catch(e){ console.error(`[lifecycle] market pulse lookup failed for posting ${posting.id} (omitting trend):`,e); } }
+    const hasPriorTrend=prior && prior.fs_count!==null && prior.wtb_count!==null;
+    const trend=pulse?{
+      fsCount:pulse.fsCount, wtbCount:pulse.wtbCount, averageFsAsk:pulse.averageFsAsk,
+      fsDelta:hasPriorTrend?pulse.fsCount-prior.fs_count:null,
+      wtbDelta:hasPriorTrend?pulse.wtbCount-prior.wtb_count:null,
+      priceDelta:hasPriorTrend&&pulse.averageFsAsk!==null&&prior.avg_fs_ask_usd!==null?pulse.averageFsAsk-prior.avg_fs_ask_usd:null,
+    }:null;
+    summaries.push({posting,count:ids.length,newCount:ids.filter(id=>!known.includes(id)).length,hasPrior:Boolean(prior),trend});
+    await withSchema(db=>db.query(
+      `INSERT INTO briefing_posting_state (canonical_user_id,posting_id,last_briefing_at,current_match_ids,known_match_ids,fs_count,wtb_count,avg_fs_ask_usd)
+       VALUES($1,$2,$3,$4,$4,$5,$6,$7)
+       ON CONFLICT(canonical_user_id,posting_id) DO UPDATE SET last_briefing_at=excluded.last_briefing_at,current_match_ids=excluded.current_match_ids,
+         known_match_ids=(SELECT ARRAY(SELECT DISTINCT unnest(briefing_posting_state.known_match_ids||excluded.current_match_ids))),
+         fs_count=excluded.fs_count,wtb_count=excluded.wtb_count,avg_fs_ask_usd=excluded.avg_fs_ask_usd`,
+      [canonicalUserId,posting.id,now,ids,pulse?.fsCount??null,pulse?.wtbCount??null,pulse?.averageFsAsk??null]
+    ));
+  }
+  return summaries;
 }
 
 export async function runMorningBriefings(now=new Date()):Promise<{sent:number;skipped:number}> {
@@ -74,11 +146,51 @@ export async function runMorningBriefings(now=new Date()):Promise<{sent:number;s
   for(const user of users.rows){ let clock; try{clock=localClock(now,user.effective_timezone);}catch{clock=localClock(now,s.defaultTimezone);} if(clock.hour!==s.morningHour){skipped++;continue;}
     const postings=await withSchema(db=>db.query<PostingRow>("SELECT * FROM postings WHERE canonical_user_id=$1 AND status='active' AND expires_at>$2 ORDER BY created_at LIMIT $3",[user.canonical_user_id,now,s.maxPostings+1]));
     if(!postings.rowCount){skipped++;continue;} if(!await claim(user.canonical_user_id,"morning_briefing",clock.date)){skipped++;continue;}
-    try{ const all=(await withSchema(db=>db.query<PostingRow>("SELECT * FROM postings WHERE status='active' AND expires_at>$1",[now]))).rows; const summaries=[];
-      for(const posting of postings.rows.slice(0,s.maxPostings)){const ids=await currentMatches(posting,all);const prior=(await withSchema(db=>db.query("SELECT known_match_ids FROM briefing_posting_state WHERE canonical_user_id=$1 AND posting_id=$2",[user.canonical_user_id,posting.id]))).rows[0];const known:number[]=prior?.known_match_ids??[];summaries.push({posting,count:ids.length,newCount:ids.filter(id=>!known.includes(id)).length,hasPrior:Boolean(prior)});await withSchema(db=>db.query(`INSERT INTO briefing_posting_state VALUES($1,$2,$3,$4,$4) ON CONFLICT(canonical_user_id,posting_id) DO UPDATE SET last_briefing_at=excluded.last_briefing_at,current_match_ids=excluded.current_match_ids,known_match_ids=(SELECT ARRAY(SELECT DISTINCT unnest(briefing_posting_state.known_match_ids||excluded.current_match_ids)))`,[user.canonical_user_id,posting.id,now,ids]));}
+    try{
+      const summaries=await buildBriefingSummaries(user.canonical_user_id,postings.rows.slice(0,s.maxPostings),now);
       await sendText(user.identity,formatBriefing(user.first_name,summaries,Math.max(0,postings.rows.length-s.maxPostings)));await finish(user.canonical_user_id,"morning_briefing",clock.date);sent++;
     }catch(e){await finish(user.canonical_user_id,"morning_briefing",clock.date,e);}
   } return{sent,skipped};
+}
+
+/**
+ * One-time admin-triggered broadcast: sends today's morning briefing (whatever format is
+ * currently deployed) to every subscribed user RIGHT NOW, regardless of their own local morning
+ * hour -- unlike runMorningBriefings above, which only ever sends once each person's own local
+ * clock reaches the configured hour. Anyone whose local morning has already passed today (and
+ * who already received today's regular briefing) WILL get a second one here -- that's the
+ * explicit point of a forced resend (e.g. rolling out a format change to everyone immediately),
+ * not a bug. Each recipient's delivery record is still updated to today's (their own local)
+ * date so the regular scheduler doesn't ALSO send a third one later today once their local
+ * morning hour arrives. `dryRun` previews who/how many without sending anything or touching any
+ * delivery record; `testRecipient` narrows to one identity for a safe trial send.
+ */
+export async function resendMorningBriefingToAll(now=new Date(), opts:{dryRun?:boolean; testRecipient?:string}={}):Promise<{sent:number;skipped:number;recipients:string[]}> {
+  const s=await getLifecycleSettings();
+  const users=await withSchema(db=>db.query(
+    `SELECT l.*,COALESCE(l.timezone,$1) effective_timezone FROM user_lifecycle l WHERE l.channel IN ('whatsapp','telegram')${opts.testRecipient?" AND l.identity=$2":""}`,
+    opts.testRecipient?[s.defaultTimezone,opts.testRecipient]:[s.defaultTimezone]
+  ));
+  let sent=0,skipped=0; const recipients:string[]=[];
+  for(const user of users.rows){
+    const postings=await withSchema(db=>db.query<PostingRow>("SELECT * FROM postings WHERE canonical_user_id=$1 AND status='active' AND expires_at>$2 ORDER BY created_at LIMIT $3",[user.canonical_user_id,now,s.maxPostings+1]));
+    if(!postings.rowCount){skipped++;continue;}
+    try{
+      const summaries=await buildBriefingSummaries(user.canonical_user_id,postings.rows.slice(0,s.maxPostings),now);
+      const message=formatBriefing(user.first_name,summaries,Math.max(0,postings.rows.length-s.maxPostings));
+      if(!opts.dryRun){
+        await sendText(user.identity,message);
+        let clock; try{clock=localClock(now,user.effective_timezone);}catch{clock=localClock(now,s.defaultTimezone);}
+        await withSchema(db=>db.query(
+          `INSERT INTO lifecycle_deliveries(canonical_user_id,kind,local_date,status,delivered_at) VALUES($1,'morning_briefing',$2,'delivered',now())
+           ON CONFLICT(canonical_user_id,kind,local_date) DO UPDATE SET status='delivered',delivered_at=now(),error=NULL`,
+          [user.canonical_user_id,clock.date]
+        ));
+      }
+      sent++; recipients.push(user.identity);
+    }catch(e){ console.error(`[lifecycle] forced morning-briefing resend failed for ${user.identity}:`,e); skipped++; }
+  }
+  return {sent,skipped,recipients};
 }
 
 export function formatDormant(template:string,firstName:string|null){return firstName?template.replace(/{{first_name}}/g,firstName):template.replace(/Hi\s*{{first_name}},?/g,"Hi,").replace(/{{first_name}}/g,"");}
