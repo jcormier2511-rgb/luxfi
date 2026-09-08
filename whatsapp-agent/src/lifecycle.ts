@@ -101,7 +101,12 @@ export function formatBriefing(firstName:string|null, summaries:{posting:Posting
     return `${i+1}. ${title(p)}\n${matchLine}${trendLines}`;
   });
   if(omitted) blocks.push(`Plus ${omitted} more active task${omitted===1?"":"s"} I’m monitoring.`);
-  return `${greeting}\n\n${blocks.join("\n\n")}\n\n${summaries.some(s=>s.count)?"I’ll keep working 24/7 and let you know when I find strong new opportunities.":"I’m still monitoring for you."}\n\nYou can also check current listings anytime at watchfacts.com.`;
+  // The items above are numbered specifically so a reply can reference one unambiguously (see
+  // BriefingTrend's doc comment) -- but numbering alone doesn't tell anyone that's usable. Same
+  // command syntax parseListingEditCommand already supports elsewhere (flow.ts's "listings"
+  // summary), so a reply here behaves identically to one typed after "listings".
+  const manageHint=summaries.length>0?`\n\nReply "close listing <#>" to remove one, or "change listing <#> price/location/dial to ..." to edit it.`:"";
+  return `${greeting}\n\n${blocks.join("\n\n")}\n\n${summaries.some(s=>s.count)?"I’ll keep working 24/7 and let you know when I find strong new opportunities.":"I’m still monitoring for you."}${manageHint}\n\nYou can also check current listings anytime at watchfacts.com.`;
 }
 
 /** Builds each posting's match/trend summary AND persists today's briefing_posting_state

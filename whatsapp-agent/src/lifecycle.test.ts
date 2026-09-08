@@ -48,6 +48,14 @@ test("required: the market trend is clearly its own labeled section, not read as
   // Both happen to be "3" here on purpose -- the exact confusion a shared header/blank line has to prevent.
   assert.match(text,/currently match your request\n\nMarket trend for this reference:\nSupply: 3 active listings/);
 });
+test("required: the briefing tells people how to remove or edit a numbered item, using the same command syntax the app already supports",()=>{
+  const text=formatBriefing("John",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:false},{posting:posting("FS",{id:2,brand:"Patek Philippe",model:"Nautilus",reference:"5712G"}),count:2,newCount:0,hasPrior:false}]);
+  assert.match(text,/Reply "close listing <#>" to remove one, or "change listing <#> price\/location\/dial to \.\.\." to edit it\./);
+});
+test("required: an account with nothing active gets no manage hint -- there's nothing to close or edit yet",()=>{
+  const text=formatBriefing(null,[]);
+  assert.doesNotMatch(text,/close listing/);
+});
 test("dormant copy personalizes and has clean fallback",()=>{const t="Hi {{first_name}}, checking in.";assert.equal(formatDormant(t,"Ana"),"Hi Ana, checking in.");assert.equal(formatDormant(t,null),"Hi, checking in.");});
 test("local clock respects user timezone",()=>{const at=new Date("2026-09-01T12:00:00Z");assert.deepEqual(localClock(at,"America/New_York"),{date:"2026-09-01",hour:8});assert.deepEqual(localClock(at,"Pacific/Honolulu"),{date:"2026-09-01",hour:2});});
 
