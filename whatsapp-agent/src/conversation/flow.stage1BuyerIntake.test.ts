@@ -396,3 +396,48 @@ test('required regression: a location reply of "all" is treated as no preference
   await handleIncomingMessage(identity, "all");
   assert.equal(getState(identity).pendingBuyIntake?.location, "Global", 'a bare "all" answer must map to the same "no preference" location as "any", never be stored as the literal word "all"');
 });
+
+test("required: a shared location pin at the location step resolves through reverse geocoding and is stored the same as a typed answer", async (t) => {
+  const geo = require("../geo/reverseGeocode") as typeof import("../geo/reverseGeocode");
+  t.mock.method(geo, "reverseGeocode", async () => "Miami, United States");
+
+  const identity = fresh();
+  resetState(identity);
+  await handleIncomingMessage(identity, "hi");
+  await handleIncomingMessage(identity, "WTB pikachu daytona");
+  await handleIncomingMessage(identity, "Rolex pikachu daytona");
+  await handleIncomingMessage(identity, "$70,000");
+  assert.equal(getState(identity).pendingBuyIntake?.step, "location");
+
+  const answered = await handleIncomingMessage(identity, "", undefined, undefined, { latitude: 25.7617, longitude: -80.1918 });
+  assert.equal(getState(identity).pendingBuyIntake?.location, "Miami, United States");
+  assert.doesNotMatch(answered.messages.join("\n"), /couldn.t quite place/i);
+});
+
+test("required: a shared location pin that fails to resolve asks for a typed answer instead, and never corrupts the draft", async (t) => {
+  const geo = require("../geo/reverseGeocode") as typeof import("../geo/reverseGeocode");
+  t.mock.method(geo, "reverseGeocode", async () => null);
+
+  const identity = fresh();
+  resetState(identity);
+  await handleIncomingMessage(identity, "hi");
+  await handleIncomingMessage(identity, "WTB pikachu daytona");
+  await handleIncomingMessage(identity, "Rolex pikachu daytona");
+  await handleIncomingMessage(identity, "$70,000");
+
+  const answered = await handleIncomingMessage(identity, "", undefined, undefined, { latitude: 0, longitude: 0 });
+  assert.match(answered.messages.join("\n"), /city or country instead/i);
+  assert.equal(getState(identity).pendingBuyIntake?.location, undefined, "a failed lookup must never set a made-up location");
+  assert.equal(getState(identity).pendingBuyIntake?.step, "location", "must still be waiting on the same question");
+});
+
+test("required: a shared location pin is ignored (falls through to normal handling) outside the location step", async (t) => {
+  const geo = require("../geo/reverseGeocode") as typeof import("../geo/reverseGeocode");
+  const spy = t.mock.method(geo, "reverseGeocode", async () => "Miami, United States");
+
+  const identity = fresh();
+  resetState(identity);
+  await handleIncomingMessage(identity, "hi");
+  await handleIncomingMessage(identity, "", undefined, undefined, { latitude: 25.7617, longitude: -80.1918 });
+  assert.equal(spy.mock.callCount(), 0, "a location share is only ever meaningful while Fi is actually asking about location");
+});

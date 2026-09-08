@@ -12,4 +12,8 @@ export interface NormalizedIncomingMessage {
   groupId?: string;
   senderName?: string;
   imageUrl?: string;
+  /** A shared location pin (WhatsApp/Telegram's native "share my location" message type),
+   *  resolved to a place name by conversation/flow.ts before it's ever treated as a location
+   *  answer — see geo/reverseGeocode.ts. */
+  location?: { latitude: number; longitude: number };
 }

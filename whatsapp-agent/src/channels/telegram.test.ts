@@ -61,7 +61,9 @@ test("verifyTelegramSecret rejects a missing/wrong header and accepts the config
   assert.equal(telegram.verifyTelegramSecret(undefined), false);
 });
 
-function privateMessage(overrides: Partial<{ text: string; caption: string; photo: { file_id: string }[] }> = {}) {
+function privateMessage(
+  overrides: Partial<{ text: string; caption: string; photo: { file_id: string }[]; location: { latitude: number; longitude: number } }> = {}
+) {
   return {
     update_id: 1,
     message: {
@@ -149,6 +151,13 @@ test("required regression: a document (e.g. a .psd) with no caption is no longer
   assert.ok(msg, "a document must still produce a message so the active flow's own fallback can respond");
   assert.equal(msg.text, "", "we don't know how to extract text from an arbitrary document type");
   assert.equal(msg.imageUrl, undefined, "not treated as a photo — most document types genuinely aren't one");
+});
+
+test("extractIncomingMessages extracts a shared location pin, with no text needed to keep the message", async () => {
+  const [msg] = await telegram.extractIncomingMessages(privateMessage({ location: { latitude: 25.7617, longitude: -80.1918 } }));
+  assert.ok(msg, "a bare location share must still produce a message, the same as an uncaptioned photo/document");
+  assert.deepEqual(msg.location, { latitude: 25.7617, longitude: -80.1918 });
+  assert.equal(msg.text, "");
 });
 
 test("extractIncomingMessages returns [] for an update with neither a text/caption nor a photo", async () => {

@@ -60,6 +60,23 @@ test("required regression: a reaction (emoji double-tap on an earlier message) i
   assert.equal(messages.length, 0, "a bare gesture must never reach the conversation flow's fallback");
 });
 
+test("extractIncomingMessages extracts a shared location pin, with no text needed to keep the message", () => {
+  const [msg] = extractIncomingMessages(
+    webhook([{ id: "m8", from_me: false, type: "location", chat_id: "15551234567", from: "15551234567", location: { latitude: 25.7617, longitude: -80.1918 } }])
+  );
+  assert.ok(msg, "a bare location share must still produce a message, the same as an uncaptioned photo/document");
+  assert.deepEqual(msg.location, { latitude: 25.7617, longitude: -80.1918 });
+  assert.equal(msg.text, "");
+});
+
+test("a location message with no coordinates at all still produces a message, just with no location extracted", () => {
+  const [msg] = extractIncomingMessages(
+    webhook([{ id: "m9", from_me: false, type: "location", chat_id: "15551234567", from: "15551234567", location: {} }])
+  );
+  assert.ok(msg);
+  assert.equal(msg.location, undefined);
+});
+
 test("plain text messages are unaffected by the image-filter change", () => {
   const [msg] = extractIncomingMessages(
     webhook([{ id: "m5", from_me: false, type: "text", chat_id: "15551234567", from: "15551234567", text: { body: "buy: Rolex Daytona" } }])

@@ -164,6 +164,12 @@ export interface IncomingWebhook {
     // same documented-limitation status as from_name above. If chat-originated postings never
     // pick up an imageUrl from a real dealer-group photo post, check this shape first.
     image?: { link?: string; caption?: string };
+    // NOTE: shape (location.latitude/longitude) follows the WhatsApp Business API's own
+    // documented location-message convention, which Whapi.Cloud otherwise mirrors closely
+    // (image/text above), but — same caveat as those — hasn't been confirmed against a real
+    // captured location-message payload yet. If a shared location pin never resolves to a
+    // place name, check this shape first.
+    location?: { latitude?: number; longitude?: number };
   }[];
 }
 
@@ -178,6 +184,9 @@ export interface IncomingMessage {
   // to classify as FS/WTB (see postings/normalize.ts), so it's dropped entirely rather than
   // ingested with empty text.
   imageUrl?: string;
+  // Set only for a shared location pin — resolved to a place name by conversation/flow.ts (see
+  // geo/reverseGeocode.ts), never treated as identity/listing content the way text/imageUrl are.
+  location?: { latitude: number; longitude: number };
 }
 
 export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[] {
@@ -229,6 +238,10 @@ export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[
         groupId: isGroup ? digitsOnly(m.chat_id) : undefined,
         senderName: m.from_name,
         imageUrl: m.type === "image" ? m.image?.link : undefined,
+        location:
+          m.type === "location" && m.location?.latitude !== undefined && m.location?.longitude !== undefined
+            ? { latitude: m.location.latitude, longitude: m.location.longitude }
+            : undefined,
       };
     });
 }

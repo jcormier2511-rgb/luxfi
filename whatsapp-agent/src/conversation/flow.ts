@@ -4,6 +4,7 @@ import { findMatchesHybrid, formatMatchCard, formatMatchApproved, attachPriceSig
 import { PriceSignal } from "../matching/priceSignal";
 import { requestPhotosForMatch } from "../matching/photoRequests";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
+import { reverseGeocode, Coordinates } from "../geo/reverseGeocode";
 import { getState, saveState } from "./stateStore";
 import { parsePriceRange, parseFreeformPreference } from "./preferences";
 import { recordBillingRequested, getEntitlement, createCheckoutSession, findLatestCheckoutAttempt } from "../billing/entitlementStore";
@@ -2430,13 +2431,31 @@ export async function withPhoneSerialized<T>(phone: string, fn: () => Promise<T>
   }
 }
 
-export async function handleIncomingMessage(phone: string, text: string, contact?: Contact, imageUrl?: string): Promise<FlowResult> {
-  return withPhoneSerialized(phone, () => handleIncomingMessageInner(phone, text, contact, imageUrl));
+export async function handleIncomingMessage(
+  phone: string,
+  text: string,
+  contact?: Contact,
+  imageUrl?: string,
+  location?: Coordinates
+): Promise<FlowResult> {
+  return withPhoneSerialized(phone, () => handleIncomingMessageInner(phone, text, contact, imageUrl, location));
 }
 
-async function handleIncomingMessageInner(phone: string, text: string, contact?: Contact, imageUrl?: string): Promise<FlowResult> {
+async function handleIncomingMessageInner(phone: string, text: string, contact?: Contact, imageUrl?: string, location?: Coordinates): Promise<FlowResult> {
   const state = getState(phone);
   const messages: string[] = [];
+  // A shared location pin (WhatsApp/Telegram's native "share my location") answers the SAME
+  // question a typed place name would -- resolved to one before anything else runs, so every
+  // existing consumer of the "location" step (validation, storage, region matching) needs no
+  // changes at all. Only actionable while Fi is actually asking about location (same scoping
+  // principle as an uncaptioned photo only mattering during sell-intake's own photo step) -- a
+  // location shared unprompted carries no text to fall back to and would otherwise just read as
+  // a generic "I didn't understand that".
+  if (location && !text.trim() && (state.pendingBuyIntake?.step === "location" || state.pendingSellIntake?.step === "location")) {
+    const resolved = await reverseGeocode(location);
+    if (!resolved) return { state, messages: ["I couldn't quite place that pin — could you tell me the city or country instead?"] };
+    text = resolved;
+  }
   // Real reported ask: the generic "I'm not sure I understood that" fallback read as Fi being
   // confused right after it had just successfully finished something (a market pulse, a
   // confirmed listing, an approve/pass decision) -- most often the very next message being a

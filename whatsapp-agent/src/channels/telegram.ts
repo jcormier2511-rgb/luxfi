@@ -59,6 +59,7 @@ interface TelegramUpdate {
     caption?: string;
     photo?: { file_id: string; file_size?: number }[];
     document?: { file_id: string; file_name?: string; mime_type?: string };
+    location?: { latitude: number; longitude: number };
   };
 }
 
@@ -88,6 +89,7 @@ export async function extractIncomingMessages(update: TelegramUpdate): Promise<N
 
   const text = message.text ?? message.caption ?? "";
   const hasPhoto = Boolean(message.photo && message.photo.length > 0);
+  const hasLocation = Boolean(message.location);
 
   if (isGroup) {
     // Group monitoring only ever acts on text it can classify as FS/WTB (see classifyText in
@@ -95,7 +97,7 @@ export async function extractIncomingMessages(update: TelegramUpdate): Promise<N
     // flow with an "I didn't understand" fallback to forward a content-less message to, so a
     // sticker/bare photo/anonymous-admin post (no `from`) is simply nothing to capture.
     if (!text || !message.from) return [];
-  } else if (!text && !hasPhoto && !message.document) {
+  } else if (!text && !hasPhoto && !message.document && !hasLocation) {
     // Real reported bug: a document (a .psd, a PDF, any file Telegram didn't compress into a
     // `photo`) sent with no caption during an active step (e.g. sell-intake's "attach a photo?")
     // was silently dropped here entirely — the recipient saw no reply at all, indistinguishable
@@ -131,6 +133,7 @@ export async function extractIncomingMessages(update: TelegramUpdate): Promise<N
       groupId: isGroup ? String(message.chat.id) : undefined,
       senderName: message.from?.first_name ?? message.from?.username,
       imageUrl,
+      location: message.location ? { latitude: message.location.latitude, longitude: message.location.longitude } : undefined,
     },
   ];
 }

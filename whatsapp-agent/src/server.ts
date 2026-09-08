@@ -240,7 +240,7 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
   // processed, so this doesn't need a timing heuristic at all: any content-less message sharing
   // a batch with ANOTHER entry for the same phone that DOES have content is the phantom,
   // regardless of which one Whapi listed first.
-  const phonesWithContentInBatch = new Set(incoming.filter((m) => m.text.trim() || m.imageUrl).map((m) => m.phone));
+  const phonesWithContentInBatch = new Set(incoming.filter((m) => m.text.trim() || m.imageUrl || m.location).map((m) => m.phone));
 
   // Logged for every message BEFORE dedup decides anything -- the only way to tell, from
   // Railway's own deploy logs, whether a live "duplicate reply" report is a genuine second
@@ -248,14 +248,14 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
   // needing Whapi's separate Webhook Request Debugger.
   const filtered = incoming.filter((m) => {
     const idSeen = alreadyProcessed(m.id);
-    const contentSeen = !idSeen && alreadyProcessedContent(m.phone, m.text, m.imageUrl);
-    const hasContent = Boolean(m.text.trim() || m.imageUrl);
+    const contentSeen = !idSeen && alreadyProcessedContent(m.phone, m.text, m.imageUrl, m.location);
+    const hasContent = Boolean(m.text.trim() || m.imageUrl || m.location);
     const batchSibling = !idSeen && !contentSeen && !hasContent && phonesWithContentInBatch.has(m.phone);
     // Stopgap for a still-not-fully-root-caused bug: a content-less message arriving seconds
     // after a real one from the same phone is very likely the phantom Whapi companion, not a
     // genuine second message. Only reached when the same-batch check above didn't already
     // resolve it (a phantom arriving in a SEPARATE webhook delivery from its real sibling).
-    const phantom = !idSeen && !contentSeen && !batchSibling && isSuspectedPhantomCompanion(m.phone, m.text, m.imageUrl);
+    const phantom = !idSeen && !contentSeen && !batchSibling && isSuspectedPhantomCompanion(m.phone, m.text, m.imageUrl, m.location);
     const duplicate = idSeen || contentSeen || batchSibling || phantom;
     console.log(
       `[webhook] ${duplicate ? `duplicate (${idSeen ? "id" : contentSeen ? "content" : batchSibling ? "phantom-companion-batch" : "phantom-companion"}), skipping` : "processing"} id=${m.id} phone=${m.phone} text=${JSON.stringify(m.text.slice(0, 80))}`
@@ -293,7 +293,7 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
       }
 
       const contact = getTierABContacts().find((c) => c.phone === message.phone);
-      const { messages, photoReply, pendingMatchNotifications } = await handleIncomingMessage(message.phone, message.text, contact, message.imageUrl);
+      const { messages, photoReply, pendingMatchNotifications } = await handleIncomingMessage(message.phone, message.text, contact, message.imageUrl, message.location);
       for (const reply of messages) {
         // Live-reported: the seller's review arrived as a separate text bubble after their own
         // photo, instead of reading as that photo's caption. photoReply names the exact string

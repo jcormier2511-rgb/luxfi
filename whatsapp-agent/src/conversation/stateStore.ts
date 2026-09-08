@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { config } from "../config";
 import { ConversationState } from "../types";
+import { Coordinates } from "../geo/reverseGeocode";
 
 const filePath = path.join(config.storageDir, "conversations.json");
 
@@ -93,14 +94,14 @@ let recentContent: { key: string; at: number }[] = [];
  * never collide) plus text plus image, and windowed rather than permanent, so it only ever
  * suppresses a true near-instant repeat.
  */
-export function alreadyProcessedContent(phone: string, text: string, imageUrl?: string): boolean {
+export function alreadyProcessedContent(phone: string, text: string, imageUrl?: string, location?: Coordinates): boolean {
   // A genuinely content-less message (a document/sticker with no caption -- see whapi/client.ts)
   // has nothing to compare: two real, distinct ones would collide on the same empty key. Only
   // id-based dedup (alreadyProcessed above) applies to those.
-  if (!text.trim() && !imageUrl) return false;
+  if (!text.trim() && !imageUrl && !location) return false;
   const now = Date.now();
   recentContent = recentContent.filter((r) => now - r.at < DUPLICATE_CONTENT_WINDOW_MS);
-  const key = `${phone}:${text.trim().toLowerCase()}:${imageUrl ?? ""}`;
+  const key = `${phone}:${text.trim().toLowerCase()}:${imageUrl ?? ""}:${location ? `${location.latitude},${location.longitude}` : ""}`;
   if (recentContent.some((r) => r.key === key)) return true;
   recentContent.push({ key, at: now });
   return false;
@@ -132,10 +133,10 @@ let recentMessagesByPhone: { phone: string; at: number; hadContent: boolean }[] 
  * back-to-back content-less message (rare) to stop a bug that was firing on every real message
  * (not rare at all).
  */
-export function isSuspectedPhantomCompanion(phone: string, text: string, imageUrl?: string): boolean {
+export function isSuspectedPhantomCompanion(phone: string, text: string, imageUrl?: string, location?: Coordinates): boolean {
   const now = Date.now();
   recentMessagesByPhone = recentMessagesByPhone.filter((r) => now - r.at < PHANTOM_COMPANION_WINDOW_MS);
-  const hasContent = Boolean(text.trim()) || Boolean(imageUrl);
+  const hasContent = Boolean(text.trim()) || Boolean(imageUrl) || Boolean(location);
   const isPhantom = !hasContent && recentMessagesByPhone.some((r) => r.phone === phone && r.hadContent);
   recentMessagesByPhone.push({ phone, at: now, hadContent: hasContent });
   return isPhantom;
