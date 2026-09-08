@@ -224,7 +224,7 @@ export const config = {
     // ESCROW_COMMAND, which always works, not only as a same-turn reply to this message).
     escrowSuggestion:
       process.env.FI_ESCROW_SUGGESTION_MESSAGE ??
-      "If you don't already know this contact, I also have escrow and inspection partners who can help verify the item and handle payment safely — just say \"escrow\" and I can connect you.",
+      "If you don't already know this contact, I also have escrow and inspection partners — including Bennison — who can help verify the item and handle payment safely — just say \"escrow\" and I can connect you.",
     // Offered when either party replies "yes" to the escrow suggestion above (see
     // conversation/flow.ts's pendingEscrowOffer handling) — first service free, then a
     // recurring discount with membership. Not itself a live charge/discount system: redeeming

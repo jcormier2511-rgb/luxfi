@@ -138,7 +138,8 @@ test("required: seller details are collected, summarized, and only saved after c
   await handleIncomingMessage(phone, "I want to sell a watch");
   await handleIncomingMessage(phone, "It's a Rolex Submariner 116610LV");
   await handleIncomingMessage(phone, "$14,500");
-  await handleIncomingMessage(phone, "pre-owned");
+  // Condition is no longer its own asked step (defaults silently to "pre-owned") -- location is
+  // asked immediately after price now.
   const photoPrompt = await handleIncomingMessage(phone, "USA");
   assert.match(photoPrompt.messages.join("\n"), /attach a photo/i);
   const summary = await handleIncomingMessage(phone, "skip");

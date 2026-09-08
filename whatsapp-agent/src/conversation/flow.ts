@@ -295,7 +295,7 @@ const CANCEL_COMMAND = /^cancel\b/i;
 const ESCROW_COMMAND = /\bescrow\b/i;
 
 function formatEscrowOffer(): string {
-  return `Great — use code ${config.fiFlow.escrowPromoCode} for your first escrow/inspection service free, and 50% off future services with a Fi membership.`;
+  return `Great — use code ${config.fiFlow.escrowPromoCode} for your first escrow/inspection service free, and 50% off future services with a Fi membership.\n\nContact John Cormier at 1.305.389.7000.`;
 }
 
 /** A message that is ONLY a greeting — nothing else in it to act on. "hi, I want a Daytona"
@@ -537,7 +537,11 @@ const FI_MENU = [
   "*4. Curious what a watch is selling for right now?*",
   '"market pulse 116500LN" — current asking prices, and how many buyers/sellers are active',
   "",
-  "*5. Managing your account*",
+  "*5. Transaction security*",
+  "We've partnered with Bennison for escrow and inspection.",
+  '"escrow" — get connected',
+  "",
+  "*6. Managing your account*",
   '"listings" — see your matches and open requests',
   '"status" — check your account',
   '"cancel" — clear your current search',
@@ -1591,8 +1595,6 @@ async function handleNaturalFollowUpAnswer(state: ConversationState, text: strin
 
 const SELL_DETAILS_QUESTION = "Tell me a bit more about what you're selling — brand, model, and reference number if you have it.";
 const SELL_PRICE_QUESTION = "What's your asking price?";
-const CONDITION_INTAKE_QUESTION = "What condition is it in? (new, unworn, or pre-owned)";
-const BUY_CONDITION_QUESTION = "What condition do you prefer? (new, pre-owned, or any)";
 const SELL_LOCATION_QUESTION = "Where is the watch located? (city or country)";
 const BUY_LOCATION_QUESTION = "Any location preference? (city or country, or say any)";
 const BUY_BUDGET_QUESTION = "What's your maximum budget?";
@@ -1690,7 +1692,7 @@ function extractLocation(text: string, consumed: { model?: string; brand?: strin
     .replace(/\b(?:HK|US|C|S|A|CN)?[$€£¥]\s*[\d][\d,.]*\s*k?\b/gi, " ")
     .replace(/\b[\d][\d,.]*\s*k\b/gi, " ")
     .replace(/\b(?:USD|CAD|HKD|EUR|GBP|AED|SGD|AUD|JPY|CNY|RMB|CHF)\b/gi, " ")
-    .replace(/\b(?:pre[- ]?owned|unworn|brand\s+new|used|new|mint|any\s+condition)\b/gi, " ")
+    .replace(/\b(?:pre[- ]?owned|unworn|brand\s+new|bnib|used|new|mint|any\s+condition)\b/gi, " ")
     .replace(new RegExp(`\\b(?:${DIAL_COLORS}|either|any)\\s*(?:dials?|colou?rs?)?\\b`, "gi"), " ")
     .replace(/\b(?:full\s+set|box(?:\s+and\s+|\s*&\s*|\/)?papers?|papers)\b/gi, " ")
     .replace(/\b(?:19|20)\d{2}\b/g, " ");
@@ -1723,8 +1725,11 @@ function extractDial(text: string, reference: string | null): string | undefined
 
 function intakeSlots(text: string, reference: string | null, prefer: "max" | "min" = "max") {
   const price = extractListingAmount(text, reference, prefer);
-  const conditionRaw = text.match(/\b(pre[- ]?owned|used|unworn|brand new|new|mint|any condition)\b/i)?.[1];
-  const condition = conditionRaw && /^pre[- ]?owned$/i.test(conditionRaw) ? "pre-owned" : conditionRaw;
+  const conditionRaw = text.match(/\b(pre[- ]?owned|used|unworn|brand new|bnib|new|mint|any condition)\b/i)?.[1];
+  const condition = !conditionRaw ? conditionRaw
+    : /^pre[- ]?owned$/i.test(conditionRaw) ? "pre-owned"
+    : /^bnib$/i.test(conditionRaw) ? "New"
+    : conditionRaw;
   const dial = extractDial(text, extractReference(text));
   const normalized=normalizeText(text);
   const brand=normalized.brand||undefined;
@@ -1767,7 +1772,7 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
     // The stray double space this can leave behind is what the final \s+ -> " " collapse below
     // (in `scrubbed`) exists to clean up.
     .replace(/(?:under|max(?:imum)?|budget|asking|price|for|up\s+to|(?:no\s+)?more\s+than|around|about|spend(?:ing)?)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, " ")
-    .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
+    .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|bnib|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
   // Belt and braces: whatever survives the scrubbing above is still rejected outright if it
   // identifies nothing — lead-in language, or a descriptor like a dial color that already has
@@ -1885,14 +1890,13 @@ function applyNamedIdentityCorrections(p: PendingSellIntake | PendingBuyIntake, 
 /**
  * "any" / "either" / "no preference" and friends: a bare qualifier names no field of its own,
  * so the only thing it can mean is "any <the thing Fi just asked about>". Routed by the step
- * being answered rather than pattern-matched into whichever field happens to accept the word.
+ * being answered rather than pattern-matched into whichever field happens to accept the word --
+ * several fields accept the same word (a bare "any" also satisfies the dial-color pattern), so
+ * without this a reply meant for one step could silently set a different one instead.
  *
- * The live bug this fixes made the condition question unanswerable. Several fields accept the
- * same word — a bare "any" also satisfies the dial-color pattern — so answering "any" to
- * "What condition do you prefer?" silently set the DIAL instead, counted as a change, and the
- * only code that could set condition from it (a "nothing else matched" fallback) therefore
- * never ran. Fi asked the same question again, and would have done so forever; the reported
- * session escaped only by typing "preowned".
+ * Condition is no longer among these steps -- it's never asked as its own question any more,
+ * defaulting silently to "pre-owned" (see nextSell/nextBuy) unless the customer's own text
+ * already said otherwise.
  *
  * The model step is deliberately not handled here — it has its own broader vocabulary
  * (NO_MODEL_PREFERENCE, which also accepts skip/none/unsure) and its own modelSkipped flag.
@@ -1902,7 +1906,6 @@ const BARE_QUALIFIER = /^(?:any|anything|either|whatever|no\s+pref(?:erence)?|do
 function applyBareQualifier(p: PendingSellIntake | PendingBuyIntake, text: string): boolean {
   if (!BARE_QUALIFIER.test(text.trim())) return false;
   if (p.step === "dial") { p.dialColor = "either"; return true; }
-  if (p.step === "condition") { p.condition = "any"; return true; }
   if (p.step === "location") { p.location = "any"; return true; }
   return false;
 }
@@ -2036,7 +2039,9 @@ async function nextSell(p: PendingSellIntake): Promise<string | null> {
   if (!p.reference && !p.referenceSkipped) { p.step="details"; return "Do you have the reference number? You can reply skip if you don't know it."; }
   if (p.price === undefined) { p.step="price"; return sellPriceQuestion(p); }
   if (dialRelevant(p.reference) && !p.dialColor) { p.step="dial"; return "Is it the black dial, white dial, or another color?"; }
-  if (!p.condition) { p.step="condition"; return CONDITION_INTAKE_QUESTION; }
+  // Never asked as its own question -- defaults to "pre-owned" unless the seller's own text
+  // already said otherwise (new/BNIB/unworn/etc, parsed by intakeSlots above).
+  if (!p.condition) p.condition = "pre-owned";
   if (!p.location) { p.step="location"; return SELL_LOCATION_QUESTION; }
   if (!p.imageUrl && !p.photoSkipped) { p.step="photo"; return SELL_PHOTO_QUESTION; }
   p.step="confirm"; return null;
@@ -2055,7 +2060,9 @@ function nextBuy(p: PendingBuyIntake): string | null {
     return `Which model? (or say "any" to consider all ${displayBrand(p.brand) || "matching"} models under your budget)`;
   }
   if (dialRelevant(p.reference) && !p.dialColor) { p.step="dial"; return DIAL_INTAKE_QUESTION; }
-  if (!p.condition) { p.step="condition"; return BUY_CONDITION_QUESTION; }
+  // Never asked as its own question -- defaults to "pre-owned" unless the buyer's own text
+  // already said otherwise (new/BNIB/unworn/etc, parsed by intakeSlots above).
+  if (!p.condition) p.condition = "pre-owned";
   if (!p.location) { p.step="location"; return BUY_LOCATION_QUESTION; }
   p.step="confirm"; return null;
 }

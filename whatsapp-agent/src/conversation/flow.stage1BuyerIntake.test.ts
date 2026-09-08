@@ -146,10 +146,26 @@ for (const [message, expected] of PARAPHRASES) {
     for (const [field, value] of Object.entries(expected)) {
       assert.equal((draft as unknown as Record<string, unknown>)[field], value, `${field} for "${message}"`);
     }
-    if (expected.condition) assert.equal(draft.step, "confirm", "every required field supplied → straight to confirmation");
-    else assert.equal(draft.step, "condition", "the ONE field the message really left out is the one asked for");
+    // Condition is never its own asked step -- it defaults silently to "pre-owned" when the
+    // message didn't state one, so every other field being present always goes straight to
+    // confirmation.
+    assert.equal(draft.condition, expected.condition ?? "pre-owned", `condition for "${message}"`);
+    assert.equal(draft.step, "confirm", "every required field supplied → straight to confirmation");
   });
 }
+
+test('required: "BNIB" is recognized as New condition, not defaulted to pre-owned', async () => {
+  const identity = fresh();
+  resetState(identity);
+  await handleIncomingMessage(identity, "hi");
+  const reply = await handleIncomingMessage(identity, "WTB Rolex Daytona 116500LN black dial BNIB in Miami max $25,000");
+  assert.doesNotMatch(reply.messages.join("\n"), /start with the first one/i);
+  const draft = getState(identity).pendingBuyIntake;
+  assert.ok(draft, "a WTB draft");
+  assert.equal(draft!.condition, "New", 'BNIB must be recognized as "New", not left to default to pre-owned');
+  assert.equal(draft!.step, "confirm", "every required field supplied → straight to confirmation");
+  assert.doesNotMatch(reply.messages.join("\n"), /\bBNIB\b/, "BNIB must not leak into the model as unrecognized text");
+});
 
 test("$25,000 and $25k both read as 25000, and a reference is never mistaken for a price", () => {
   for (const [message, budget] of [["WTB 116500LN max $25,000", 25000], ["WTB 116500LN max $25k", 25000], ["WTB 116500LN up to 25k", 25000], ["WTB 116500LN budget 116500", 116500]] as const) {

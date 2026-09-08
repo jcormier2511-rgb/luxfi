@@ -217,6 +217,9 @@ test("a reply that isn't name-shaped (a question, a greeting) is never stored as
  * every time. A bare "any" also satisfies the dial-color pattern, so it set the dial, counted as
  * a change, and the only code that could set condition from it never ran. The interview could
  * not be completed by answering it as asked — the reported session escaped by typing "preowned".
+ * Condition is no longer its own asked question at all (it defaults silently to "pre-owned"),
+ * which sidesteps this bug class entirely; the rest of the interview (model, location) still
+ * needs to complete cleanly with "any" answered throughout.
  */
 test("the reported interview completes with 'any' answered to every question", async () => {
   const phone = freshPhone();
@@ -236,7 +239,7 @@ test("the reported interview completes with 'any' answered to every question", a
 
   const draft = getState(phone).pendingBuyIntake!;
   assert.equal(draft.step, "confirm", "answering every question must finish the interview");
-  assert.equal(draft.condition, "any");
+  assert.equal(draft.condition, "pre-owned", "condition is no longer its own asked step -- defaults silently rather than being set by a bare qualifier");
   assert.equal(draft.location, "any");
 });
 
@@ -247,12 +250,15 @@ for (const qualifier of BARE_QUALIFIERS) {
     await handleIncomingMessage(phone, "i want to buy a rolex");
     await handleIncomingMessage(phone, "35000");
     await handleIncomingMessage(phone, "any"); // the model question
-    assert.equal(getState(phone).pendingBuyIntake?.step, "condition");
+    // Condition is no longer its own asked step -- it defaults silently to "pre-owned", so the
+    // next real question is location.
+    assert.equal(getState(phone).pendingBuyIntake?.condition, "pre-owned");
+    assert.equal(getState(phone).pendingBuyIntake?.step, "location");
 
     await handleIncomingMessage(phone, qualifier);
     const draft = getState(phone).pendingBuyIntake!;
-    assert.equal(draft.condition, "any", `"${qualifier}" must answer condition`);
-    assert.notEqual(draft.step, "condition", "and must not re-ask it");
+    assert.equal(draft.location, "any", `"${qualifier}" must answer location`);
+    assert.equal(draft.step, "confirm", "and must not re-ask it");
   });
 }
 

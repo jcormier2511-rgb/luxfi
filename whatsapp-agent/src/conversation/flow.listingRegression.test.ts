@@ -83,10 +83,13 @@ test("WTB conversational lead-ins and trailing only never become models", async 
 
 test("any fills only the discussed slot and arbitrary questions do not corrupt the draft",async()=>{
  const p="15550002002"; resetState(p); await handleIncomingMessage(p,"WTB Rolex 116500LN under 25k");
- const any=await handleIncomingMessage(p,"any"); assert.match(any.messages[0],/condition/i); assert.equal(any.state.pendingBuyIntake?.dialColor,"either");
- const question=await handleIncomingMessage(p,"What does pre-owned mean?");
- assert.equal(question.state.pendingBuyIntake?.condition,undefined); assert.equal(question.state.pendingBuyIntake?.location,undefined);
- assert.match(question.messages.at(-1)!,/condition/i);
+ // Condition is no longer its own asked step (defaults silently to "pre-owned"), so answering
+ // "any" to the dial question moves straight on to location next.
+ const any=await handleIncomingMessage(p,"any"); assert.match(any.messages[0],/location/i); assert.equal(any.state.pendingBuyIntake?.dialColor,"either");
+ assert.equal(any.state.pendingBuyIntake?.condition,"pre-owned");
+ const question=await handleIncomingMessage(p,"What does that mean?");
+ assert.equal(question.state.pendingBuyIntake?.location,undefined);
+ assert.match(question.messages.at(-1)!,/location/i);
 });
 
 test("a new request during intake asks replace-or-add and replace starts cleanly",async()=>{
