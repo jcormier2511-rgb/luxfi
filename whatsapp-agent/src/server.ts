@@ -282,7 +282,16 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
         await handleGroupMessage(message.id, message.groupId!, message.phone, message.senderName, message.text, message.imageUrl);
         continue;
       }
-      if (message.imageUrl && await handleIncomingSellerPhoto(message.phone, message.imageUrl)) continue;
+      // Live-reported bug: a photo sent while actively answering the sell-intake draft's OWN
+      // "Would you like to attach a photo?" question was silently swallowed with NO reply at
+      // all -- handleIncomingSellerPhoto (the unrelated v3 "buyer requested photos of a match"
+      // feature) intercepts ANY image from a phone with a pending photo-request record, however
+      // old or unrelated to what the sender is actually doing right now, and it only ever
+      // replies to the OTHER party (the original requester), never back to the sender. A seller
+      // mid-draft, actively on the photo step, must always be answered by their own draft --
+      // that record (if one even exists) can't be what this photo is answering.
+      const awaitingIntakePhoto = message.imageUrl ? getState(message.phone).pendingSellIntake?.step === "photo" : false;
+      if (message.imageUrl && !awaitingIntakePhoto && await handleIncomingSellerPhoto(message.phone, message.imageUrl)) continue;
 
       const fulfillmentReply = await handleOpportunityResponse(message.phone, message.text) ?? await handleCoverageCommand(message.phone, message.text);
       if (fulfillmentReply !== null) { await sendText(message.phone, fulfillmentReply); continue; }
