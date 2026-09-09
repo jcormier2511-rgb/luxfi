@@ -68,6 +68,26 @@ test("scoreMatch: same brand is still a fallback when only one side specified a 
   assert.equal(result!.score, 20);
 });
 
+test("scoreMatch: tolerates a reference fused into the model field by a known intake-parsing artifact", () => {
+  // Real reported bug: conversation/flow.ts's intakeSlots strips a typed reference out of the
+  // model text via a case-sensitive match against the always-uppercased extracted reference --
+  // a reference typed in lowercase survives the strip, leaving the model field stored as
+  // "Daytona 116500ln" instead of a clean "Daytona". Left unstripped here, that extra text
+  // always failed the exact canonical-model comparison even though the reference, brand, and
+  // everything else genuinely agreed, silently dropping a real match.
+  const fs = posting({ brand: "Rolex", model: "Daytona 116500ln", reference: "116500LN", condition: "pre-owned", price: "32000" });
+  const wtb = posting({ type: "WTB", brand: "Rolex", model: "Daytona", condition: "pre-owned", price: "37000" });
+  const result = scoreMatch(fs, wtb);
+  assert.ok(result, "a reference fused into the model field must not defeat an otherwise-matching model");
+  assert.ok(result!.reasons.some((r) => /Model: Daytona/.test(r)));
+});
+
+test("scoreMatch: a genuinely different model is still rejected even with a reference fused into the FS model text", () => {
+  const fs = posting({ brand: "Rolex", model: "Datejust 116200", reference: "116200", condition: "pre-owned" });
+  const wtb = posting({ type: "WTB", brand: "Rolex", model: "Daytona", condition: "pre-owned" });
+  assert.equal(scoreMatch(fs, wtb), null, "stripping the reference must not make an unrelated model look like a match");
+});
+
 test("scoreMatch: reference equality is normalized (formatting differences don't block a real match)", () => {
   const fs = posting({ reference: "116508-0013" });
   const wtb = posting({ reference: "1165080013" }); // same reference, no dash

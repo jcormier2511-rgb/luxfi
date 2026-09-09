@@ -1787,10 +1787,17 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
     const brandAt = identityClause.toLowerCase().indexOf(brand.toLowerCase());
     identityClause = brandAt >= 0 ? identityClause.slice(brandAt + brand.length) : null;
   }
+  // extractReference always returns its match uppercased, but the typed text it came from may
+  // not be -- a reference typed in lowercase ("116500ln") silently survived a plain, case-
+  // sensitive string .replace() against the uppercased form, leaving it stuck in the model text
+  // (the live bug this fixes stored "Daytona 116500ln" as the model for a listing whose own
+  // reference was correctly captured as "116500LN", displaying/matching as if the reference were
+  // part of the model name). `gi` matches the same token regardless of how it was cased.
+  const referenceInText = extractReference(text);
   const itemPhrase=(identityClause ?? "")
     .replace(/^(?:it(?:'s| is)|this is)\s+(?:a\s+)?/i, "")
     .replace(new RegExp(`\\b${(brand??"").replace(/\s+/g,"\\s+")}\\b`,"i"), "")
-    .replace(extractReference(text)??"","")
+    .replace(referenceInText ? new RegExp(referenceInText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi") : "", "")
     // A dial-color word ("black dial") describes the dial, not the watch's model, but the
     // trailing cutoff below only ever removed "dial"/"color" itself, leaving the color word
     // sitting right in front of it — the live bug this fixes stored "black" as the model for
@@ -1816,7 +1823,7 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
   // Belt and braces: whatever survives the scrubbing above is still rejected outright if it
   // identifies nothing — lead-in language, or a descriptor like a dial color that already has
   // its own slot. No phrasing can round-trip either into the model.
-  const reference_ = extractReference(text);
+  const reference_ = referenceInText;
   // A reference alone is how dealers name a watch ("Need a black 116500LN"); the maker and
   // model it implies are filled in only when the message did not state them itself.
   const implied = reference_ ? identityForReference(reference_) : null;

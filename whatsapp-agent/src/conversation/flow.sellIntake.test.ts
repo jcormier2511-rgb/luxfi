@@ -117,6 +117,21 @@ test('required regression: a price/condition mentioned mid-sentence ("... or 380
   assert.equal(result.state.pendingSellIntake?.condition, "pre-owned", "the condition itself must still be recognized correctly");
 });
 
+test('required regression: a reference typed in LOWERCASE must not survive inside the model field ("Daytona 116500ln" instead of a clean "Daytona")', async () => {
+  // Real reported bug: the model field ended up stored as "Daytona 116500ln" -- the reference
+  // fused right into it -- which then displayed the reference twice ("Daytona 116500ln
+  // 116500LN") and silently broke matching.ts's scoreMatch, which requires an exact canonical
+  // model-string match once a WTB names a model. Root cause: the model-text cleanup strips the
+  // typed reference out via a plain, case-sensitive string .replace() against the reference
+  // extractReference always returns UPPERCASED -- a reference typed in lowercase never matched
+  // that uppercased string, so it was never actually removed.
+  const phone = "19992220005"; resetState(phone); await inventoryDb._resetDbForTests();
+  await handleIncomingMessage(phone, "hi");
+  const result = await handleIncomingMessage(phone, "Sell my Rolex Daytona 116500ln, white dial, pre-owned, asking 32000, USA");
+  assert.equal(result.state.pendingSellIntake?.model, "Daytona", "the lowercase-typed reference must be fully stripped out of the model field");
+  assert.equal(result.state.pendingSellIntake?.reference, "116500LN");
+});
+
 test("required regression: a fresh, complete sell message is recognized as NEW rather than silently merged into an abandoned draft stuck at the photo step", async () => {
   const phone = "19992220004"; resetState(phone); await inventoryDb._resetDbForTests();
   await handleIncomingMessage(phone, "hi");

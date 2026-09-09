@@ -74,14 +74,29 @@ export function scoreMatch(fs: PostingRow, wtb: PostingRow): ScoreResult | null 
   // disqualify an otherwise-strong reference match. Only an FS value that actively DIFFERS from
   // what the WTB side asked for rejects the match.
   const canonical = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  // A free-text model field sometimes carries its own reference number fused into it -- a known
+  // intake-parsing artifact (conversation/flow.ts's intakeSlots strips a typed reference out of
+  // the model text with a case-sensitive match against the always-uppercased extracted
+  // reference, so a reference typed in lowercase survives in the model field, e.g. stored as
+  // "Daytona 116500ln" instead of "Daytona"). Left in, that extra text always fails the exact
+  // canonical-string comparison below even though the reference, brand, and everything else
+  // genuinely agree -- silently dropping a real match. Stripped here using each side's OWN
+  // reference before comparing, the same tolerance already applied on the display side (see
+  // notify.ts's formatMatchPresentation).
+  const modelIdentity = (model: string | null, reference: string | null): string | null => {
+    if (!model || !reference) return model;
+    const escaped = reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return model.replace(new RegExp(escaped, "gi"), " ").trim() || model;
+  };
   // A WTB naming a specific model (e.g. "Daytona") must not match an FS recorded under a
   // different model just because both are the same brand — "same brand" alone is a weak signal
   // (score 20, see above) that a stated model has to survive, not override. This is what stops a
   // WTB "Rolex Daytona" from matching a Datejust or Oyster Perpetual FS listing.
-  const requestedModel = canonical(stripModelNicknames(wtb.model || ""));
+  const requestedModel = canonical(stripModelNicknames(modelIdentity(wtb.model, wtb.reference) || ""));
   if (requestedModel && requestedModel !== "any" && requestedModel !== "either") {
-    if (fs.model && canonical(stripModelNicknames(fs.model)) !== requestedModel) return null;
-    if (fs.model) reasons.push(`Model: ${wtb.model}`);
+    const fsModel = modelIdentity(fs.model, fs.reference);
+    if (fsModel && canonical(stripModelNicknames(fsModel)) !== requestedModel) return null;
+    if (fsModel) reasons.push(`Model: ${wtb.model}`);
   }
   // A stated year is a real, hard constraint the same way a stated reference/dial/condition is
   // -- a buyer who names a specific year wants THAT year, not "close enough." A blank fs.year
