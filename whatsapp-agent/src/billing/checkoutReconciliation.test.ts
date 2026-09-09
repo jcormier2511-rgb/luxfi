@@ -15,7 +15,8 @@ process.env.AUTHORIZENET_SIGNATURE_KEY = "test-signature-key";
 
 const entitlements = require("./entitlementStore") as typeof import("./entitlementStore");
 const postingsDb = require("../postings/db") as typeof import("../postings/db");
-const { runCheckoutReconciliation } = require("./checkoutReconciliation") as typeof import("./checkoutReconciliation");
+const channels = require("../channels") as typeof import("../channels");
+const { runCheckoutReconciliation, activateClaimedCheckout } = require("./checkoutReconciliation") as typeof import("./checkoutReconciliation");
 
 const realFetch = globalThis.fetch;
 
@@ -87,6 +88,39 @@ test("a saved card whose webhook never arrived is charged once and activates the
   assert.equal(entitlement.plan, "tier1");
   assert.equal(entitlement.authnetSubscriptionId, "sub-recon");
   assert.equal((await entitlements.getCheckoutSession(session.id))?.status, "completed");
+});
+
+test('required regression: the fast webhook activation path tells the customer their membership is active, worded without a delay apology -- real reported bug: a customer who paid got total silence, then whatever they said next just read as an unrelated message with no acknowledgment', async (t) => {
+  const phone = "15558880011";
+  const session = await entitlements.createCheckoutSession(phone, "tier1");
+  await entitlements.setCheckoutSessionProfileId(session.id, "cp-webhook-confirm");
+  interceptAuthorizeNet(t, { paymentProfileIds: ["pp-webhook-confirm"] });
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(channels, "sendText", async (p: string, m: string) => { sent.push({ phone: p, message: m }); });
+
+  const claimed = await entitlements.claimCheckoutSessionForActivation(session.id);
+  const outcome = await activateClaimedCheckout(claimed!, "cp-webhook-confirm", "pp-webhook-confirm", "webhook");
+  assert.equal(outcome, "activated");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].phone, phone);
+  assert.match(sent[0].message, /membership is now active/i);
+  assert.doesNotMatch(sent[0].message, /thanks for your patience/i, "no delay to apologize for on the fast path");
+});
+
+test('required regression: the reconciliation activation path keeps its "thanks for your patience" wording, since that path exists specifically because of a delay', async (t) => {
+  const phone = "15558880012";
+  const session = await entitlements.createCheckoutSession(phone, "tier1");
+  await entitlements.setCheckoutSessionProfileId(session.id, "cp-recon-confirm");
+  await ageCheckout(session.id, 30);
+  interceptAuthorizeNet(t, { paymentProfileIds: ["pp-recon-confirm"] });
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(channels, "sendText", async (p: string, m: string) => { sent.push({ phone: p, message: m }); });
+
+  const result = await runCheckoutReconciliation();
+  assert.equal(result.activated, 1);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].message, /membership is now active/i);
+  assert.match(sent[0].message, /thanks for your patience/i);
 });
 
 test("a second sweep never charges an already-recovered checkout again", async (t) => {

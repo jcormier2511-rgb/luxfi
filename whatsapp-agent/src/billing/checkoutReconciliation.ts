@@ -56,6 +56,19 @@ export async function activateClaimedCheckout(
   await markCheckoutSessionStatus(session.id, "completed", charge.transId);
   console.log(`[billing/${source}] activated ${session.plan} for phone=${session.phone} (subscriptionId=${subscriptionId})`);
   await retireSupersededSubscription(session.phone, entitlement.supersededSubscriptionId, source);
+  // Real reported gap: the webhook path (the fast, intended one — fires the instant Authorize.net
+  // confirms payment) never told the customer anything happened at all. Only the reconciliation
+  // sweep (the slow recovery path for a webhook that never arrived) sent this -- so someone whose
+  // payment activated correctly and immediately got silence, then whatever they said next just
+  // read as an ordinary, unrelated message with nothing to acknowledge. Moved here so both
+  // callers get it the same way, worded per path since only the recovery one has a delay to
+  // apologize for.
+  await sendText(
+    session.phone,
+    source === "reconciliation"
+      ? "Your Fi membership is now active — thanks for your patience, your payment went through."
+      : "Your Fi membership is now active — welcome aboard!"
+  ).catch(() => undefined);
   return "activated";
 }
 
@@ -158,12 +171,6 @@ export async function runCheckoutReconciliation(options: { minAgeMinutes?: numbe
       const outcome = await activateClaimedCheckout(session, customerProfileId, paymentProfileIds[paymentProfileIds.length - 1], "reconciliation");
       if (outcome === "activated") {
         result.activated += 1;
-        // The join reply promised the membership would unlock automatically. It just did, later
-        // than intended and without anything the customer can see having happened — so say so.
-        await sendText(
-          session.phone,
-          "Your Fi membership is now active — thanks for your patience, your payment went through."
-        ).catch(() => undefined);
       } else {
         result.declined += 1;
       }
