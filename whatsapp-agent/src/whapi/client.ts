@@ -213,6 +213,16 @@ export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[
     console.log(
       `[whapi] raw id=${m.id} type=${m.type} from_me=${m.from_me} text=${JSON.stringify(m.text?.body ?? null)} hasImage=${Boolean(m.image?.link)}`
     );
+    // Live-reported bug: a real image message consistently logs hasImage=false above -- WHAPI's
+    // own webhook confirms type="image" but our code never finds a usable link at `image.link`,
+    // so the message is filtered out below before it ever reaches the conversation flow (the
+    // photo is silently dropped). The assumed shape (image.link/image.caption) was "documented
+    // but never confirmed against a real payload" per the type comment on IncomingWebhook above
+    // -- this dumps the COMPLETE raw message for exactly the case that assumption is failing, so
+    // the real field name/shape can be read directly out of these logs instead of guessed at.
+    if (m.type === "image" && !m.image?.link) {
+      console.log(`[whapi] raw image message with no usable link, full payload: ${JSON.stringify(m)}`);
+    }
   }
   return (body.messages ?? [])
     // An image message no longer needs a caption to be picked up — a seller answering Fi's own
