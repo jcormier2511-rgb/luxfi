@@ -79,7 +79,7 @@ test("required: a specific request skips straight to the price question", async 
   await handleIncomingMessage(phone, "hi");
   const result = await handleIncomingMessage(phone, "I want to sell a 116500 white dial");
   assert.doesNotMatch(result.messages.join("\n"), /Tell me a bit more/i);
-  assert.match(result.messages.join("\n"), /What would you like to ask\?/);
+  assert.match(result.messages.join("\n"), /What's your asking price\?/);
 });
 
 test("required regression: a seller who names a reference but no asking price still sees the Market Guide before Fi asks what to charge, and never has a price chosen for them", async (t) => {
@@ -104,7 +104,7 @@ test("required regression: a seller who names a reference but no asking price st
   assert.match(text, /Median dealer ask: \$/);
   assert.doesNotMatch(text, /Your ask:/, "spec: must not show/assume a seller ask that was never given");
   assert.doesNotMatch(text, /Market position:/, "spec: no market position without a seller ask to classify");
-  assert.match(text, /What would you like to ask\?/);
+  assert.match(text, /What's your asking price\?/);
   assert.equal(result.state.pendingSellIntake?.price, undefined, "spec: must not automatically choose the seller's price");
 });
 
@@ -123,7 +123,7 @@ test("required regression: an unrecognized reply on the price step re-asks the q
   const second = await handleIncomingMessage(phone, "hmm not sure yet");
   const secondText = second.messages.join("\n");
   assert.doesNotMatch(secondText, /CURRENT MARKET FOR/, "nothing about the draft changed, so the guide must not be reprinted just to re-ask the same question");
-  assert.match(secondText, /What would you like to ask\?/, "the short question is still repeated");
+  assert.match(secondText, /What's your asking price\?/, "the short question is still repeated");
   assert.match(secondText, /I kept your listing draft open\./);
 });
 

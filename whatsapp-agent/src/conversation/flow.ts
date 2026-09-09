@@ -2134,7 +2134,7 @@ async function sellPriceQuestion(p: PendingSellIntake): Promise<string> {
     year: p.year,
     boxPapers: p.boxPapers,
   });
-  return `${formatMarketGuide(guide, undefined, identityLine(p))}\n\nWhat would you like to ask?`;
+  return `${formatMarketGuide(guide, undefined, identityLine(p))}\n\n${SELL_PRICE_QUESTION}`;
 }
 
 async function nextSell(p: PendingSellIntake): Promise<string | null> {
@@ -2400,7 +2400,7 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
     // Guide a second time, identical numbers and all, just to re-ask the same one-line question.
     // Nothing about the draft changed, so nothing about the guide could have either; only the
     // question needs repeating, not the guide it was already shown with moments earlier.
-    if (p.step === "price" && p.price === undefined && p.reference) { messages.push("What would you like to ask?"); return; }
+    if (p.step === "price" && p.price === undefined && p.reference) { messages.push(SELL_PRICE_QUESTION); return; }
   }
   messages.push((await nextSell(p))??await sellSummaryWithMarketGuide(p));
 }
