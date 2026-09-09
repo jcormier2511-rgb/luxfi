@@ -61,7 +61,9 @@ async function currentMatches(posting:PostingRow, all:PostingRow[]):Promise<numb
   }
   return [...new Set(ids)];
 }
-function title(p:PostingRow){ return [p.type,"—",p.brand,p.model,p.reference,p.dial].filter(Boolean).join(" "); }
+// The 🔍/🏷️ icon prefixed at each call site already says buy vs. sell -- repeating the word
+// "WTB"/"FS" right next to it was redundant clutter, so this only names the watch itself now.
+function title(p:PostingRow){ return [p.brand,p.model,p.reference,p.dial].filter(Boolean).join(" "); }
 
 /** This posting's own reference's network-wide supply/demand/price, day-over-day -- distinct
  *  from `count` above (candidates that concretely MATCH this account's specific price/dial/
@@ -71,42 +73,54 @@ function title(p:PostingRow){ return [p.type,"—",p.brand,p.model,p.reference,p
  *  against yet, so it just states today's numbers plainly. */
 export interface BriefingTrend { fsCount:number; wtbCount:number; averageFsAsk:number|null; fsDelta:number|null; wtbDelta:number|null; priceDelta:number|null }
 
-function countDeltaLabel(delta:number|null):string {
+function countDeltaTag(delta:number|null):string {
   if (delta===null) return "";
-  if (delta===0) return " (no change since yesterday)";
-  return ` (${delta>0?"+":""}${delta} since yesterday)`;
+  if (delta===0) return " (no change)";
+  return ` (${delta>0?"+":""}${delta})`;
 }
 function priceLabel(value:number|null):string {
   return value===null ? "Unavailable" : new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(value);
 }
-function priceDeltaLabel(delta:number|null):string {
+function priceDeltaTag(delta:number|null):string {
   if (delta===null) return "";
-  if (delta===0) return " (no change since yesterday)";
+  if (delta===0) return " (no change)";
   const formatted=new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(Math.abs(delta));
-  return ` (${delta>0?"+":"-"}${formatted} since yesterday)`;
+  return ` (${delta>0?"+":"-"}${formatted})`;
+}
+
+/**
+ * Kept deliberately short and scannable -- one glance, no re-reading. Real feedback: the old
+ * multi-sentence "Market trend for this reference:\nSupply: ... \nDemand: ... \nAvg ask: ..."
+ * block was too dense to skim on a phone. Every number still appears (nothing here is lost,
+ * only compressed) -- just as one "·"-separated line under its own 📊 marker instead of three
+ * full sentences, so it still reads as a clearly separate, network-wide reference stat rather
+ * than part of the personal match count on the line above it (that confusion is the one thing
+ * the visual separation still has to prevent -- see the "required: the market trend is clearly
+ * its own... section" test).
+ */
+function trendLine(trend:BriefingTrend):string {
+  return `📊 ${trend.fsCount} for sale${countDeltaTag(trend.fsDelta)} · ${trend.wtbCount} want it${countDeltaTag(trend.wtbDelta)} · avg ${priceLabel(trend.averageFsAsk)}${priceDeltaTag(trend.priceDelta)}`;
 }
 
 export function formatBriefing(firstName:string|null, summaries:{posting:PostingRow;count:number;newCount:number;hasPrior:boolean;trend?:BriefingTrend|null}[], omitted=0):string {
-  const greeting=`Good morning${firstName?`, ${firstName}`:""}. Here’s your Fi update:`;
+  const greeting=`☀️ Morning${firstName?`, ${firstName}`:""}! Here's your Fi update:`;
   const blocks=summaries.map(({posting:p,count,newCount,hasPrior,trend},i)=>{
-    const matchLine=count===0?"No active matches yet.":`${count} active ${p.type==="WTB"?"sellers":"buyers"} currently match your ${p.type==="WTB"?"request":"listing"}${hasPrior&&newCount>0?`\n+${newCount} new since yesterday`:""}`;
-    // A blank line + its own header, not just appended lines, so this network-wide reference
-    // trend never reads as part of the personalized match count right above it -- easy to
-    // confuse otherwise, since both can legitimately show the same small number for different
-    // reasons (count above is candidates that match YOUR specific price/dial/condition; these
-    // are the total active listings/requests for this reference across the whole network).
-    const trendLines=trend
-      ? `\n\nMarket trend for this reference:\nSupply: ${trend.fsCount} active listing${trend.fsCount===1?"":"s"}${countDeltaLabel(trend.fsDelta)}\nDemand: ${trend.wtbCount} active buyer request${trend.wtbCount===1?"":"s"}${countDeltaLabel(trend.wtbDelta)}\nAvg ask: ${priceLabel(trend.averageFsAsk)}${priceDeltaLabel(trend.priceDelta)}`
-      : "";
-    return `${i+1}. ${title(p)}\n${matchLine}${trendLines}`;
+    const icon=p.type==="WTB"?"🔍":"🏷️";
+    const matchLine=count===0
+      ? "⏳ No matches yet."
+      : `✅ ${count} ${p.type==="WTB"?"sellers match":"buyers want this"}!${hasPrior&&newCount>0?` (+${newCount} new)`:""}`;
+    const trendLines=trend?`\n   ${trendLine(trend)}`:"";
+    return `${i+1}. ${icon} ${title(p)}\n   ${matchLine}${trendLines}`;
   });
-  if(omitted) blocks.push(`Plus ${omitted} more active task${omitted===1?"":"s"} I’m monitoring.`);
+  if(omitted) blocks.push(`➕ ${omitted} more listing${omitted===1?"":"s"} I'm watching.`);
   // The items above are numbered specifically so a reply can reference one unambiguously (see
   // BriefingTrend's doc comment) -- but numbering alone doesn't tell anyone that's usable. Same
   // command syntax parseListingEditCommand already supports elsewhere (flow.ts's "listings"
-  // summary), so a reply here behaves identically to one typed after "listings".
-  const manageHint=summaries.length>0?`\n\nReply "close listing <#>" to remove one, or "change listing <#> price/location/dial to ..." to edit it.`:"";
-  return `${greeting}\n\n${blocks.join("\n\n")}\n\n${summaries.some(s=>s.count)?"I’ll keep working 24/7 and let you know when I find strong new opportunities.":"I’m still monitoring for you."}${manageHint}\n\nYou can also check current listings anytime at watchfacts.com.`;
+  // summary), so a reply here behaves identically to one typed after "listings" -- this exact
+  // phrasing must stay, it's what's actually parsed, not just instructional copy.
+  const manageHint=summaries.length>0?`\n\n✏️ Reply "close listing <#>" to remove one, or "change listing <#> price/location/dial to ..." to edit it.`:"";
+  const closing=summaries.some(s=>s.count)?"💪 Working 24/7 -- I'll ping you the moment something new shows up.":"👀 Still watching for you.";
+  return `${greeting}\n\n${blocks.join("\n\n")}\n\n${closing}${manageHint}\n\n🔗 See everything anytime: watchfacts.com`;
 }
 
 /** Builds each posting's match/trend summary AND persists today's briefing_posting_state

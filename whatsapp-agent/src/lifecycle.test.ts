@@ -10,43 +10,40 @@ const channels = require("./channels") as typeof import("./channels");
 
 after(async () => { await _closePoolForTests(); });
 const posting=(type:"FS"|"WTB",extra:Partial<PostingRow>={}):PostingRow=>({id:1,source_platform:"whatsapp",source_type:"direct",source_chat_id:null,source_message_id:null,external_listing_id:null,canonical_user_id:1,source_identity:"15551234567",type,original_text:"",brand:"Rolex",model:"Daytona",reference:"116500LN",dial:"black dial",condition:"",price:null,currency:"USD",location:"",contact_name:"John",contact_phone:"15551234567",detail_url:"",status:"active",approved_match_count:0,expires_at:"2099-01-01",reminder_sent_for_expires_at:null,...extra});
-test("briefing preserves watch detail and current/new counts",()=>{const text=formatBriefing("John",[{posting:posting("WTB"),count:3,newCount:2,hasPrior:true}]);assert.match(text,/Good morning, John/);assert.match(text,/WTB — Rolex Daytona 116500LN black dial/);assert.match(text,/3 active sellers/);assert.match(text,/\+2 new since yesterday/);});
-test("FS wording counts active buyers and omits zero new",()=>{const text=formatBriefing(null,[{posting:posting("FS"),count:4,newCount:0,hasPrior:true}]);assert.match(text,/4 active buyers/);assert.doesNotMatch(text,/\+0 new/);});
-test("zero matches has natural monitoring copy",()=>{const text=formatBriefing(null,[{posting:posting("WTB"),count:0,newCount:0,hasPrior:false}]);assert.match(text,/No active matches yet/);assert.match(text,/still monitoring/);});
-test("multiple postings combine and excess tasks summarize",()=>{const text=formatBriefing("J",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:false},{posting:posting("FS",{id:2,brand:"Patek Philippe",model:"Nautilus",reference:"5712G"}),count:2,newCount:0,hasPrior:false}],3);assert.match(text,/Rolex/);assert.match(text,/Patek Philippe/);assert.match(text,/Plus 3 more active tasks/);});
-test("required: each requested item is numbered, in order, so a reply like 'listing 2' can reference it unambiguously",()=>{const text=formatBriefing("J",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:false},{posting:posting("FS",{id:2,brand:"Patek Philippe",model:"Nautilus",reference:"5712G"}),count:2,newCount:0,hasPrior:false}]);assert.match(text,/1\. WTB — Rolex Daytona 116500LN black dial/);assert.match(text,/2\. FS — Patek Philippe Nautilus 5712G/);});
+test("briefing preserves watch detail and current/new counts",()=>{const text=formatBriefing("John",[{posting:posting("WTB"),count:3,newCount:2,hasPrior:true}]);assert.match(text,/Morning, John/);assert.match(text,/Rolex Daytona 116500LN black dial/);assert.match(text,/3 sellers match/);assert.match(text,/\(\+2 new\)/);});
+test("FS wording counts active buyers and omits zero new",()=>{const text=formatBriefing(null,[{posting:posting("FS"),count:4,newCount:0,hasPrior:true}]);assert.match(text,/4 buyers want this/);assert.doesNotMatch(text,/\+0 new/);});
+test("zero matches has natural monitoring copy",()=>{const text=formatBriefing(null,[{posting:posting("WTB"),count:0,newCount:0,hasPrior:false}]);assert.match(text,/No matches yet/);assert.match(text,/Still watching/);});
+test("multiple postings combine and excess tasks summarize",()=>{const text=formatBriefing("J",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:false},{posting:posting("FS",{id:2,brand:"Patek Philippe",model:"Nautilus",reference:"5712G"}),count:2,newCount:0,hasPrior:false}],3);assert.match(text,/Rolex/);assert.match(text,/Patek Philippe/);assert.match(text,/3 more listings I'm watching/);});
+test("required: each requested item is numbered, in order, so a reply like 'listing 2' can reference it unambiguously",()=>{const text=formatBriefing("J",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:false},{posting:posting("FS",{id:2,brand:"Patek Philippe",model:"Nautilus",reference:"5712G"}),count:2,newCount:0,hasPrior:false}]);assert.match(text,/1\. 🔍 Rolex Daytona 116500LN black dial/);assert.match(text,/2\. 🏷️ Patek Philippe Nautilus 5712G/);});
 test("required: the briefing points people to watchfacts.com so they can check listings themselves",()=>{const text=formatBriefing("John",[{posting:posting("WTB"),count:3,newCount:2,hasPrior:true}]);assert.match(text,/watchfacts\.com/);});
 
 function trend(overrides:Partial<BriefingTrend>={}):BriefingTrend{return {fsCount:8,wtbCount:3,averageFsAsk:24500,fsDelta:2,wtbDelta:-1,priceDelta:500,...overrides};}
-test("required: a posting with trend data shows supply/demand/price and their deltas",()=>{
+test("required: a posting with trend data shows supply/demand/price and their deltas, compressed onto one line",()=>{
   const text=formatBriefing("John",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:true,trend:trend()}]);
-  assert.match(text,/Supply: 8 active listings \(\+2 since yesterday\)/);
-  assert.match(text,/Demand: 3 active buyer requests \(-1 since yesterday\)/);
-  assert.match(text,/Avg ask: \$24,500 \(\+\$500 since yesterday\)/);
+  assert.match(text,/📊 8 for sale \(\+2\) · 3 want it \(-1\) · avg \$24,500 \(\+\$500\)/);
 });
 test("required: a posting's FIRST briefing (no prior snapshot) states today's numbers plainly, with no invented delta",()=>{
   const text=formatBriefing("John",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:false,trend:trend({fsDelta:null,wtbDelta:null,priceDelta:null})}]);
-  assert.match(text,/Supply: 8 active listings\n/);
-  assert.doesNotMatch(text,/Supply:.*since yesterday/);
-  assert.match(text,/Avg ask: \$24,500\n/);
+  assert.match(text,/📊 8 for sale · 3 want it · avg \$24,500\n/);
 });
 test("required: a zero delta reads as 'no change', never a bare '+0'",()=>{
   const text=formatBriefing("John",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:true,trend:trend({fsDelta:0,priceDelta:0})}]);
-  assert.match(text,/Supply: 8 active listings \(no change since yesterday\)/);
-  assert.match(text,/Avg ask: \$24,500 \(no change since yesterday\)/);
+  assert.match(text,/8 for sale \(no change\)/);
+  assert.match(text,/avg \$24,500 \(no change\)/);
 });
 test("required: an unresolvable average ask still shows Unavailable, same as Market Pulse itself",()=>{
   const text=formatBriefing("John",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:true,trend:trend({averageFsAsk:null,priceDelta:null})}]);
-  assert.match(text,/Avg ask: Unavailable\n/);
+  assert.match(text,/avg Unavailable\n/);
 });
-test("required: a posting with no resolvable reference (trend omitted entirely) never shows Supply/Demand/Avg ask lines",()=>{
+test("required: a posting with no resolvable reference (trend omitted entirely) never shows the 📊 market line",()=>{
   const text=formatBriefing("John",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:true}]);
-  assert.doesNotMatch(text,/Supply:|Demand:|Avg ask:/);
+  assert.doesNotMatch(text,/📊/);
 });
-test("required: the market trend is clearly its own labeled section, not read as part of the personal match count right above it",()=>{
+test("required: the market trend line is clearly distinct from the personal match line right above it, even when both show the same number",()=>{
   const text=formatBriefing("John",[{posting:posting("WTB"),count:3,newCount:0,hasPrior:true,trend:trend({fsCount:3})}]);
-  // Both happen to be "3" here on purpose -- the exact confusion a shared header/blank line has to prevent.
-  assert.match(text,/currently match your request\n\nMarket trend for this reference:\nSupply: 3 active listings/);
+  // Both happen to be "3" here on purpose -- different icon (✅ vs 📊) and different wording
+  // ("sellers match" vs "for sale") is what prevents them reading as the same statistic.
+  assert.match(text,/✅ 3 sellers match!\n   📊 3 for sale/);
 });
 test("required: the briefing tells people how to remove or edit a numbered item, using the same command syntax the app already supports",()=>{
   const text=formatBriefing("John",[{posting:posting("WTB"),count:1,newCount:0,hasPrior:false},{posting:posting("FS",{id:2,brand:"Patek Philippe",model:"Nautilus",reference:"5712G"}),count:2,newCount:0,hasPrior:false}]);
