@@ -108,6 +108,25 @@ test("required regression: a seller who names a reference but no asking price st
   assert.equal(result.state.pendingSellIntake?.price, undefined, "spec: must not automatically choose the seller's price");
 });
 
+test("required regression: an unrecognized reply on the price step re-asks the question without re-printing the whole Market Guide a second time", async (t) => {
+  const phone = "19992220013"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests(); mockSends(t);
+  await postingsDb.withSchema((pool) =>
+    pool.query(
+      `INSERT INTO postings (source_platform,source_type,source_chat_id,source_message_id,external_listing_id,type,original_text,reference,price,currency,contact_phone,status,expires_at)
+       VALUES ('whatsapp','chat','other-group','dupguide-fixture',NULL,'FS','fixture','116500LN',24000,'USD','dupguide-seller','active',now()+interval '1 day')`
+    )
+  );
+  await handleIncomingMessage(phone, "hi");
+  const first = await handleIncomingMessage(phone, "Sell my Rolex Daytona 116500LN black dial, pre-owned, full set, Miami");
+  assert.match(first.messages.join("\n"), /MARKET GUIDE/, "sanity: the guide is shown the first time");
+
+  const second = await handleIncomingMessage(phone, "hmm not sure yet");
+  const secondText = second.messages.join("\n");
+  assert.doesNotMatch(secondText, /MARKET GUIDE/, "nothing about the draft changed, so the guide must not be reprinted just to re-ask the same question");
+  assert.match(secondText, /What would you like to ask\?/, "the short question is still repeated");
+  assert.match(secondText, /I kept your listing draft open\./);
+});
+
 test('required regression: a price/condition mentioned mid-sentence ("... or 38000 preowned") must not fuse the words around it into a garbled model like "orpreowned"', async () => {
   const phone = "19992220003"; resetState(phone); await inventoryDb._resetDbForTests();
   await handleIncomingMessage(phone, "hi");

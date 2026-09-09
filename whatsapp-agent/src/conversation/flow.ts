@@ -2344,6 +2344,12 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   if(!changed) {
     if (bailOutOfStuckIntake(state, messages)) return;
     const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I kept your listing draft open.");
+    // Real reported bug: an unrecognized reply on the price step re-ran nextSell, which -- since
+    // the draft is still stuck waiting on a price -- re-fetches and re-prints the ENTIRE Market
+    // Guide a second time, identical numbers and all, just to re-ask the same one-line question.
+    // Nothing about the draft changed, so nothing about the guide could have either; only the
+    // question needs repeating, not the guide it was already shown with moments earlier.
+    if (p.step === "price" && p.price === undefined && p.reference) { messages.push("What would you like to ask?"); return; }
   }
   messages.push((await nextSell(p))??await sellSummaryWithMarketGuide(p));
 }
