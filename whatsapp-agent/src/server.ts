@@ -40,7 +40,7 @@ import {
 } from "./billing/authorizeNet";
 import { recordMembershipPayment } from "./postings/approvalUsage";
 import { handleIncomingSellerPhoto } from "./matching/photoRequests";
-import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, formatPhoneForDisplay, notifyMatch, getPendingMatchesForRecipient } from "./postings/notify";
+import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, formatPhoneForDisplay, notifyMatch, getPendingMatchesForRecipient, isRealDisplayName } from "./postings/notify";
 import { interpretPostingsDecision } from "./ai/decisionInterpreter";
 import { runCheckoutReconciliation, activateClaimedCheckout } from "./billing/checkoutReconciliation";
 import { runReconciliation } from "./postings/matching";
@@ -89,10 +89,17 @@ const V4_DECISION_PATTERN = /^(approve|pass)\s+(\d+)\b/i;
 export function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number): string {
   const approved = outcome.match ? formatMatchPresentation(matchId, "Seller/Buyer", outcome.match, "Approved Match") : `Approved Match ${matchId}`;
   switch (outcome.status) {
-    case "approved":
-      return outcome.counterpart
-        ? `${approved}\n\nYou're connected! ${outcome.counterpart.name}: ${formatPhoneForDisplay(outcome.counterpart.phone)}\n\n${config.fiFlow.escrowSuggestion}`
-        : `${approved}.`;
+    case "approved": {
+      if (!outcome.counterpart) return `${approved}.`;
+      // Real reported bug: a counterpart with no captured display name has contact_name fall
+      // back to their raw identity (see postingsStore.ts's `senderName || senderIdentity`), so
+      // this line showed the same identity twice -- once raw ("telegram:5703391972"), once
+      // properly formatted ("+1 (570) 339-1972") right next to it. Only prefix the name when
+      // it's an actual name, the same real/not-real distinction the very first match card
+      // already applies (see notify.ts's isRealDisplayName).
+      const label = isRealDisplayName(outcome.counterpart.name) ? `${outcome.counterpart.name}: ` : "";
+      return `${approved}\n\nYou're connected! ${label}${formatPhoneForDisplay(outcome.counterpart.phone)}\n\n${config.fiFlow.escrowSuggestion}`;
+    }
     case "pending_confirmation":
       return `${approved}\n\nI'll let you know as soon as the other side confirms too.`;
     case "posting_closed":

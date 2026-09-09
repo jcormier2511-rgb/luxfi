@@ -666,3 +666,26 @@ test("formatPhoneForDisplay: a non-North-American-shaped number is shown as a pl
 test("formatPhoneForDisplay: a non-numeric identifier (e.g. an API-mirrored listing's internal contact id) is passed through unchanged rather than mangled", () => {
   assert.equal(notify.formatPhoneForDisplay("dealer-413"), "dealer-413");
 });
+
+test('required regression: formatMatchPresentation never lists the reference twice -- real reported bug: "Watch: rolex daytona 116500ln 116500LN", because the model field itself already carried the reference text', () => {
+  const text = notify.formatMatchPresentation(781, "Seller/Buyer", {
+    brand: "rolex",
+    model: "daytona 116500ln",
+    reference: "116500LN",
+  }, "Approved Match");
+  assert.equal((text.match(/116500LN/gi) ?? []).length, 1, "the reference must appear exactly once, however it's cased");
+  assert.match(text, /Watch: rolex daytona 116500LN/i);
+});
+
+test("formatMatchPresentation leaves a model that does NOT already contain the reference untouched", () => {
+  const text = notify.formatMatchPresentation(1, "Seller/Buyer", { brand: "Rolex", model: "Submariner", reference: "116610LV" });
+  assert.match(text, /Watch: Rolex Submariner 116610LV/);
+});
+
+test("isRealDisplayName: a real name (with or without a business-y suffix) passes; a bare or platform-prefixed identity does not", () => {
+  assert.equal(notify.isRealDisplayName("John Smith"), true);
+  assert.equal(notify.isRealDisplayName("ABC Watches"), true);
+  assert.equal(notify.isRealDisplayName("15551234567"), false);
+  assert.equal(notify.isRealDisplayName("telegram:5703391972"), false);
+  assert.equal(notify.isRealDisplayName("sms:15557654321"), false);
+});

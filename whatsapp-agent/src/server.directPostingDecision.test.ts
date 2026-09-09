@@ -150,6 +150,15 @@ test("approval replies identify the exact presented match and its available deta
   assert.match(reply, /Miami, USA/);
 });
 
+test('required regression: "You\'re connected!" never shows the counterpart\'s raw identity right next to the same number properly formatted -- real reported bug: "You\'re connected! telegram:5703391972: +1 (570) 339-1972"', () => {
+  const noRealName = formatApprovalOutcome({ status: "approved", counterpart: { name: "telegram:5703391972", phone: "5703391972" } }, 781);
+  assert.doesNotMatch(noRealName, /telegram:5703391972/, "the raw identity must never be shown when it's not an actual name");
+  assert.match(noRealName, /You're connected! \+1 \(570\) 339-1972/);
+
+  const realName = formatApprovalOutcome({ status: "approved", counterpart: { name: "John Smith", phone: "15551234567" } }, 782);
+  assert.match(realName, /You're connected! John Smith: \+1 \(555\) 123-4567/, "an actual name is still shown, labeling the number");
+});
+
 test("required (privacy): approving a direct-posting match never shows the raw, unformatted counterpart phone number as an 'identity' -- only ever the properly formatted reveal", async (t) => {
   assert.equal(config.postingsV4.enabled, false);
   await db._resetDbForTests();

@@ -164,7 +164,7 @@ export interface MatchPresentation {
  * through as though it were a real name. Stripping either known prefix first closes that gap
  * without needing to import channels/identity.ts's own (unexported) prefix constants here.
  */
-function isRealDisplayName(value: string): boolean {
+export function isRealDisplayName(value: string): boolean {
   const withoutPlatformPrefix = value.replace(/^(?:telegram|sms):/i, "");
   return /[a-zA-Z]/.test(withoutPlatformPrefix);
 }
@@ -196,7 +196,17 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
   // and was the real reported complaint here.
   if (match.identity) lines.push(`${roleLabel}: ${match.identity}`);
   if (match.activeGroupCount) lines.push(`Active in ${match.activeGroupCount} monitored dealer group${match.activeGroupCount === 1 ? "" : "s"}`);
-  const watch = [match.brand, match.model, match.reference].filter(Boolean).join(" ");
+  // Real reported bug: "Watch: rolex daytona 116500ln 116500LN" -- the model field itself
+  // sometimes already carries the reference text (a parsing artifact from the original message,
+  // e.g. "Daytona 116500ln" stored as the model rather than just "Daytona"), so joining brand +
+  // model + reference printed the same reference twice. Stripped out of the model here, case-
+  // insensitively, whenever it's already present, rather than fixing every upstream parser that
+  // could produce it.
+  const modelWithoutReference =
+    match.model && match.reference
+      ? match.model.replace(new RegExp(match.reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), "").trim()
+      : match.model;
+  const watch = [match.brand, modelWithoutReference, match.reference].filter(Boolean).join(" ");
   // Labeled the same way every other field on this card is -- an unlabeled bare reference
   // ("126505" with no brand/model recorded) otherwise read as a stray floating number with no
   // indication of what it even was.
