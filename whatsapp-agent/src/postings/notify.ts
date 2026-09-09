@@ -7,12 +7,18 @@ import { recordNotificationFailure } from "./status";
 import { getEntitlement, isPayingMember } from "../billing/entitlementStore";
 import { weeklyLimitFor, PlanKey } from "../billing/plans";
 import { getWeeklyApprovalCount, recordApprovalEvent, markApprovalRevealed } from "./approvalUsage";
-import { sendText } from "../channels";
+import { sendText, sendBannerImage } from "../channels";
 import { config } from "../config";
 import { isPostingMonitoringEnabled } from "../admin/store";
 import { getListingLimits } from "./listingConfig";
 import { saveMoreContext } from "./moreContext";
 import { getNotificationPreference, resolveNotifyIdentity, resolveFallbackIdentity } from "./notificationPreferences";
+
+// Same cap groupPublishing.ts's own image+caption send already respects -- a caption over this
+// gets silently truncated or rejected depending on the channel, so a match card that runs long
+// (a lengthy "In their words" description, several match reasons) falls back to a plain-text
+// send with no image rather than risk that.
+const MAX_IMAGE_CAPTION_LENGTH = 1000;
 
 /**
  * Sends `message` to a canonical user's preferred channel (see notificationPreferences.ts),
@@ -22,17 +28,24 @@ import { getNotificationPreference, resolveNotifyIdentity, resolveFallbackIdenti
  * delivery — a preferred channel that simply isn't linked yet is resolved (not "fallen back to")
  * by resolveNotifyIdentity itself, before this function is ever called; this is strictly about
  * what happens when an actual delivery attempt throws.
+ *
+ * `imageUrl`, when given, sends the photo as a real attached image with `message` as its
+ * caption instead of a plain text message -- see notifyOneRecipient's own doc comment for when
+ * that's actually needed (a listing with no Source: link for WhatsApp/Telegram to auto-preview
+ * from). A caption over MAX_IMAGE_CAPTION_LENGTH still degrades to a plain text send rather than
+ * risk the channel silently truncating or rejecting it.
  */
-async function sendToCanonicalUser(canonicalUserId: number, identity: string, message: string): Promise<string> {
+async function sendToCanonicalUser(canonicalUserId: number, identity: string, message: string, imageUrl?: string | null): Promise<string> {
+  const send = (to: string) => (imageUrl && message.length <= MAX_IMAGE_CAPTION_LENGTH ? sendBannerImage(to, imageUrl, message) : sendText(to, message));
   try {
-    await sendText(identity, message);
+    await send(identity);
     return identity;
   } catch (err) {
     const { fallbackEnabled } = await getNotificationPreference(canonicalUserId);
     if (!fallbackEnabled) throw err;
     const fallback = await resolveFallbackIdentity(canonicalUserId, identity);
     if (!fallback) throw err;
-    await sendText(fallback, message);
+    await send(fallback);
     return fallback;
   }
 }
@@ -362,9 +375,9 @@ async function notifyOneRecipient(
   if (!phone) return; // e.g. the API-mirrored FS side has no linked identity to notify at all
 
   // Best-effort only — a listing with no captured image (most chat posts today, since
-  // downloading/durable-storing WhatsApp media is still out of scope, see db.ts) just omits
-  // the "Photo:" line, same honest omission pattern as the missing "Fi Intelligence" block.
-  // Deliberately its own try/catch, separate from the sendText one below: an image lookup
+  // downloading/durable-storing WhatsApp media is still out of scope, see db.ts) just sends the
+  // plain text card with no photo, same honest omission pattern as the missing "Fi Intelligence"
+  // block. Deliberately its own try/catch, separate from the sendText one below: an image lookup
   // failure (missing row, a transient DB hiccup) must fall back to a text-only match card,
   // never propagate out of here — this runs inside runImmediateMatch's per-candidate loop
   // (see matching.ts), so an uncaught throw here would silently abort matching against every
@@ -387,7 +400,14 @@ async function notifyOneRecipient(
   try {
     const fromGroup=self.source_type==="chat"&&Boolean(self.source_chat_id);
     const message = fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl, activeGroupCount);
-    const deliveredTo = await sendToCanonicalUser(recipientCanonicalUserId, phone, message);
+    // A listing with its own detail_url (a WatchFacts dealer-feed link) already gets a rich
+    // preview -- image included -- for free from the Source: line in `message`; sending the
+    // SAME photo again as a second attached image would be a duplicate. A private/direct-
+    // sourced listing has no such link (see notify.ts's formatMatchPresentation, which no
+    // longer prints a raw "Photo: <url>" text line either), so that's the one case the photo
+    // needs to actually be attached for the counterpart to see it at all.
+    const attachImage = !counterpart.detail_url ? imageUrl : null;
+    const deliveredTo = await sendToCanonicalUser(recipientCanonicalUserId, phone, message, attachImage);
     await withSchema(pool=>pool.query(`UPDATE match_recipients SET delivered_at=now() WHERE match_id=$1 AND recipient_canonical_user_id=$2 AND match_revision=$3`,[matchId,recipientCanonicalUserId,revision]));
     if(fromGroup)await saveMoreContext(recipientCanonicalUserId,platformForIdentity(deliveredTo),self,counterpart,matchId);
   } catch (err) {

@@ -40,7 +40,7 @@ const notificationPreferences = require("./notificationPreferences") as typeof i
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const adminStore = require("../admin/store") as typeof import("../admin/store");
 
-const { ingestChatPosting, mirrorApiFsPosting } = store;
+const { ingestChatPosting, mirrorApiFsPosting, createDirectPosting } = store;
 const { runImmediateMatch } = matching;
 const { approveMatch, passMatch } = notify;
 
@@ -189,6 +189,61 @@ test("match card omits the groups line entirely when the counterpart is active i
   const card2 = sent.find((m) => m.phone === "buyer-no-groups-2")?.message;
   assert.ok(card2);
   assert.doesNotMatch(card2!, /monitored dealer group/);
+});
+
+test("required: a private (direct-sourced, no detail_url) listing's photo is sent as a real attached image, not just a text mention", async (t) => {
+  await resetAll();
+  const sent: { phone: string; image?: string; caption?: string; text?: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, text: message }));
+  t.mock.method(whapiClient, "sendBannerImage", async (phone: string, imageUrl: string, caption?: string) => sent.push({ phone, image: imageUrl, caption }));
+
+  const buyerPhone = "buyer-photo-real";
+  await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "wtb-photo-real", senderIdentity: buyerPhone, text: "WTB Rolex PHOTOREALREF budget $50,000" });
+  const fsPosting = await createDirectPosting({ phone: "seller-photo-real", senderName: "A Seller", description: "Rolex PHOTOREALREF", reference: "PHOTOREALREF", price: 10000, imageUrl: "https://example.com/my-photo.jpg" });
+  assert.equal(fsPosting.detail_url, "", "sanity: a direct-sourced listing has no detail_url to auto-preview from");
+  await runImmediateMatch(fsPosting);
+
+  const toBuyer = sent.find((s) => s.phone === buyerPhone);
+  assert.ok(toBuyer, "the buyer must still be notified");
+  assert.equal(toBuyer!.image, "https://example.com/my-photo.jpg", "the photo must be attached as a real image, not just referenced in text");
+  assert.match(toBuyer!.caption ?? "", /PHOTOREALREF/, "the usual card content is still the caption");
+});
+
+test("a private listing with no photo at all sends plain text -- no image call", async (t) => {
+  await resetAll();
+  const sent: { phone: string; image?: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string) => sent.push({ phone }));
+  t.mock.method(whapiClient, "sendBannerImage", async (phone: string, imageUrl: string) => sent.push({ phone, image: imageUrl }));
+
+  const buyerPhone = "buyer-nophoto-real";
+  await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "wtb-nophoto-real", senderIdentity: buyerPhone, text: "WTB Rolex NOPHOTOREF budget $50,000" });
+  const fsPosting = await createDirectPosting({ phone: "seller-nophoto-real", senderName: "A Seller", description: "Rolex NOPHOTOREF", reference: "NOPHOTOREF", price: 10000 });
+  await runImmediateMatch(fsPosting);
+
+  const toBuyer = sent.find((s) => s.phone === buyerPhone);
+  assert.ok(toBuyer);
+  assert.equal(toBuyer!.image, undefined, "no photo means no image call at all");
+});
+
+test("required: a dealer listing that already has a Source: link never double-attaches the same photo as a second image", async (t) => {
+  await resetAll();
+  const sent: { phone: string; image?: string; text?: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, text: message }));
+  t.mock.method(whapiClient, "sendBannerImage", async (phone: string, imageUrl: string) => sent.push({ phone, image: imageUrl }));
+
+  await mirrorApiFsPosting({
+    id: "wf-photo-dealer", item: "Rolex", brand: "Rolex", ref: "DEALERPHOTOREF", condition: "New", price: "$10,000",
+    contactName: "Dealer", contactPhone: "dealer-photo-real", detailUrl: "https://watchfacts.com/listings/dealer-photo",
+    imageUrl: "https://example.com/dealer-photo.jpg", description: "",
+  });
+  const buyerPhone = "buyer-dealerphoto-real";
+  const wtb = await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "wtb-dealerphoto-real", senderIdentity: buyerPhone, text: "WTB Rolex DEALERPHOTOREF budget $50,000" });
+  await runImmediateMatch(wtb.posting!);
+
+  const toBuyer = sent.find((s) => s.phone === buyerPhone);
+  assert.ok(toBuyer);
+  assert.equal(toBuyer!.image, undefined, "the Source: link's own auto-preview already shows the photo -- attaching it again would be a duplicate");
+  assert.match(toBuyer!.text ?? "", /Source: https:\/\/watchfacts\.com\/listings\/dealer-photo/);
 });
 
 test("approveMatch succeeds and returns the counterpart's contact info", async () => {
