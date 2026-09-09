@@ -2038,9 +2038,15 @@ function applyScopedSellAnswer(p: PendingSellIntake, text: string): boolean {
   }
   if (p.step === "confirm") {
     let changed = false;
-    if (/\b(?:price|asking)\b/i.test(text)) {
-      const price = extractListingAmount(text, p.reference, "min"); if (price !== undefined) { p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; changed = true; }
-    }
+    // Real reported bug: this used to require the literal word "price"/"asking" before even
+    // trying to extract one, so a natural restatement of the same watch ("I want to sell
+    // 126710BLRO with papers $12,500" -- reached here only once the caller has already confirmed
+    // it names the SAME reference as this draft) never updated the price at all despite stating
+    // one plainly. extractListingAmount already guards against misreading an unrelated number
+    // (a reference-shaped token, a bare small number with no currency/budget marker) -- the same
+    // extractor is trusted unconditionally at the dedicated price step, so it's just as safe to
+    // trust here.
+    const price = extractListingAmount(text, p.reference, "min"); if (price !== undefined) { p.price = price; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; changed = true; }
     changed = applyNamedIdentityCorrections(p, text) || changed;
     const slots = intakeSlots(text, p.reference);
     if (slots.condition) { p.condition = slots.condition; changed = true; }
@@ -2095,9 +2101,10 @@ function applyScopedBuyAnswer(p: PendingBuyIntake, text: string): boolean {
   }
   if (p.step === "confirm") {
     let changed = false;
-    if (/\b(?:price|budget|maximum|max)\b/i.test(text)) {
-      const budget = extractListingAmount(text, p.reference); if (budget !== undefined) { p.budget = budget; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; changed = true; }
-    }
+    // Same fix as applyScopedSellAnswer's own confirm-step branch: a bare budget correction is
+    // trusted the same way it already is at the dedicated budget step, without requiring the
+    // literal word "price"/"budget"/"max" first.
+    const budget = extractListingAmount(text, p.reference); if (budget !== undefined) { p.budget = budget; p.currency = detectCurrency(text) ?? p.currency ?? "USD"; changed = true; }
     changed = applyNamedIdentityCorrections(p, text) || changed;
     const slots = intakeSlots(text, p.reference);
     if (slots.condition) { p.condition = slots.condition; changed = true; }
@@ -2945,7 +2952,27 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     return handleIncomingMessageInner(phone, text, contact, imageUrl);
   }
 
-  if ((state.pendingSellIntake || state.pendingBuyIntake) && (isFreshSellRequest(text) || isFreshBuyRequest(text))) {
+  // Live-reported bug: a natural-language restatement of the SAME watch already on an open
+  // draft's CONFIRM step ("I want to sell 126710BLRO with papers $12,500", echoing the exact
+  // reference the draft is already waiting to confirm) got misread as a conflicting NEW request,
+  // forcing the seller through an unwanted "replace or add another?" detour -- worse, a
+  // non-text reply to THAT prompt (e.g. an unrelated photo, which carries no "replace"/"add"
+  // text) then re-armed the very same prompt, and the photo itself was silently discarded. Fi
+  // already knows how to apply a restatement like this AS A CORRECTION at the confirm step (see
+  // applyScopedSellAnswer's/applyScopedBuyAnswer's own `p.step === "confirm"` branch, which
+  // already handles "change my price to X" the same way) -- it only needs to actually reach that
+  // handler instead of being intercepted here first. Only the confirm step, and only the SAME
+  // reference: a fresh request for a genuinely different watch must still trigger the prompt.
+  const sameReferenceAsSellDraft =
+    state.pendingSellIntake?.step === "confirm" && referencesMatch(extractReference(text) ?? "", state.pendingSellIntake.reference ?? "");
+  const sameReferenceAsBuyDraft =
+    state.pendingBuyIntake?.step === "confirm" && referencesMatch(extractReference(text) ?? "", state.pendingBuyIntake.reference ?? "");
+  if (
+    (state.pendingSellIntake || state.pendingBuyIntake) &&
+    (isFreshSellRequest(text) || isFreshBuyRequest(text)) &&
+    !sameReferenceAsSellDraft &&
+    !sameReferenceAsBuyDraft
+  ) {
     state.pendingReplacementRequest = text;
     messages.push("You already have an incomplete request. Should I replace it or add another?");
     saveState(state);

@@ -4,6 +4,15 @@ function digitsOnly(phone: string): string {
   return phone.replace(/[^\d]/g, "");
 }
 
+// Real reported bug: none of this file's fetch() calls had a timeout, and every inbound message
+// for a given phone is processed serially (conversation/flow.ts's withPhoneSerialized) -- a
+// single WHAPI call that stalls (a dropped connection that never resets, not an error) had
+// nothing to bound it, so Node's fetch would wait indefinitely and every subsequent message from
+// that SAME phone queued up behind it, unanswered, for however long the underlying socket took
+// to eventually give up (observed as tens-of-minutes gaps in production). A timeout turns a
+// silent stall into a fast, logged failure the existing try/catch in server.ts already handles.
+const WHAPI_TIMEOUT_MS = 10_000;
+
 async function post(path: string, body: unknown): Promise<any> {
   if (!config.whapi.token) {
     console.warn(`[whapi] WHAPI_TOKEN not set — skipping live call to ${path}. Payload:`, body);
@@ -17,6 +26,7 @@ async function post(path: string, body: unknown): Promise<any> {
       Authorization: `Bearer ${config.whapi.token}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(WHAPI_TIMEOUT_MS),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -54,6 +64,7 @@ export async function checkWhapiHealth(): Promise<WhapiHealthResult> {
     const res = await fetch(`${config.whapi.baseUrl}/health`, {
       method: "GET",
       headers: { Accept: "application/json", Authorization: `Bearer ${config.whapi.token}` },
+      signal: AbortSignal.timeout(WHAPI_TIMEOUT_MS),
     });
     if (!res.ok) {
       return { configured: true, reachable: false, authorized: null, statusText: null, version: null, error: `HTTP ${res.status}` };
@@ -99,6 +110,7 @@ export async function listWhapiGroups(): Promise<WhapiGroupSummary[]> {
   const res = await fetch(`${config.whapi.baseUrl}/groups`, {
     method: "GET",
     headers: { Accept: "application/json", Authorization: `Bearer ${config.whapi.token}` },
+    signal: AbortSignal.timeout(WHAPI_TIMEOUT_MS),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

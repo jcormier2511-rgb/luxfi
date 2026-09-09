@@ -19,6 +19,17 @@ export interface OpenAiErrorDetail {
   requestId: string | null;
 }
 
+// Real reported bug: this file's fetch() calls had no timeout, and every inbound message for a
+// given phone is processed serially (conversation/flow.ts's withPhoneSerialized) -- a single
+// OpenAI call that stalls (a dropped connection that never resets, not an error OpenAI itself
+// returns) had nothing to bound it, so Node's fetch would wait indefinitely and every subsequent
+// message from that SAME phone queued up behind it, unanswered, for however long the underlying
+// socket took to eventually give up (observed as tens-of-minutes gaps in production). The
+// existing "always falls back to null on failure" contract only ever fired on an actual error --
+// never on a hang, since nothing was racing the call against a deadline. A generous but bounded
+// timeout lets that same fallback path fire instead of blocking the phone's whole queue.
+const OPENAI_TIMEOUT_MS = 15_000;
+
 /**
  * Parses OpenAI's actual structured error shape ({"error":{message,type,code,param}}) plus the
  * x-request-id response header — never the raw, possibly-truncated body alone, and never the
@@ -82,6 +93,7 @@ export async function callOpenAiJson<T>(req: AiJsonRequest): Promise<T | null> {
         max_output_tokens: req.maxTokens ?? 1024,
         store: false,
       }),
+      signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
     });
     if (!res.ok) {
       const detail = await parseOpenAiError(res);
@@ -132,6 +144,7 @@ export async function runOpenAiDiagnosticCall(): Promise<OpenAiDiagnosticResult>
         reasoning: { effort: "none" },
         max_output_tokens: 20,
       }),
+      signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
     });
     if (!res.ok) {
       return { ok: false, status: res.status, error: await parseOpenAiError(res) };

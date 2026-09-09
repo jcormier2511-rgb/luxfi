@@ -12,6 +12,15 @@ let cached: RatesTable | null = null;
 // fetch is already in flight all await the SAME request rather than each firing their own.
 let inFlight: Promise<RatesTable | null> | null = null;
 
+// Real reported bug: this fetch had no timeout. getRates() below dedupes concurrent callers into
+// one shared `inFlight` promise -- if that one fetch stalls (a dropped connection that never
+// resets, not an error), every phone whose message happens to need currency conversion during
+// that refresh window blocks behind the same unresolved promise, on top of each phone's own
+// per-phone message queue (conversation/flow.ts's withPhoneSerialized) never getting a chance to
+// move on. A generous but bounded timeout lets the existing "keep serving the last good table on
+// a refresh failure" fallback fire instead of hanging indefinitely.
+const FX_TIMEOUT_MS = 10_000;
+
 /**
  * Open Exchange Rates' `/latest.json` — the complete rates table in one call. Deliberately
  * never called per-listing or per-match (see getRates below, which only re-fetches once per
@@ -28,7 +37,7 @@ async function fetchRatesFromProvider(): Promise<RatesTable | null> {
     const url = `https://openexchangerates.org/api/latest.json?app_id=${encodeURIComponent(config.fx.appId)}&base=${encodeURIComponent(
       config.fx.baseCurrency
     )}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(FX_TIMEOUT_MS) });
     if (!res.ok) {
       console.error(`[fx] rates request failed (${res.status}):`, await res.text().catch(() => "<no body>"));
       return null;

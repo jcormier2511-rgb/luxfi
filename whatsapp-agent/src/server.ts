@@ -287,11 +287,17 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
       // all -- handleIncomingSellerPhoto (the unrelated v3 "buyer requested photos of a match"
       // feature) intercepts ANY image from a phone with a pending photo-request record, however
       // old or unrelated to what the sender is actually doing right now, and it only ever
-      // replies to the OTHER party (the original requester), never back to the sender. A seller
-      // mid-draft, actively on the photo step, must always be answered by their own draft --
-      // that record (if one even exists) can't be what this photo is answering.
-      const awaitingIntakePhoto = message.imageUrl ? getState(message.phone).pendingSellIntake?.step === "photo" : false;
-      if (message.imageUrl && !awaitingIntakePhoto && await handleIncomingSellerPhoto(message.phone, message.imageUrl)) continue;
+      // replies to the OTHER party (the original requester), never back to the sender.
+      //
+      // Real reported follow-up: the FIRST fix here only special-cased step === "photo", but the
+      // exact same silent swallow reproduced again with a photo (plus caption) sent at the
+      // CONFIRM step, adding/replacing a photo on an already-summarized draft -- still a real
+      // answer to the seller's OWN open draft, just not that one specific step. Any open draft at
+      // all must always win: whatever v3 photo-request record might also exist for this phone
+      // can't be what a photo sent while actively mid-draft is answering.
+      const draftStateForPhoto = message.imageUrl ? getState(message.phone) : null;
+      const hasOpenDraft = Boolean(draftStateForPhoto?.pendingSellIntake || draftStateForPhoto?.pendingBuyIntake);
+      if (message.imageUrl && !hasOpenDraft && await handleIncomingSellerPhoto(message.phone, message.imageUrl)) continue;
 
       const fulfillmentReply = await handleOpportunityResponse(message.phone, message.text) ?? await handleCoverageCommand(message.phone, message.text);
       if (fulfillmentReply !== null) { await sendText(message.phone, fulfillmentReply); continue; }

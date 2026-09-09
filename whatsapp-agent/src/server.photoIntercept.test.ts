@@ -103,6 +103,40 @@ test("required regression: a photo answering an OPEN sell-intake photo step is n
   assert.equal(toRequester.length, 0, "an unrelated party must never receive a photo that was actually answering someone else's own draft");
 });
 
+/**
+ * Live-reported follow-up: the fix above only special-cased step === "photo". The exact same
+ * silent swallow reproduced again with a photo (plus caption text) sent at the CONFIRM step --
+ * adding or replacing a photo on an already-summarized draft is still a real answer to the
+ * seller's own open draft, just not that one specific step.
+ */
+test("required regression: a photo sent at the CONFIRM step (not just the photo step) is also never swallowed by an unrelated pending v3 photo request", async () => {
+  await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
+
+  const sellerPhone = "19992221010";
+  const requesterPhone = "19992221011";
+  resetState(sellerPhone);
+
+  await seedPendingPhotoRequest(sellerPhone, requesterPhone);
+
+  await server.processIncomingMessages([{ id: "c1", phone: sellerPhone, text: "hi", isGroup: false }]);
+  await server.processIncomingMessages([{ id: "c2", phone: sellerPhone, text: "FS Rolex Submariner 116610LN black dial $12,000 pre-owned in USA", isGroup: false }]);
+  await server.processIncomingMessages([{ id: "c3", phone: sellerPhone, text: "skip", isGroup: false }]);
+  assert.equal(getState(sellerPhone).pendingSellIntake?.step, "confirm", "precondition: the draft must be at the confirm step, not the photo step");
+
+  calls.length = 0;
+  await server.processIncomingMessages([{ id: "c4", phone: sellerPhone, text: "For sale 116610LN with papers $12,000", isGroup: false, imageUrl: "https://cdn.example/confirm-step-photo.jpg" }]);
+
+  const state = getState(sellerPhone);
+  assert.equal(state.pendingSellIntake?.imageUrl, "https://cdn.example/confirm-step-photo.jpg", "the photo must attach to the seller's OWN draft even at the confirm step");
+
+  const toSeller = calls.filter((c) => c.body?.to === sellerPhone);
+  assert.ok(toSeller.length > 0, "the seller must receive a reply, not silence");
+
+  const toRequester = calls.filter((c) => c.body?.to === requesterPhone);
+  assert.equal(toRequester.length, 0, "an unrelated party must never receive a photo that was actually answering someone else's own draft");
+});
+
 test("sanity: a photo genuinely answering an open v3 photo request is still routed there when no sell-intake draft is open", async () => {
   await inventoryDb._resetDbForTests();
   await postingsDb._resetDbForTests();

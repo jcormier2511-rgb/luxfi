@@ -181,6 +181,40 @@ test("required regression: a fresh, complete sell message is recognized as NEW r
   assert.doesNotMatch(text, /orpreowned/i);
 });
 
+test('required regression: a natural-language restatement of the SAME watch at the CONFIRM step is applied as a correction, not misread as a conflicting new request', async () => {
+  // Live-reported bug: with a draft already sitting at "Waiting on: your confirmation to list
+  // it," restating the exact same watch in a natural sentence ("I want to sell 126710BLRO with
+  // papers $12,500") got misread as a brand-new, conflicting sell request -- triggering "You
+  // already have an incomplete request. Should I replace it or add another?" -- when it was
+  // actually meant as a correction/restatement of the draft already open. Fi already knows how
+  // to apply a restatement like this at the confirm step (see applyScopedSellAnswer's own
+  // p.step === "confirm" branch); it just needs to actually reach that handler.
+  const phone = "19992220007"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests();
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "FS Rolex GMT-Master II 126710BLRO black dial $65,000 pre-owned in USA");
+  const beforeCorrection = await handleIncomingMessage(phone, "skip");
+  assert.equal(beforeCorrection.state.pendingSellIntake?.step, "confirm", "precondition: the draft must be at the confirm step");
+
+  const result = await handleIncomingMessage(phone, "i want to sell 126710BLRO with papers $12,500");
+  const text = result.messages.join("\n");
+  assert.doesNotMatch(text, /already have an incomplete request/i, "restating the SAME reference at the confirm step must never trigger the replace/add prompt");
+  assert.equal(result.state.pendingSellIntake?.price, 12500, "the restated price must be applied as a correction to the same draft");
+  assert.ok(result.state.pendingSellIntake, "the draft must still be open, not discarded/replaced");
+});
+
+test('required regression: a fresh request for a genuinely DIFFERENT watch at the CONFIRM step still triggers the replace/add prompt', async () => {
+  // The fix above must be narrowly scoped to the SAME reference -- a genuinely different watch
+  // must still be caught as a real conflict, exactly as before.
+  const phone = "19992220008"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests();
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "FS Rolex GMT-Master II 126710BLRO black dial $65,000 pre-owned in USA");
+  const beforeCorrection = await handleIncomingMessage(phone, "skip");
+  assert.equal(beforeCorrection.state.pendingSellIntake?.step, "confirm", "precondition: the draft must be at the confirm step");
+
+  const result = await handleIncomingMessage(phone, "I want to sell a Patek Philippe Nautilus 5711/1A for $85,000");
+  assert.match(result.messages.join("\n"), /already have an incomplete request/i, "a genuinely different watch must still trigger the replace/add prompt");
+});
+
 test("required: seller details are collected, summarized, and only saved after confirmation", async (t) => {
   const phone = "19992220003"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests(); mockSends(t);
   await handleIncomingMessage(phone, "hi");
