@@ -1108,7 +1108,17 @@ function parseMarketReferenceCommand(text: string): MarketReferenceCommandResult
     if (slots.dial) locationCandidate = locationCandidate.replace(new RegExp(`\\b${slots.dial}\\b\\s*(?:dial|colou?r)?`, "i"), " ");
     if (slots.condition) locationCandidate = locationCandidate.replace(new RegExp(slots.condition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
     locationCandidate = locationCandidate.replace(/\s+/g, " ").trim();
-    const location = slots.location ?? (locationCandidate && looksLikePlace(locationCandidate) ? locationCandidate : undefined);
+    // Real reported bug: "market post 116500" (a stray, unrecognized word after "market" — not a
+    // location at all) treated "post" itself as a bare location, filtering the pulse down to
+    // (nonexistent) "post"-located listings and reporting "0 active listings, 0 active requests"
+    // for a reference that in fact has plenty of live data — the near-empty, wrongly-filtered
+    // result read as "no data for this watch" instead of "not a command Fi recognized". Unlike
+    // looksLikePlace's own dedicated context (a location QUESTION, where whatever is typed IS by
+    // definition the answer), nothing here asked for a location, so an ordinary lowercase word
+    // needs a real signal before being trusted as one. Real place names people actually type this
+    // way are conventionally capitalized ("North America", "Miami", "USA") — requiring that
+    // preserves every documented case while excluding a stray lowercase leftover.
+    const location = slots.location ?? (locationCandidate && /^[A-Z]/.test(locationCandidate) && looksLikePlace(locationCandidate) ? locationCandidate : undefined);
     if (location || slots.dial || slots.condition) {
       return {
         reference,

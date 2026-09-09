@@ -139,13 +139,19 @@ test("a pulse always states which scope it counted, and discloses a canonical re
 test("a bare digits-only reference gets a caveat that it may be missing suffixed variants; a fully-suffixed reference does not", () => {
   const bare = formatMarketPulse({ reference:"5712", requested:"PATEK 5712", label:"Patek 5712", scope:"reference", fsCount:1, wtbCount:0, averageFsAsk:null });
   assert.match(bare, /no case\/bezel\/dial suffix/);
-  assert.match(bare, /"5712\/1A"/, "the example suffix must build on the actual reference asked for, not a hardcoded example");
+  assert.match(bare, /\n\nNote: "5712"/, "the caveat is its own paragraph, not a parenthetical crammed into the Scope line");
 
   const suffixed = formatMarketPulse({ reference:"5712/1A", requested:"5712/1A", label:"Patek 5712/1A", scope:"reference", fsCount:34, wtbCount:0, averageFsAsk:280000 });
   assert.doesNotMatch(suffixed, /suffix/, "a reference that already carries a suffix needs no such caveat");
 
+  // Real reported bug: the caveat used to suggest "116610/1A" as "the full reference" -- a
+  // Patek-style slash suffix invented for every brand regardless of its own convention. Rolex
+  // never writes a reference that way (its suffixes are letters appended directly, no slash, e.g.
+  // "116610LN"), so a Rolex reference must get the same brand-agnostic caveat with no invented,
+  // wrong-for-Rolex example suffix.
   const alsoBare = formatMarketPulse({ reference:"116610", requested:"116610", label:"116610", scope:"reference", fsCount:0, wtbCount:0, averageFsAsk:null });
   assert.match(alsoBare, /no case\/bezel\/dial suffix/, "the same ambiguity applies to any bare numeric reference, not just Patek's");
+  assert.doesNotMatch(alsoBare, /\/1A/i, "must never invent a Patek-style slash suffix example for a Rolex (or any other) reference");
 });
 
 

@@ -302,9 +302,16 @@ export function liquidityLine(fsCount: number, wtbCount: number): string {
  * which variant was meant — but nothing told the user the answer was almost certainly
  * incomplete rather than a genuinely thin market.
  */
+// Real reported bug: this used to append `${reference}/1A` as "the full reference" example --
+// a Patek-style slash suffix, invented for every brand regardless of its own convention. Asked
+// about a Rolex reference (e.g. "126334"), it suggested "126334/1A", which is not how Rolex
+// writes a reference at all (Rolex suffixes are letters appended directly, like "LN"/"BLRO", no
+// slash) -- a wrong, brand-specific example is worse than none, so this states the general point
+// with no invented format. On its own line rather than crammed into the Scope line as a long
+// parenthetical, which read as one run-on sentence in a chat bubble.
 function bareReferenceCaveat(reference: string): string {
   if (!/^\d+$/.test(reference)) return "";
-  return ` (note: "${reference}" has no case/bezel/dial suffix — if this reference has more than one variant, only listings stored exactly this way are counted; ask with the full reference, e.g. "${reference}/1A", for complete results)`;
+  return `Note: "${reference}" has no case/bezel/dial suffix. If this reference has more than one variant, only listings stored exactly this way are counted — ask again with the full reference (as shown on the listing or papers) for complete results.`;
 }
 
 export function formatMarketPulse(pulse: MarketPulse): string {
@@ -336,9 +343,14 @@ export function formatMarketPulse(pulse: MarketPulse): string {
     const filters = pulse.appliedFilters;
     const filterParts = filters ? [filters.dial && `${filters.dial} dial`, filters.condition, filters.location].filter(Boolean) : [];
     const filterNote = filterParts.length > 0 ? ` (filtered to ${filterParts.join(", ")})` : "";
-    scopeLine = `Scope: this exact reference${alias}${filterNote}${bareReferenceCaveat(pulse.reference)}`;
+    scopeLine = `Scope: this exact reference${alias}${filterNote}`;
     averageLine = averageLineFor("Average FS ask", pulse.averageFsAsk, pulse.averageBasis);
   }
+  // bareReferenceCaveat is itself a no-op for a brand/model-scope pulse (pulse.reference is ""
+  // there, which never matches the digits-only guard), so no extra scope check is needed here.
+  // Blank-line separated from averageLine as its own paragraph, only when there's a caveat to show.
+  const caveatText = bareReferenceCaveat(pulse.reference);
+  const caveat = caveatText ? `\n\n${caveatText}` : "";
 
   // The listings behind the number. A pulse that says "93 active listings" and then shows none
   // of them asks to be taken on trust; these are the actual WatchFacts pages, so the figures
@@ -350,7 +362,7 @@ export function formatMarketPulse(pulse: MarketPulse): string {
     ? `\n\nHere ${pulse.listingUrls.length === 1 ? "is the most recent listing" : `are the ${pulse.listingUrls.length} most recent listings`}:\n${pulse.listingUrls.join("\n")}`
     : "";
 
-  return `Market Pulse — ${title}\n\n${scopeLine}\n${counts}\n${averageLine}${links}\n\n${dataWindowTrailer()}`;
+  return `Market Pulse — ${title}\n\n${scopeLine}\n${counts}\n${averageLine}${caveat}${links}\n\n${dataWindowTrailer()}`;
 }
 
 
