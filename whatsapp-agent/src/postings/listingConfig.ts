@@ -4,11 +4,17 @@ import { initAdminSchema, listActivePushEligibleGroups, recordGroupPushResult } 
 
 export const DEFAULT_MAX_MATCHES_PER_LISTING = 3;
 export const DEFAULT_MAX_PUSH_GROUPS_PER_LISTING = 3;
+// Applied instead of DEFAULT_MAX_MATCHES_PER_LISTING when the LISTING OWNER (the recipient
+// being notified, not the counterpart) is a paying member -- see notify.ts's
+// notifyOneRecipient. A free-tier counterpart's delivery still counts against this cap; a
+// paying counterpart's delivery is exempt from either cap entirely (see
+// counterpart_was_paying in postings/db.ts).
+export const DEFAULT_MAX_MATCHES_PER_LISTING_PAYING = 15;
 
 export interface PushGroup { group_id:string; group_name:string; platform?:"whatsapp"|"telegram"; enabled:boolean; allow_fs:boolean; allow_wtb:boolean; priority:number; notes?:string }
 export const PUSH_GROUP_CSV_HEADER = "group_id,group_name,platform,enabled,allow_fs,allow_wtb,priority,notes";
 export const PUSH_GROUP_CSV_SAMPLE = `${PUSH_GROUP_CSV_HEADER}\n-1001234567890,Miami Dealers,telegram,true,true,true,100,\n15551234567,Vintage Rolex Group,whatsapp,true,true,false,50,FS only\n`;
-export interface ListingLimits { maxMatchesPerListing:number; maxPushGroupsPerListing:number }
+export interface ListingLimits { maxMatchesPerListing:number; maxMatchesPerListingPaying:number; maxPushGroupsPerListing:number }
 
 async function ready():Promise<void>{
   // PostgreSQL's CREATE TABLE IF NOT EXISTS is idempotent after an object exists, but two
@@ -52,8 +58,8 @@ async function ready():Promise<void>{
     }
   });
 }
-export async function getListingLimits():Promise<ListingLimits>{ await ready(); return withSchema(async pool=>{const r=await pool.query(`SELECT key,value FROM listing_settings WHERE key=ANY($1)`,[["MAX_MATCHES_PER_LISTING","MAX_PUSH_GROUPS_PER_LISTING"]]);const m=new Map(r.rows.map(x=>[x.key,Number(x.value)]));return {maxMatchesPerListing:m.get("MAX_MATCHES_PER_LISTING")??DEFAULT_MAX_MATCHES_PER_LISTING,maxPushGroupsPerListing:m.get("MAX_PUSH_GROUPS_PER_LISTING")??DEFAULT_MAX_PUSH_GROUPS_PER_LISTING};}); }
-export async function setListingLimits(input:Partial<ListingLimits>):Promise<ListingLimits>{await ready();for(const [key,value] of [["MAX_MATCHES_PER_LISTING",input.maxMatchesPerListing],["MAX_PUSH_GROUPS_PER_LISTING",input.maxPushGroupsPerListing]] as const){if(value!==undefined){if(!Number.isInteger(value)||value<0)throw new Error(`${key} must be a non-negative integer`);await withSchema(pool=>pool.query(`INSERT INTO listing_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,[key,value]));}}return getListingLimits();}
+export async function getListingLimits():Promise<ListingLimits>{ await ready(); return withSchema(async pool=>{const r=await pool.query(`SELECT key,value FROM listing_settings WHERE key=ANY($1)`,[["MAX_MATCHES_PER_LISTING","MAX_MATCHES_PER_LISTING_PAYING","MAX_PUSH_GROUPS_PER_LISTING"]]);const m=new Map(r.rows.map(x=>[x.key,Number(x.value)]));return {maxMatchesPerListing:m.get("MAX_MATCHES_PER_LISTING")??DEFAULT_MAX_MATCHES_PER_LISTING,maxMatchesPerListingPaying:m.get("MAX_MATCHES_PER_LISTING_PAYING")??DEFAULT_MAX_MATCHES_PER_LISTING_PAYING,maxPushGroupsPerListing:m.get("MAX_PUSH_GROUPS_PER_LISTING")??DEFAULT_MAX_PUSH_GROUPS_PER_LISTING};}); }
+export async function setListingLimits(input:Partial<ListingLimits>):Promise<ListingLimits>{await ready();for(const [key,value] of [["MAX_MATCHES_PER_LISTING",input.maxMatchesPerListing],["MAX_MATCHES_PER_LISTING_PAYING",input.maxMatchesPerListingPaying],["MAX_PUSH_GROUPS_PER_LISTING",input.maxPushGroupsPerListing]] as const){if(value!==undefined){if(!Number.isInteger(value)||value<0)throw new Error(`${key} must be a non-negative integer`);await withSchema(pool=>pool.query(`INSERT INTO listing_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,[key,value]));}}return getListingLimits();}
 /** Reads the unified Group Registry (approved_groups), not this module's own legacy
  *  listing_push_groups table -- see ready()'s one-time backfill comment above. */
 export async function listPushGroups():Promise<PushGroup[]>{

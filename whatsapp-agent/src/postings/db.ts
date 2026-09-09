@@ -281,6 +281,13 @@ async function ensureSchema(): Promise<void> {
         ${CAP_ACTIVE_POSTING_EXPIRATIONS_SQL}
         ALTER TABLE matches ADD COLUMN IF NOT EXISTS connected_at TIMESTAMPTZ;
         ALTER TABLE match_recipients ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+        -- Set at claim time (see notify.ts's notifyOneRecipient) from the counterpart's LIVE
+        -- paying-member status at that moment: a paying counterpart's delivery is exempt from
+        -- the recipient's own per-listing notification cap, and must never consume one of the
+        -- limited slots a free-tier counterpart is competing for. Recorded rather than
+        -- re-derived later, since the counterpart's plan can change after delivery and the cap
+        -- check must reflect what was true when the slot was actually used.
+        ALTER TABLE match_recipients ADD COLUMN IF NOT EXISTS counterpart_was_paying BOOLEAN NOT NULL DEFAULT FALSE;
 
         -- The user's stated notification-channel preference (see postings/notificationPreferences.ts).
         -- Deliberately independent of whether a linked identity on that platform exists yet --

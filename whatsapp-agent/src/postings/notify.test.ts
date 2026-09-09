@@ -549,6 +549,80 @@ test("required: a buyer never receives more than maxMatchesPerListing match card
   assert.equal(toBuyer.length, 3, "the buyer's inbox must be capped at maxMatchesPerListing (3), not flooded with every candidate");
 });
 
+test("required: a paying-member seller's match is never blocked by a buyer's cap, even after free-tier sellers already filled it", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+
+  const buyerPhone = "buyer-paying-seller-1";
+  // Fill the buyer's default cap (3) with ordinary free-tier sellers first.
+  for (let i = 0; i < 3; i++) {
+    await mirrorApiFsPosting({ id: `wf-free-${i}`, item: "Rolex", brand: "Rolex", ref: `FREEREF${i}`, condition: "New", price: "$10,000", contactName: `seller-free-${i}`, contactPhone: `seller-free-${i}`, description: "" });
+  }
+  const wtb = await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "wtb-paying-seller-1", senderIdentity: buyerPhone, text: "WTB Rolex budget $50,000" });
+  await runImmediateMatch(wtb.posting!);
+  assert.equal(sent.filter((s) => s.phone === buyerPhone).length, 3, "sanity check: the free-tier cap is already full");
+
+  // A paying-plan seller matching the same WTB afterward must still reach the buyer.
+  await entitlements.setPlan("seller-paying-1", "tier1");
+  await mirrorApiFsPosting({ id: "wf-paying-1", item: "Rolex", brand: "Rolex", ref: "PAYINGREF1", condition: "New", price: "$10,000", contactName: "seller-paying-1", contactPhone: "seller-paying-1", description: "" });
+  await runImmediateMatch((await db.withSchema((pool) => pool.query(`SELECT * FROM postings WHERE contact_phone='seller-paying-1'`))).rows[0]);
+
+  assert.equal(sent.filter((s) => s.phone === buyerPhone).length, 4, "the paying seller's match must be delivered on top of the already-full free-tier cap, not blocked by it");
+});
+
+test("required: a paying-member seller's delivery doesn't consume a free-tier competitor's slot in the same cap", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+
+  const buyerPhone = "buyer-paying-seller-2";
+  await entitlements.setPlan("seller-paying-2", "tier1");
+  await mirrorApiFsPosting({ id: "wf-paying-2", item: "Rolex", brand: "Rolex", ref: "PAYINGREF2", condition: "New", price: "$10,000", contactName: "seller-paying-2", contactPhone: "seller-paying-2", description: "" });
+  // Then fill the (still-default, since the buyer itself isn't paying) free-tier cap with 3 more.
+  for (let i = 0; i < 3; i++) {
+    await mirrorApiFsPosting({ id: `wf-free2-${i}`, item: "Rolex", brand: "Rolex", ref: `FREEREF2${i}`, condition: "New", price: "$10,000", contactName: `seller-free2-${i}`, contactPhone: `seller-free2-${i}`, description: "" });
+  }
+  const wtb = await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "wtb-paying-seller-2", senderIdentity: buyerPhone, text: "WTB Rolex budget $50,000" });
+  await runImmediateMatch(wtb.posting!);
+
+  const toBuyer = sent.filter((s) => s.phone === buyerPhone);
+  assert.equal(toBuyer.length, 4, "all 3 free-tier sellers PLUS the paying seller must be delivered -- the paying seller's slot is separate from, not carved out of, the free-tier cap");
+});
+
+test("required: a paying-member buyer gets a much higher cap on their own listing than the free-tier default", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+
+  const buyerPhone = "buyer-paying-3";
+  await entitlements.setPlan(buyerPhone, "tier1");
+  for (let i = 0; i < 5; i++) {
+    await mirrorApiFsPosting({ id: `wf-paying3-${i}`, item: "Rolex", brand: "Rolex", ref: `PAYINGREF3${i}`, condition: "New", price: "$10,000", contactName: `seller-paying3-${i}`, contactPhone: `seller-paying3-${i}`, description: "" });
+  }
+  const wtb = await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "wtb-paying-3", senderIdentity: buyerPhone, text: "WTB Rolex budget $50,000" });
+  await runImmediateMatch(wtb.posting!);
+
+  assert.equal(sent.filter((s) => s.phone === buyerPhone).length, 5, "a paying buyer must see well beyond the free-tier default cap of 3");
+});
+
+test("required: priority is live, not cached -- canceling a plan drops the account back to the default cap on the very next match", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+
+  const buyerPhone = "buyer-lapsed-1";
+  await entitlements.setPlan(buyerPhone, "tier1");
+  await entitlements.cancelMembership(buyerPhone); // was a member, no longer is
+  for (let i = 0; i < 5; i++) {
+    await mirrorApiFsPosting({ id: `wf-lapsed-${i}`, item: "Rolex", brand: "Rolex", ref: `LAPSEDREF${i}`, condition: "New", price: "$10,000", contactName: `seller-lapsed-${i}`, contactPhone: `seller-lapsed-${i}`, description: "" });
+  }
+  const wtb = await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "wtb-lapsed-1", senderIdentity: buyerPhone, text: "WTB Rolex budget $50,000" });
+  await runImmediateMatch(wtb.posting!);
+
+  assert.equal(sent.filter((s) => s.phone === buyerPhone).length, 3, "a lapsed membership must be treated as free-tier immediately, capped at the default (3), not grandfathered in at the paying cap");
+});
+
 /** Same shape as createMatch above, but with the brand held fixed by the caller — createMatch
  *  always uses "Rolex", so two calls for the same buyer would both fall back to the same
  *  broad "same brand" match against BOTH FS listings (chat-parsed free text never actually

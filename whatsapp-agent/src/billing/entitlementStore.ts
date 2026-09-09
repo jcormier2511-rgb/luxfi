@@ -156,6 +156,21 @@ export async function getEntitlement(phone: string): Promise<Entitlement> {
   return rowToEntitlement(result.rows[0] as EntitlementRow);
 }
 
+/**
+ * Read-only, live paying-member check for match-priority purposes (postings/notify.ts,
+ * postings/matching.ts) — an active paid plan (tier1/2/3) only, deliberately excluding
+ * manual_override_enabled (an admin-granted approval unlock is not revenue). Never cached:
+ * canceling a plan means the very next check sees it. Deliberately does NOT use getEntitlement,
+ * which inserts a default row on first access (see listAllEntitlements' own comment below) --
+ * calling this from every posting's matching/notification path must not litter
+ * account_entitlements with a row for every phone a posting has ever named.
+ */
+export async function isPayingMember(phone: string): Promise<boolean> {
+  await ensureSchema();
+  const result = await getPool().query(`SELECT plan FROM account_entitlements WHERE phone = $1`, [phone]);
+  return result.rows.length > 0 && result.rows[0].plan !== null;
+}
+
 /** Admin-only action (see POST /admin/entitlement/override) — the sole way to unlock approvals past the trial. */
 export async function setManualOverride(phone: string, enabled: boolean): Promise<Entitlement> {
   await ensureSchema();

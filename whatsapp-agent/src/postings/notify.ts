@@ -4,7 +4,7 @@ import { platformForIdentity } from "../channels/identity";
 import { PostingRow, getPrimaryImageUrl } from "./postingsStore";
 import { getActiveGroupCount } from "./groupActivity";
 import { recordNotificationFailure } from "./status";
-import { getEntitlement } from "../billing/entitlementStore";
+import { getEntitlement, isPayingMember } from "../billing/entitlementStore";
 import { weeklyLimitFor, PlanKey } from "../billing/plans";
 import { getWeeklyApprovalCount, recordApprovalEvent, markApprovalRevealed } from "./approvalUsage";
 import { sendText } from "../channels";
@@ -282,24 +282,40 @@ async function notifyOneRecipient(
   // becomes allowed again later, this stays retryable rather than permanently skipped.
   if (!await isPostingMonitoringEnabled(self)) return;
 
-  const { maxMatchesPerListing } = await getListingLimits();
-  const shown = await withSchema(pool=>pool.query(`SELECT count(*)::int n FROM match_recipients mr JOIN matches m ON m.id=mr.match_id WHERE mr.recipient_canonical_user_id=$1 AND mr.delivered_at IS NOT NULL AND ($2=m.fs_posting_id OR $2=m.wtb_posting_id)`,[recipientCanonicalUserId,self.id]));
-  if(Number(shown.rows[0]?.n??0)>=maxMatchesPerListing){
-    // Keep durable ownership/decision state without claiming this candidate was presented.
-    // Reconciliation can promote it later if the administrator raises the limit.
-    await withSchema(pool=>pool.query(`INSERT INTO match_recipients(match_id,recipient_canonical_user_id,match_revision) VALUES($1,$2,$3) ON CONFLICT(match_id,recipient_canonical_user_id,match_revision) DO NOTHING`,[matchId,recipientCanonicalUserId,revision]));
-    return;
+  // A paying counterpart's listing always reaches an interested recipient -- their delivery is
+  // exempt from this cap entirely (never blocked by it, and never counted toward it), rather
+  // than just being prioritized into the same limited slots a free-tier counterpart competes
+  // for. That's what actually stops a paying member from ever being "shut out," and it also
+  // protects a free-tier competitor's own shot at those slots -- a paying delivery never
+  // consumes one. Checked live against the counterpart's CURRENT plan, never cached: the
+  // instant a membership lapses, the very next match this account is part of goes back to
+  // competing for capped slots like anyone else.
+  const counterpartPaying = await isPayingMember(counterpart.contact_phone);
+  if (!counterpartPaying) {
+    // A paying recipient (the listing owner being notified, not the counterpart) gets a much
+    // higher cap on their OWN listing instead of the same fixed default -- more of their
+    // matches get through, without touching how free-tier competitors are capped.
+    const { maxMatchesPerListing, maxMatchesPerListingPaying } = await getListingLimits();
+    const recipientPaying = await isPayingMember(self.contact_phone);
+    const cap = recipientPaying ? maxMatchesPerListingPaying : maxMatchesPerListing;
+    const shown = await withSchema(pool=>pool.query(`SELECT count(*)::int n FROM match_recipients mr JOIN matches m ON m.id=mr.match_id WHERE mr.recipient_canonical_user_id=$1 AND mr.delivered_at IS NOT NULL AND mr.counterpart_was_paying=FALSE AND ($2=m.fs_posting_id OR $2=m.wtb_posting_id)`,[recipientCanonicalUserId,self.id]));
+    if(Number(shown.rows[0]?.n??0)>=cap){
+      // Keep durable ownership/decision state without claiming this candidate was presented.
+      // Reconciliation can promote it later if the administrator raises the limit.
+      await withSchema(pool=>pool.query(`INSERT INTO match_recipients(match_id,recipient_canonical_user_id,match_revision,counterpart_was_paying) VALUES($1,$2,$3,FALSE) ON CONFLICT(match_id,recipient_canonical_user_id,match_revision) DO NOTHING`,[matchId,recipientCanonicalUserId,revision]));
+      return;
+    }
   }
 
   const claimed = await withSchema((pool) =>
     pool.query(
-      `INSERT INTO match_recipients (match_id, recipient_canonical_user_id, match_revision, notified_at)
-       VALUES ($1,$2,$3, now())
+      `INSERT INTO match_recipients (match_id, recipient_canonical_user_id, match_revision, notified_at, counterpart_was_paying)
+       VALUES ($1,$2,$3, now(), $4)
        ON CONFLICT (match_id, recipient_canonical_user_id, match_revision) DO UPDATE
          SET notified_at=now()
          WHERE match_recipients.delivered_at IS NULL AND match_recipients.decision='pending'
        RETURNING id`,
-      [matchId, recipientCanonicalUserId, revision]
+      [matchId, recipientCanonicalUserId, revision, counterpartPaying]
     )
   );
   if (claimed.rows.length === 0) return; // already notified — dedup
