@@ -195,13 +195,20 @@ function presentationFor(posting: PostingRow, photoUrl?: string | null, activeGr
   };
 }
 
-export function formatMatchPresentation(matchId: number, roleLabel: string, match: MatchPresentation, heading = "Match"): string {
+export function formatMatchPresentation(matchId: number, roleLabel: string, match: MatchPresentation, heading = "Match", includeIdentity = true): string {
   const lines = [`🎯 ${heading} ${matchId}`];
   // The seller/buyer's own name (already shown right below) is the identifier a person actually
   // recognizes — a raw internal id ("Candidate ID: 9fd0c621-53e6-...") added nothing but noise
   // and was the real reported complaint here.
-  if (match.identity) lines.push(`${roleLabel}: ${match.identity}`);
-  if (match.activeGroupCount) lines.push(`Active in ${match.activeGroupCount} monitored dealer group${match.activeGroupCount === 1 ? "" : "s"}`);
+  //
+  // includeIdentity is false for the initial, pre-approval "Match ID#" card (see
+  // formatMatchMessage below) -- naming the counterpart before either side has agreed to connect
+  // was more than the card needed to say; the "Approved Match" presentation (server.ts's
+  // formatApprovalOutcome, called AFTER approveMatch) is the actual reveal and still shows it.
+  if (includeIdentity) {
+    if (match.identity) lines.push(`${roleLabel}: ${match.identity}`);
+    if (match.activeGroupCount) lines.push(`Active in ${match.activeGroupCount} monitored dealer group${match.activeGroupCount === 1 ? "" : "s"}`);
+  }
   // Real reported bug: "Watch: rolex daytona 116500ln 116500LN" -- the model field itself
   // sometimes already carries the reference text (a parsing artifact from the original message,
   // e.g. "Daytona 116500ln" stored as the model rather than just "Daytona"), so joining brand +
@@ -227,7 +234,9 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
   }
   if (match.location) lines.push(match.location);
   if (match.sourceUrl) lines.push(`Source: ${match.sourceUrl}`);
-  if (match.photoUrl) lines.push(`Photo: ${match.photoUrl}`);
+  // No separate "Photo: <url>" text line -- WhatsApp/Telegram already auto-generate a rich link
+  // preview (image + title) from the Source: URL right above whenever one is present, so a
+  // second, raw-filename mention of the same photo was pure redundant text, not new information.
   // Their own words, not just the parsed fields above -- extra context (firm on price, can
   // ship, etc.) never gets its own structured field. Trimmed to keep the card skimmable rather
   // than reprinting a long raw message in full.
@@ -255,12 +264,18 @@ export function formatMatchMessage(
   activeGroupCount?: number
 ): string {
   const roleLabel = self.type === "FS" ? "Buyer" : "Seller";
+  // An exact reference match (scoreMatch's highest-confidence branch, always its first reason —
+  // see matching.ts) is self-explanatory: it's the same watch, full stop. Spelling that out in a
+  // bullet list only repeats what the Watch/price/location lines above already show. The "why"
+  // only earns its place on a LOOSE match (same-brand-only, or no reference/brand stated at all),
+  // where it isn't obvious from the fields alone why this candidate was surfaced.
+  const isLooseMatch = !reasons[0]?.startsWith("Exact reference match");
   return (
     // Keep the established notification discriminator as well as the numeric ID. Besides being
     // useful to people scanning a chat, downstream channel consumers and the PR #20 regression
     // suite intentionally recognize automatic notifications by the "Match ID#" heading.
-    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl, activeGroupCount), "Match ID#") +
-    (reasons.length ? `\n\n✅ Why it's a good match:\n${reasons.map((r) => `• ${r}`).join("\n")}` : "") +
+    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl, activeGroupCount), "Match ID#", false) +
+    (isLooseMatch && reasons.length ? `\n\n✅ Why it's a good match:\n${reasons.map((r) => `• ${r}`).join("\n")}` : "") +
     // "pass" is deliberately not mentioned as its own step -- doing nothing already has the
     // exact same effect (this candidate still counts toward the per-listing cap either way, see
     // notifyOneRecipient), so telling someone to reply just to decline was an extra step with no

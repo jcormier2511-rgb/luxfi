@@ -133,15 +133,17 @@ test("presented match preserves every available decision field and remains appro
 
   const card = sent.find((message) => message.phone === "buyer-rich-card")?.message;
   assert.ok(card);
-  for (const expected of ["ABC Watches", "Rolex Daytona 116500LN", "Dial/Color: Black", "2023 • Full set • New", "$28,500", "Miami, USA", "Source: https://example.com/listings/413", "Photo: https://example.com/photos/413.jpg"]) {
+  for (const expected of ["Rolex Daytona 116500LN", "Dial/Color: Black", "2023 • Full set • New", "$28,500", "Miami, USA", "Source: https://example.com/listings/413"]) {
     assert.match(card!, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `card should include ${expected}`);
   }
+  assert.doesNotMatch(card!, /Photo: /, "no separate Photo: line -- WhatsApp/Telegram already auto-preview the image from the Source: link");
   assert.doesNotMatch(card!, /Candidate ID/, "the raw internal listing id is noise once the seller's own name is already shown");
+  assert.doesNotMatch(card!, /ABC Watches/, "the counterpart's name is no longer shown before either side has approved -- only after");
   const matchId = Number(card!.match(/approve (\d+)/)?.[1]);
   assert.ok(Number.isInteger(matchId));
   const outcome = await approveMatch(matchId, "buyer-rich-card");
   assert.equal(outcome.status, "approved", "the exact delivered match remains actionable");
-  assert.equal(outcome.match?.identity, "ABC Watches");
+  assert.equal(outcome.match?.identity, "ABC Watches", "the name is still captured/available once approved, just not printed before that");
   assert.equal((await approveMatch(987654321, "buyer-rich-card")).status, "invalid", "unknown/expired IDs fail safely");
 });
 
@@ -159,12 +161,16 @@ test("match card shows how many monitored dealer groups the counterpart is activ
   const wtb = await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: "wtb-groups", senderIdentity: "buyer-groups", text: "WTB Rolex GROUPS1 budget $12,000" });
   await runImmediateMatch(wtb.posting!);
 
+  // The counterpart's identity is no longer shown before either side has approved (see
+  // formatMatchMessage's includeIdentity:false) -- and the "Active in N groups" trust signal was
+  // always presented right under that identity line, so it's gated the same way: a group-
+  // activity count about someone who isn't even named yet isn't useful on its own.
   const buyerCard = sent.find((m) => m.phone === "buyer-groups")?.message;
   assert.ok(buyerCard);
-  assert.match(buyerCard!, /Seller: seller-groups\nActive in 2 monitored dealer groups/, "line sits directly under the identity line");
+  assert.doesNotMatch(buyerCard!, /Seller: seller-groups|monitored dealer group/);
   const sellerCard = sent.find((m) => m.phone === "seller-groups")?.message;
   assert.ok(sellerCard);
-  assert.match(sellerCard!, /Buyer: buyer-groups\nActive in 1 monitored dealer group\n/, "singular form for one group");
+  assert.doesNotMatch(sellerCard!, /Buyer: buyer-groups|monitored dealer group/);
   await db.withSchema((pool) => pool.query("DELETE FROM approved_groups"));
 });
 
@@ -768,6 +774,19 @@ test("required: the counterpart's own free-text description shows as its own lin
 test("required: no description means no 💬 line at all", () => {
   const text = notify.formatMatchPresentation(1, "Seller", { brand: "Rolex", model: "Submariner" });
   assert.doesNotMatch(text, /💬/);
+});
+
+test("required: the \"Why it's a good match\" section is dropped for an exact reference match -- self-explanatory, same watch", () => {
+  const self = { type: "WTB", brand: "Rolex", model: "Daytona", reference: "", dial: "", condition: "", price: null, currency: "USD", location: "", contact_name: "", contact_phone: "", source_type: "chat", original_text: "" } as any;
+  const counterpart = { type: "FS", brand: "Rolex", model: "Daytona", reference: "116500LN", dial: "", condition: "", price: "35000", currency: "USD", location: "", contact_name: "", contact_phone: "", source_type: "api", original_text: "" } as any;
+  const text = notify.formatMatchMessage(556, self, counterpart, ["Exact reference match: 116500LN", "Within budget ($35,000 ≤ $40,000)"], null);
+  assert.doesNotMatch(text, /Why it's a good match/, "an exact reference match needs no explanation -- it's the same watch");
+});
+test("required: the \"Why it's a good match\" section stays for a loose match -- same brand only, or no reference/brand stated at all", () => {
+  const self = { type: "WTB", brand: "Rolex", model: "", reference: "", dial: "", condition: "", price: null, currency: "USD", location: "", contact_name: "", contact_phone: "", source_type: "chat", original_text: "" } as any;
+  const counterpart = { type: "FS", brand: "Rolex", model: "Datejust", reference: "", dial: "", condition: "", price: "10000", currency: "USD", location: "", contact_name: "", contact_phone: "", source_type: "api", original_text: "" } as any;
+  const text = notify.formatMatchMessage(557, self, counterpart, ["Same brand: Rolex"], null);
+  assert.match(text, /Why it's a good match:\n• Same brand: Rolex/, "a loose, same-brand-only match isn't self-explanatory from the fields alone");
 });
 
 test("required: formatMatchMessage's reply instructions ask only for \"approve\" (not \"pass\") since ignoring already has the same effect, and point people to \"listings\" to close a request once they're done", () => {
