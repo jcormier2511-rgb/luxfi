@@ -322,7 +322,7 @@ async function ensureSchema(): Promise<void> {
         CREATE TABLE IF NOT EXISTS market_update_deliveries (
           id BIGSERIAL PRIMARY KEY,
           canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id),
-          period TEXT NOT NULL CHECK (period IN ('morning', 'afternoon')),
+          period TEXT NOT NULL CHECK (period IN ('morning', 'afternoon', 'weekly')),
           local_date DATE NOT NULL,
           timezone TEXT NOT NULL,
           status TEXT NOT NULL CHECK (status IN ('sending', 'delivered', 'failed')),
@@ -335,6 +335,13 @@ async function ensureSchema(): Promise<void> {
         CREATE INDEX IF NOT EXISTS market_update_delivery_history
           ON market_update_deliveries (canonical_user_id, delivered_at DESC)
           WHERE status='delivered';
+        -- CREATE TABLE IF NOT EXISTS above never touches a table that already exists, so a
+        -- deployment that already has this table needs its own widening: 'weekly' is the new
+        -- period the scheduler produces (see marketUpdates.ts's dueWeekly), 'morning'/
+        -- 'afternoon' kept for any already-delivered historical rows.
+        ALTER TABLE market_update_deliveries DROP CONSTRAINT IF EXISTS market_update_deliveries_period_check;
+        ALTER TABLE market_update_deliveries ADD CONSTRAINT market_update_deliveries_period_check
+          CHECK (period IN ('morning', 'afternoon', 'weekly'));
 
         -- Widens source_type for the private "sell a watch" conversational intake
         -- (conversation/flow.ts's sell-intake flow, see postingsStore.ts's createDirectPosting):

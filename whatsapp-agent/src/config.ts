@@ -326,10 +326,15 @@ export const config = {
     // Deliberately off until Railway is explicitly configured. The scheduler and schema are
     // harmless while disabled; no customer-facing message can be sent by default.
     enabled: (process.env.ENABLE_MARKET_UPDATES ?? "false").toLowerCase() === "true",
-    morningTime: process.env.MARKET_UPDATE_MORNING_TIME ?? "09:00",
-    afternoonTime: process.env.MARKET_UPDATE_AFTERNOON_TIME ?? "16:00",
+    // "Market Edge" -- a paid-plan-only weekly digest (see billing/entitlementStore.ts's
+    // isMarketUpdateEligible), deliberately separate from the free daily morning briefing
+    // (lifecycle.ts) both in cadence and in name, so the two don't read as the same message
+    // sent twice -- the real reported confusion this fixes. Full day name (Intl's
+    // weekday:"long", e.g. "Friday"), not a 0-6 index -- self-documenting in an env var.
+    dayOfWeek: process.env.MARKET_UPDATE_DAY ?? "Friday",
+    time: process.env.MARKET_UPDATE_TIME ?? "16:00",
     timezone: process.env.MARKET_UPDATE_TIMEZONE ?? "America/New_York",
-    // Capped by duePeriod at 60 minutes so a bad Railway value can never send a digest hours late.
+    // Capped by dueWeekly at 60 minutes so a bad Railway value can never send a digest hours late.
     graceMinutes: Number(process.env.MARKET_UPDATE_GRACE_MINUTES ?? 60),
     allowUnchanged: (process.env.MARKET_UPDATE_ALLOW_UNCHANGED ?? "false").toLowerCase() === "true",
     minimumObservations: Number(process.env.MARKET_UPDATE_MIN_OBSERVATIONS ?? 3),

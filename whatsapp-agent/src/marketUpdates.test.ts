@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { countRelevant, duePeriod, formatDigest, isRelevant, localClock, marketSentiment, shouldSendDigest } from "./marketUpdates";
+import { countRelevant, dueWeekly, formatDigest, isRelevant, localClock, marketSentiment, shouldSendDigest } from "./marketUpdates";
 import { PostingRow } from "./postings/postingsStore";
 
 const future = "2030-01-20T00:00:00.000Z";
@@ -50,55 +50,67 @@ test("sentiment thresholds and minimum observation count are deterministic", () 
   assert.equal(marketSentiment(4, 3, 3), "Supply and demand appear balanced.");
 });
 
-test("both local schedules and DST are calculated in America/New_York", () => {
-  assert.deepEqual(duePeriod(new Date("2026-01-15T14:00:00Z"), "America/New_York", "09:00", "16:00"), { period: "morning", localDate: "2026-01-15" });
-  assert.deepEqual(duePeriod(new Date("2026-07-15T20:00:00Z"), "America/New_York", "09:00", "16:00"), { period: "afternoon", localDate: "2026-07-15" });
+test("due once a week, at the configured local day and time, DST-safe in America/New_York", () => {
+  // 2026-01-16 (winter, EST, UTC-5) and 2026-07-17 (summer, EDT, UTC-4) are both Fridays.
+  assert.deepEqual(dueWeekly(new Date("2026-01-16T21:00:00Z"), "America/New_York", "Friday", "16:00"), { localDate: "2026-01-16" });
+  assert.deepEqual(dueWeekly(new Date("2026-07-17T20:00:00Z"), "America/New_York", "Friday", "16:00"), { localDate: "2026-07-17" });
   assert.equal(localClock(new Date("2026-03-08T13:00:00Z"), "America/New_York").time, "09:00");
-  assert.equal(duePeriod(new Date("2026-07-15T19:59:00Z"), "America/New_York", "09:00", "16:00"), null);
+  assert.equal(dueWeekly(new Date("2026-07-17T19:59:00Z"), "America/New_York", "Friday", "16:00"), null, "not yet due before the configured time");
+});
+test("the right time on the wrong day, or the right day at the wrong time, is never due", () => {
+  // 2026-01-15 is a Thursday, the day right before the Friday used above.
+  assert.equal(dueWeekly(new Date("2026-01-15T21:00:00Z"), "America/New_York", "Friday", "16:00"), null, "right time, wrong day");
+  assert.equal(dueWeekly(new Date("2026-01-16T14:00:00Z"), "America/New_York", "Friday", "16:00"), null, "right day, wrong time");
+  assert.deepEqual(dueWeekly(new Date("2026-01-16T21:00:00Z"), "America/New_York", "friday", "16:00"), { localDate: "2026-01-16" }, "day-of-week match is case-insensitive");
 });
 
 test("scheduler restart recovery is limited to the configurable one-hour grace window", () => {
   assert.deepEqual(
-    duePeriod(new Date("2026-01-15T14:01:00Z"), "America/New_York", "09:00", "16:00", 60),
-    { period: "morning", localDate: "2026-01-15" },
-    "a restart at 09:01 recovers the morning digest"
+    dueWeekly(new Date("2026-01-16T21:01:00Z"), "America/New_York", "Friday", "16:00", 60),
+    { localDate: "2026-01-16" },
+    "a restart one minute late still recovers the weekly digest"
   );
   assert.deepEqual(
-    duePeriod(new Date("2026-01-15T14:59:00Z"), "America/New_York", "09:00", "16:00", 60),
-    { period: "morning", localDate: "2026-01-15" },
+    dueWeekly(new Date("2026-01-16T21:59:00Z"), "America/New_York", "Friday", "16:00", 60),
+    { localDate: "2026-01-16" },
     "a restart within the grace window recovers the digest"
   );
   assert.equal(
-    duePeriod(new Date("2026-01-15T15:01:00Z"), "America/New_York", "09:00", "16:00", 60),
+    dueWeekly(new Date("2026-01-16T22:01:00Z"), "America/New_York", "Friday", "16:00", 60),
     null,
-    "a morning digest is never sent outside the one-hour grace window"
+    "a weekly digest is never sent outside the one-hour grace window"
   );
   assert.equal(
-    duePeriod(new Date("2026-01-15T14:01:00Z"), "America/New_York", "09:00", "16:00", 0),
+    dueWeekly(new Date("2026-01-16T21:01:00Z"), "America/New_York", "Friday", "16:00", 0),
     null,
     "operators can disable restart recovery"
   );
 });
 
-test("multiple watches are combined with aggregate-only, 15-day-safe copy", () => {
+test("required: renamed and restyled -- 'Market Edge' must read as a different message from the free daily briefing, not a repeat of it", () => {
+  const text = formatDigest([{ postingId: 1, type: "FS", brand: "Patek Philippe", model: "", reference: "5712G", buyers: 8, sellers: 3, newMatches: 2 }], 3);
+  assert.match(text, /^📈 Market Edge — your weekly watch market update/);
+  assert.doesNotMatch(text, /Your LuxFi market update|Good morning|Here's your Fi update/);
+});
+
+test("multiple watches are combined, numbered, with aggregate-only counts (no private contact info)", () => {
   const text = formatDigest([
     { postingId: 1, type: "FS", brand: "Patek Philippe", model: "", reference: "5712G", buyers: 8, sellers: 3, newMatches: 2 },
     { postingId: 2, type: "WTB", brand: "Rolex", model: "", reference: "126500LN", buyers: 12, sellers: 5, newMatches: 0 },
   ], 3);
-  assert.match(text, /Patek Philippe 5712G — your listing\nActive buyers: 8\nActive sellers\/listings: 3/);
-  assert.match(text, /Rolex 126500LN — your search\nActive buyers: 12\nActive sellers\/listings: 5/);
-  assert.equal((text.match(/past 15 days/g) ?? []).length, 2);
-  assert.match(text, /New matches since your last update: 2/);
-  assert.match(text, /New matches since your last update: none/);
-  assert.match(text, /\n\nLive listings can be seen at watchfacts\.com$/, "every digest ends by pointing at the live inventory");
+  assert.match(text, /1\. 🏷️ Patek Philippe 5712G\n👥 8 buyers · 3 sellers \(network-wide\)/);
+  assert.match(text, /2\. 🔍 Rolex 126500LN\n👥 12 buyers · 5 sellers \(network-wide\)/);
+  assert.match(text, /✨ 2 new matches this week!/);
+  assert.match(text, /✨ No new matches this week\./);
+  assert.match(text, /\n\n🔗 See live listings: watchfacts\.com$/, "every digest ends by pointing at the live inventory");
   assert.doesNotMatch(text, /private|phone|group|budget|photo|100/);
 });
 
 test("a count of one never reads as a plural — the prose it replaced said \"1 active buyers\"", () => {
   const text = formatDigest([{ postingId: 3, type: "WTB", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 1, sellers: 1, newMatches: 1 }], 3);
-  assert.match(text, /Active buyers: 1\nActive sellers\/listings: 1/);
-  assert.match(text, /New matches since your last update: 1/);
-  assert.doesNotMatch(text, /1 active buyers|1 active sellers|1 new matches/);
+  assert.match(text, /👥 1 buyer · 1 seller \(network-wide\)/);
+  assert.match(text, /✨ 1 new match this week!/);
+  assert.doesNotMatch(text, /1 active buyers|1 active sellers|1 buyers|1 sellers|1 new matches/);
 });
 
 test("no-activity and unchanged digests are suppressed unless explicitly allowed", () => {

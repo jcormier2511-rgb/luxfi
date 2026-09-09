@@ -700,7 +700,7 @@ function renderMarketUpdatesCard(mu: AdminDashboardData["marketUpdates"]): strin
     <h2>Market updates</h2>
     ${badge("enabled", mu.enabled || null)}
     <dl>
-      <dt>Schedule</dt><dd>${escapeHtml(mu.morningTime)} &amp; ${escapeHtml(mu.afternoonTime)}</dd>
+      <dt>Schedule</dt><dd>${escapeHtml(mu.dayOfWeek)}s at ${escapeHtml(mu.time)}</dd>
       <dt>Timezone</dt><dd>${escapeHtml(mu.timezone)}</dd>
       <dt>Grace window</dt><dd>${mu.graceMinutes} min</dd>
       <dt>Allow unchanged</dt><dd>${mu.allowUnchanged ? "yes" : "no"}</dd>

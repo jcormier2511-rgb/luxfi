@@ -6,7 +6,11 @@ import { PostingRow } from "./postings/postingsStore";
 import { sendText } from "./channels";
 import { Entitlement, getEntitlement } from "./billing/entitlementStore";
 
-export type MarketUpdatePeriod = "morning" | "afternoon";
+// "morning"/"afternoon" are kept as still-valid values (the delivery ledger's period column
+// only needs a distinct key per delivery window, not a specific vocabulary) so existing rows
+// and the tests exercising that generic idempotency behavior don't need to change -- but the
+// scheduler itself only ever produces "weekly" now (see dueWeekly below).
+export type MarketUpdatePeriod = "morning" | "afternoon" | "weekly";
 
 export interface LocalClock {
   date: string;
@@ -55,34 +59,35 @@ export function localClock(at: Date, timezone: string): LocalClock {
   return { date: `${value("year")}-${value("month")}-${value("day")}`, time: `${value("hour")}:${value("minute")}` };
 }
 
-export function duePeriod(
-  at: Date,
-  timezone: string,
-  morningTime: string,
-  afternoonTime: string,
-  graceMinutes = 0
-): { period: MarketUpdatePeriod; localDate: string } | null {
+/** Local day-of-week name in `timezone` ("Sunday".."Saturday"), DST-safe via Intl. */
+function localWeekday(at: Date, timezone: string): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "long" }).format(at);
+}
+
+/**
+ * Due once a week: local day-of-week must match `dayOfWeek` (e.g. "Friday") AND local time must
+ * be at or within `graceMinutes` after `time` (e.g. "16:00"). Both checks are independent of
+ * each other's units on purpose -- a day-of-week match on the wrong time, or a time match on
+ * the wrong day, is never due.
+ */
+export function dueWeekly(at: Date, timezone: string, dayOfWeek: string, time: string, graceMinutes = 0): { localDate: string } | null {
   const clock = localClock(at, timezone);
-  const toMinutes = (time: string): number | null => {
-    const match = /^(\d{2}):(\d{2})$/.exec(time);
+  if (localWeekday(at, timezone).toLowerCase() !== dayOfWeek.trim().toLowerCase()) return null;
+  const toMinutes = (value: string): number | null => {
+    const match = /^(\d{2}):(\d{2})$/.exec(value);
     if (!match) return null;
     const hours = Number(match[1]);
     const minutes = Number(match[2]);
     return hours <= 23 && minutes <= 59 ? hours * 60 + minutes : null;
   };
+  const scheduledMinutes = toMinutes(time);
+  if (scheduledMinutes === null) return null;
   const nowMinutes = toMinutes(clock.time)!;
   // Operators may shorten/disable recovery, but never widen it past one hour: this safety
-  // bound prevents a typo from turning a morning update into a digest sent many hours late.
+  // bound prevents a typo from turning a weekly update into a digest sent many hours late.
   const grace = Math.min(60, Math.max(0, Number.isFinite(graceMinutes) ? Math.floor(graceMinutes) : 0));
-  const isDue = (scheduled: string) => {
-    const scheduledMinutes = toMinutes(scheduled);
-    if (scheduledMinutes === null) return false;
-    const elapsed = nowMinutes - scheduledMinutes;
-    return elapsed >= 0 && elapsed <= grace;
-  };
-  if (isDue(morningTime)) return { period: "morning", localDate: clock.date };
-  if (isDue(afternoonTime)) return { period: "afternoon", localDate: clock.date };
-  return null;
+  const elapsed = nowMinutes - scheduledMinutes;
+  return elapsed >= 0 && elapsed <= grace ? { localDate: clock.date } : null;
 }
 
 /**
@@ -139,25 +144,29 @@ function displayName(watch: DigestWatch): string {
 }
 
 /**
- * One block per active request, in the same labeled-field style as the WTB/FS review and
- * Market Pulse. The prose it replaces ("We've seen 1 active buyers and 6 active
- * sellers/listings in the past 15 days...") repeated every number inside a sentence and got
- * its plurals wrong at 1; counts on their own lines have no plural to get wrong.
+ * "Market Edge" -- deliberately named and styled to read as a DIFFERENT message from the free
+ * daily morning briefing (lifecycle.ts's "Good morning... Here's your Fi update"), not a repeat
+ * of it: real reported confusion was that the two, despite covering different data (this one is
+ * unfiltered/network-wide; the morning briefing's own trend block, and the older "Your LuxFi
+ * market update" name/prose this replaces, both read close enough to the same thing that they
+ * looked like a duplicate send. One short "N buyer(s) · M seller(s)" line replaces the old
+ * "Active buyers: N\nActive sellers/listings: M\n(past 15 days)" three-line block -- same
+ * numbers, no repeated header, no plural to get wrong at N=1.
  */
 export function formatDigest(watches: DigestWatch[], minimumObservations: number): string {
-  const sections = watches.map((watch) => {
-    const action = watch.type === "WTB" ? "search" : "listing";
-    const matches = watch.newMatches === 0 ? "none" : String(watch.newMatches);
+  const sections = watches.map((watch, i) => {
+    const icon = watch.type === "WTB" ? "🔍" : "🏷️";
+    const buyerWord = watch.buyers === 1 ? "buyer" : "buyers";
+    const sellerWord = watch.sellers === 1 ? "seller" : "sellers";
+    const matchLine = watch.newMatches === 0 ? "✨ No new matches this week." : `✨ ${watch.newMatches} new match${watch.newMatches === 1 ? "" : "es"} this week!`;
     return [
-      `${displayName(watch)} — your ${action}`,
-      `Active buyers: ${watch.buyers}`,
-      `Active sellers/listings: ${watch.sellers}`,
-      `(past 15 days)`,
-      marketSentiment(watch.buyers, watch.sellers, minimumObservations),
-      `New matches since your last update: ${matches}`,
+      `${i + 1}. ${icon} ${displayName(watch)}`,
+      `👥 ${watch.buyers} ${buyerWord} · ${watch.sellers} ${sellerWord} (network-wide)`,
+      `📊 ${marketSentiment(watch.buyers, watch.sellers, minimumObservations)}`,
+      matchLine,
     ].join("\n");
   });
-  return `Your LuxFi market update\n\n${sections.join("\n\n")}\n\nLive listings can be seen at watchfacts.com`;
+  return `📈 Market Edge — your weekly watch market update\n\n${sections.join("\n\n")}\n\n🔗 See live listings: watchfacts.com`;
 }
 
 function signature(watches: DigestWatch[]): string {
@@ -340,16 +349,16 @@ export function runMarketUpdateScheduler(): void {
   if (schedulerStarted) return;
   schedulerStarted = true;
   const tick = async () => {
-    const due = duePeriod(
+    const due = dueWeekly(
       new Date(),
       config.marketUpdates.timezone,
-      config.marketUpdates.morningTime,
-      config.marketUpdates.afternoonTime,
+      config.marketUpdates.dayOfWeek,
+      config.marketUpdates.time,
       config.marketUpdates.graceMinutes
     );
     if (!due) return;
-    const outcome = await runMarketUpdates(due.period, due.localDate);
-    if (outcome.sent || outcome.failed) console.log(`[market-updates] ${due.period}: ${outcome.sent} sent, ${outcome.skipped} skipped, ${outcome.failed} failed`);
+    const outcome = await runMarketUpdates("weekly", due.localDate);
+    if (outcome.sent || outcome.failed) console.log(`[market-updates] weekly: ${outcome.sent} sent, ${outcome.skipped} skipped, ${outcome.failed} failed`);
   };
   void tick().catch((err) => console.error("[market-updates] scheduler failed:", err));
   setInterval(() => void tick().catch((err) => console.error("[market-updates] scheduler failed:", err)), 30_000);

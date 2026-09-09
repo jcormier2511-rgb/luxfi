@@ -23,8 +23,8 @@ export interface AdminDashboardData {
   };
   marketUpdates: {
     enabled: boolean;
-    morningTime: string;
-    afternoonTime: string;
+    dayOfWeek: string;
+    time: string;
     timezone: string;
     graceMinutes: number;
     allowUnchanged: boolean;
@@ -179,8 +179,8 @@ export async function buildAdminDashboardData(): Promise<AdminDashboardData> {
     database: { schemaReady, schemaError, host: dbSummary.host, databaseName: dbSummary.databaseName },
     marketUpdates: {
       enabled: config.marketUpdates.enabled,
-      morningTime: config.marketUpdates.morningTime,
-      afternoonTime: config.marketUpdates.afternoonTime,
+      dayOfWeek: config.marketUpdates.dayOfWeek,
+      time: config.marketUpdates.time,
       timezone: config.marketUpdates.timezone,
       graceMinutes: config.marketUpdates.graceMinutes,
       allowUnchanged: config.marketUpdates.allowUnchanged,
