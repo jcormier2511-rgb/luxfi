@@ -181,6 +181,15 @@ export const config = {
     introMessage:
       process.env.FI_INTRO_MESSAGE ??
       "Hi, I'm Fi — your personal luxury concierge.\nI'm here to help you:\n1. Find a buyer\n2. Find a seller\n3. Check pricing and market trends\n4. Check dealer reputation / references\n\nI'll automatically work on your first 3 matches so you can see what I can do.",
+    // Real reported ask: split the intro into a short greeting first, then (only once a name is
+    // either known or asked for) the capabilities list — so a brand-new contact with no
+    // channel-supplied name meets Fi, gets asked their name, and only then sees what Fi can do,
+    // rather than the capabilities list arriving before Fi even knows who it's talking to.
+    // `introMessage` above is unchanged and still used by "/start" (a deterministic reset, not
+    // a fresh introduction) and anywhere else the two are wanted back-to-back as one message.
+    greeting: (name?: string) => `Hi${name ? ` ${name}` : ""}, I'm Fi — your personal luxury concierge.`,
+    capabilitiesMessage:
+      "I'm here to help you:\n1. Find a buyer\n2. Find a seller\n3. Check pricing and market trends\n4. Check dealer reputation / references\n\nI'll automatically work on your first 3 matches so you can see what I can do.",
     // Flat-fee, weekly-capped tiers (billing/plans.ts) — no per-approval charge. Fired exactly
     // once, on the 3rd complimentary approval.
     conversionPitch: (firstName: string) =>

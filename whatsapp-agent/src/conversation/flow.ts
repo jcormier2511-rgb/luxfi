@@ -2917,7 +2917,11 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     state.pendingNameRequest = false;
     if (parsed.length === 0 && looksLikeName(text)) {
       state.providedName = text.trim();
+      // The capabilities list was deliberately withheld back when Fi asked for a name (see
+      // state.stage === "new" below) -- now that the question is resolved, this is where it
+      // finally arrives, personalized with the name just given.
       messages.push(`Nice to meet you, ${state.providedName.split(/\s+/)[0]}!`);
+      messages.push(config.fiFlow.capabilitiesMessage);
       saveState(state);
       return { state, messages };
     }
@@ -2928,18 +2932,26 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   // always retain their command semantics on a brand-new account. The first ordinary inbound
   // message consumes this one-shot state and may then continue into normal intent handling.
   if (state.stage === "new") {
-    messages.push(config.fiFlow.introMessage);
     state.stage = "active";
+    const hasChannelName = Boolean(contact?.name?.trim());
+    if (parsed.length === 0 && !hasChannelName) {
+      // Real reported ask: greet first, ask for a name, and only show what Fi can do once that's
+      // resolved (see the pendingNameRequest block above) -- rather than dumping the capabilities
+      // list before Fi even knows who it's talking to. Only reached when the channel itself
+      // supplied no display name (WhatsApp/Telegram already give one for most contacts) AND this
+      // first message is a plain greeting/small talk with nothing else to act on -- never
+      // appended after a real request's own reply content, which would otherwise land the name
+      // question in the MIDDLE of that reply instead of being its own, separate exchange.
+      messages.push(config.fiFlow.greeting());
+      messages.push("By the way, may I have your name?");
+      state.pendingNameRequest = true;
+      saveState(state);
+      return { state, messages };
+    }
+    // Already named by the channel, or the first message already states a real request -- there's
+    // nothing to ask, so the greeting and capabilities arrive together, same as always.
+    messages.push(`${config.fiFlow.greeting(hasChannelName ? firstName : undefined)}\n${config.fiFlow.capabilitiesMessage}`);
     if (parsed.length === 0) {
-      // Only asked when the channel itself supplied no display name (WhatsApp/Telegram already
-      // give one for most contacts) AND this first message is a plain greeting/small talk with
-      // nothing else to act on -- never appended after a real request's own reply content,
-      // which would otherwise land the name question in the MIDDLE of that reply instead of
-      // being its own, separate exchange.
-      if (!contact?.name?.trim()) {
-        messages.push("By the way, may I have your name?");
-        state.pendingNameRequest = true;
-      }
       saveState(state);
       return { state, messages };
     }

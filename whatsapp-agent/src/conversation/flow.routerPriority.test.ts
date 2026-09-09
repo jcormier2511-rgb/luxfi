@@ -212,6 +212,34 @@ test("a reply that isn't name-shaped (a question, a greeting) is never stored as
   assert.equal(getState(phone).providedName, undefined);
 });
 
+test('required: an unnamed contact meets Fi, is asked their name, and only sees "here\'s what I can do" after answering -- the capabilities list must not arrive before the name question is resolved', async () => {
+  const phone = freshPhone();
+  const first = await handleIncomingMessage(phone, "hi");
+  assert.match(first.messages[0], /^Hi, I'm Fi/);
+  assert.doesNotMatch(first.messages[0], /Find a buyer/i, "the capabilities list must not be bundled into the greeting when a name is about to be asked for");
+  assert.match(first.messages[1], /may I have your name/i);
+
+  const named = await handleIncomingMessage(phone, "Alex");
+  assert.match(named.messages[0], /Nice to meet you, Alex/i);
+  assert.match(named.messages[1], /Find a buyer/i, "the capabilities list arrives once the name question is resolved, personalized by the greeting that already happened");
+});
+
+test("required: a contact the channel already named gets the greeting and capabilities together, personalized, in one message -- no separate name question needed", async () => {
+  const phone = freshPhone();
+  const first = await handleIncomingMessage(phone, "hi", { phone, name: "Jordan Lee", tier: "A" });
+  assert.equal(first.messages.length, 1, "no name question to split it into a second message");
+  assert.match(first.messages[0], /^Hi Jordan, I'm Fi/);
+  assert.match(first.messages[0], /Find a buyer/i);
+});
+
+test("required: an unnamed contact whose very first message already states a real request is answered immediately, greeted but never asked for a name first", async () => {
+  const phone = freshPhone();
+  const first = await handleIncomingMessage(phone, "WTB Rolex Daytona 116500LN budget $25,000");
+  assert.match(first.messages[0], /^Hi, I'm Fi/);
+  assert.doesNotMatch(first.messages.join("\n"), /may I have your name/i, "a real request on the very first message must never be blocked on a name question");
+  assert.ok(first.state.pendingBuyIntake, "the real request must still be handled in the same turn");
+});
+
 /**
  * Live session: answering "any" to "What condition do you prefer?" got the SAME question back,
  * every time. A bare "any" also satisfies the dial-color pattern, so it set the dial, counted as
