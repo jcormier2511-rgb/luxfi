@@ -151,6 +151,21 @@ test('required regression: a reference typed in LOWERCASE must not survive insid
   assert.equal(result.state.pendingSellIntake?.reference, "116500LN");
 });
 
+test('required regression: "complete" (a dealer synonym for full set) must never survive into the model field ("Rolex complete 116500LN" instead of a clean "Rolex Daytona 116500LN")', async () => {
+  // Live-reported bug: "Fs Rolex 116500ln white dial 35k complete" stored "complete" as the
+  // watch's model -- every other word in the message was recognized and scrubbed out (brand,
+  // reference, dial, price), but "complete" wasn't in the cutoff list, so it was the only token
+  // left standing and got stored verbatim, producing a heading that read "CURRENT MARKET FOR
+  // "Rolex complete 116500LN"" instead of the correct "Rolex Daytona 116500LN".
+  const phone = "19992220006"; resetState(phone); await inventoryDb._resetDbForTests();
+  await handleIncomingMessage(phone, "hi");
+  const result = await handleIncomingMessage(phone, "Fs Rolex 116500ln white dial 35k complete");
+  assert.notEqual(result.state.pendingSellIntake?.model, "complete", '"complete" must never be stored as the model');
+  assert.equal(result.state.pendingSellIntake?.model, "Daytona", "the reference-implied model fills in correctly once 'complete' no longer poisons the typed model");
+  assert.equal(result.state.pendingSellIntake?.boxPapers, "Full set", '"complete" is recognized as a full-set signal, not discarded');
+  assert.doesNotMatch(result.messages.join("\n"), /Rolex complete/i);
+});
+
 test("required regression: a fresh, complete sell message is recognized as NEW rather than silently merged into an abandoned draft stuck at the photo step", async () => {
   const phone = "19992220004"; resetState(phone); await inventoryDb._resetDbForTests();
   await handleIncomingMessage(phone, "hi");

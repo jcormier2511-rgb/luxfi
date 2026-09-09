@@ -312,10 +312,20 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
         // (by reference to what handleIncomingMessage already decided) that should go out as an
         // image instead of plain text — every other entry is unaffected. Telegram hard-caps a
         // photo caption at 1024 characters (WhatsApp's own limit is looser but still finite);
-        // a long review (extra fields, a wide Market Guide) falls back to plain text rather
-        // than risk the provider silently truncating or rejecting an oversized caption.
-        if (photoReply && reply === photoReply.caption && reply.length <= 1000) {
-          await sendBannerImage(message.phone, photoReply.imageUrl, reply);
+        // a long review (extra fields, a wide Market Guide) falls back to a plain-text review.
+        if (photoReply && reply === photoReply.caption) {
+          if (reply.length <= 1000) {
+            await sendBannerImage(message.phone, photoReply.imageUrl, reply);
+            continue;
+          }
+          // Real reported bug: when the caption was too long, this used to fall all the way
+          // through to sendText(reply) below and never call sendBannerImage at all -- the
+          // seller's own uploaded photo was silently dropped and never sent back to them,
+          // reading as "the photo isn't attaching." The photo goes out on its own (no caption
+          // needed -- the provider's own reply-context already shows which message it answers),
+          // and the full review still goes out as its own plain-text message right after.
+          await sendBannerImage(message.phone, photoReply.imageUrl);
+          await sendText(message.phone, reply);
           continue;
         }
         await sendText(message.phone, reply);

@@ -1860,7 +1860,11 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
     // The stray double space this can leave behind is what the final \s+ -> " " collapse below
     // (in `scrubbed`) exists to clean up.
     .replace(/(?:under|max(?:imum)?|budget|asking|price|for|up\s+to|(?:no\s+)?more\s+than|around|about|spend(?:ing)?)?\s*[$€£]?\s*[\d,.]+\s*k?\b/gi, " ")
-    .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|bnib|new|mint|in|from|located|based|dial|color|full set|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
+    // Real reported bug: "Fs Rolex 116500ln white dial 35k complete" stored "complete" as the
+    // watch's MODEL ("Rolex complete 116500LN") -- a dealer's "complete" means the same thing as
+    // "full set" (box, papers, everything), but wasn't in this cutoff list, so it survived every
+    // other scrub and was the only token left standing.
+    .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|bnib|new|mint|in|from|located|based|dial|color|full set|complete(?:\s+set)?|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
   // Belt and braces: whatever survives the scrubbing above is still rejected outright if it
   // identifies nothing — lead-in language, or a descriptor like a dial color that already has
@@ -1877,7 +1881,12 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
   // stated brand the reference does not belong to gets no model attached to it.
   const model = typedModel ?? (implied && (!brand || brand === implied.brand) ? implied.model : undefined);
   const location = extractLocation(text, { brand: resolvedBrand, model });
-  const boxPapers=/\b(full set|box(?: and | & |\/)?papers?|papers)\b/i.exec(text)?.[1]; const year=/\b(19\d{2}|20\d{2})\b/.exec(text)?.[1];
+  // "complete"/"complete set" is a dealer synonym for "full set" (box, papers, everything) --
+  // recognized as a box/papers signal, same as the model-field cutoff above, and normalized to
+  // the same "Full set" display text rather than showing the raw word "complete" back.
+  const boxPapersRaw=/\b(full set|complete(?:\s+set)?|box(?: and | & |\/)?papers?|papers)\b/i.exec(text)?.[1];
+  const boxPapers = boxPapersRaw && /^complete(?:\s+set)?$/i.test(boxPapersRaw) ? "Full set" : boxPapersRaw;
+  const year=/\b(19\d{2}|20\d{2})\b/.exec(text)?.[1];
   return { reference: reference_, price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial,brand: resolvedBrand,model,boxPapers,year };
 }
 
