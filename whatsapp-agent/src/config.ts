@@ -224,11 +224,12 @@ export const config = {
       `You've used your ${maxFreeLookups} free Market Pulse look-ups. Message me "join" to keep checking pricing and market trends as a Fi member.`,
     marketPulseWeeklyCapMessage: (weeklyLimit: number) =>
       `You've used all ${weeklyLimit} of your Market Pulse look-ups this week. It resets on a rolling 7-day basis.`,
-    // Sent right after a real connection reveal (never on "pending_confirmation" — nothing's
-    // been revealed yet, so there's no counterparty to inspect or escrow anything with). Same
-    // text everywhere it's used (v3's on-demand approval, v4's approver-side reveal, and v4's
-    // one-time push to the side that was left waiting) — kept name-free since v4 has no
-    // reliable first name to personalize with, unlike conversionPitch/introMessage.
+    // Sent right after a real connection reveal (never when nothing was actually revealed --
+    // e.g. a locked/invalid outcome, where there's no counterparty to inspect or escrow anything
+    // with). Same text everywhere it's used (v3's on-demand approval, v4's approver-side reveal
+    // -- each side's own approval reveals immediately now, with no waiting on the other side) —
+    // kept name-free since v4 has no reliable first name to personalize with, unlike
+    // conversionPitch/introMessage.
     // Real reported bug: "just ask and I can connect you" is not something the deterministic
     // router can recognize -- a reply like "connect me" (not "yes") fell straight through to
     // the generic fallback. Names the actual word to say ("escrow" -- see conversation/flow.ts's

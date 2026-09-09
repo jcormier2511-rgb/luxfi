@@ -150,7 +150,7 @@ test("approval replies identify the exact presented match and its available deta
   assert.match(reply, /Miami, USA/);
 });
 
-test("required (privacy): approving a direct-posting match never leaks the other side's raw phone number before they've also confirmed", async (t) => {
+test("required (privacy): approving a direct-posting match never shows the raw, unformatted counterpart phone number as an 'identity' -- only ever the properly formatted reveal", async (t) => {
   assert.equal(config.postingsV4.enabled, false);
   await db._resetDbForTests();
   const sellerPhone = "19990000006";
@@ -159,8 +159,11 @@ test("required (privacy): approving a direct-posting match never leaks the other
   // No senderName given — contact_name falls back to the raw phone (see postingsStore.ts's
   // `senderName || senderIdentity`), the real reported bug: a first-time buyer with no captured
   // WhatsApp display name had their own phone number echoed straight back to them as an
-  // "identity" in the seller's pending-confirmation reply, before the buyer had ever agreed to
-  // connect with anyone.
+  // "identity" in the seller's very first match card, before the buyer had ever agreed to
+  // connect with anyone. Approving now reveals the counterpart immediately (no more waiting on
+  // mutual confirmation) — this only ever checks that the reveal itself is the properly
+  // formatted phone, never the raw digit string, an identity-filter property unrelated to that
+  // timing change.
   await ingestChatPosting({
     platform: "whatsapp",
     chatId: "group-1",
@@ -184,7 +187,8 @@ test("required (privacy): approving a direct-posting match never leaks the other
 
   const reply = await tryHandleDirectPostingDecision(sellerPhone, `approve ${matchId}`);
   assert.ok(reply);
-  assert.doesNotMatch(reply!, new RegExp(buyerPhone), "the pending-confirmation reply must never leak the buyer's raw phone number either");
+  assert.match(reply!, /connected/i, "approving now reveals the counterpart immediately, in this same reply");
+  assert.doesNotMatch(reply!, new RegExp(buyerPhone), "the reveal itself must show the properly formatted phone, never the raw digit string");
 });
 
 test("tryHandleDirectPostingDecision falls through (returns null) for a phone with no direct-sourced posting on the match", async (t) => {

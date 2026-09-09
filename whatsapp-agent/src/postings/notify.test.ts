@@ -370,13 +370,13 @@ async function createChatVsChatMatch(
   return { matchId: matches.rows[0].id };
 }
 
-test("the first side to approve a real chat-vs-chat match gets pending_confirmation, revealing nothing yet", async () => {
+test('required: approving reveals the counterpart immediately, without waiting for the other side to also approve -- real reported ask: "the approved should release the number"', async () => {
   await resetAll();
   const { matchId } = await createChatVsChatMatch("buyer-mutual-1", "seller-mutual-1");
 
   const outcome = await approveMatch(matchId, "buyer-mutual-1");
-  assert.equal(outcome.status, "pending_confirmation");
-  assert.equal(outcome.counterpart, undefined, "must not reveal the counterpart's contact info before they've also confirmed");
+  assert.equal(outcome.status, "approved");
+  assert.equal(outcome.counterpart?.phone, "seller-mutual-1", "the very first approver must see the counterpart's contact info right away");
 });
 
 test("required (privacy): a private WhatsApp user's own phone number is never shown as an 'identity' before approval — real reported bug, since contact_name falls back to the raw phone when no display name was ever captured", async (t) => {
@@ -395,7 +395,7 @@ test("required (privacy): a private WhatsApp user's own phone number is never sh
   }
 
   const outcome = await approveMatch(matchId, buyerPhone);
-  assert.equal(outcome.status, "pending_confirmation");
+  assert.equal(outcome.status, "approved");
   assert.equal(outcome.match?.identity, undefined, "no display name was ever captured, so the fallback (the raw phone) must not be surfaced as an identity");
 });
 
@@ -419,11 +419,11 @@ test("required (privacy): a Telegram/SMS counterpart's raw identity (\"telegram:
   }
 
   const outcome = await approveMatch(matchId, sellerPhone);
-  assert.equal(outcome.status, "pending_confirmation");
+  assert.equal(outcome.status, "approved");
   assert.equal(outcome.match?.identity, undefined, "no display name was ever captured, so the raw \"telegram:...\" identity must not be surfaced as an identity");
 });
 
-test("once both sides approve, the second approver is revealed immediately and the first is sent a one-time introduction", async (t) => {
+test("each side's approval reveals the counterpart independently and synchronously, with no cross-side push needed for either", async (t) => {
   await resetAll();
   const sent: { phone: string; message: string }[] = [];
   t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => {
@@ -434,23 +434,20 @@ test("once both sides approve, the second approver is revealed immediately and t
   sent.length = 0; // ignore the "Match ID#" notifications from matching itself
 
   const first = await approveMatch(matchId, "buyer-mutual-2");
-  assert.equal(first.status, "pending_confirmation");
-  assert.equal(sent.length, 0, "no introduction goes out while only one side has confirmed");
+  assert.equal(first.status, "approved");
+  assert.equal(first.counterpart!.phone, "seller-mutual-2", "the first approver is revealed the counterpart synchronously, without waiting for the other side");
+  assert.equal(sent.length, 0, "the reveal is returned directly in the reply, not pushed as a separate message");
 
   const second = await approveMatch(matchId, "seller-mutual-2");
   assert.equal(second.status, "approved");
-  assert.equal(second.counterpart!.phone, "buyer-mutual-2", "the completing approver is revealed the counterpart synchronously");
-
-  assert.equal(sent.length, 1, "exactly one introduction must be pushed — to the side that was left waiting");
-  assert.equal(sent[0].phone, "buyer-mutual-2");
-  assert.match(sent[0].message, /seller-mutual-2/, "the introduction must contain the counterpart's contact info");
-  assert.match(sent[0].message, /escrow and inspection partners/i, "the one-time introduction push must also suggest escrow/inspection");
+  assert.equal(second.counterpart!.phone, "buyer-mutual-2", "the second approver is revealed the counterpart synchronously too");
+  assert.equal(sent.length, 0, "neither side's own approval push anything to the other -- each only ever reveals to itself");
 
   const matchRow = await db.withSchema((pool) => pool.query(`SELECT connected_at FROM matches WHERE id=$1`, [matchId]));
-  assert.ok(matchRow.rows[0].connected_at, "the match must record a connected status once both sides have confirmed");
+  assert.ok(matchRow.rows[0].connected_at, "the match records a connected status once both sides have independently approved");
 });
 
-test("required (privacy): getApprovedMatchesSummary never shows a counterpart before mutual confirmation, then shows it correctly for both sides once revealed", async (t) => {
+test("required: getApprovedMatchesSummary shows the counterpart as soon as its own side approves, independently of the other side's decision", async (t) => {
   await resetAll();
   const sent: { phone: string; message: string }[] = [];
   t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => {
@@ -464,17 +461,13 @@ test("required (privacy): getApprovedMatchesSummary never shows a counterpart be
   await approveMatch(matchId, "buyer-privacy-1");
   const buyerSummaryBefore = await getApprovedMatchesSummary("buyer-privacy-1");
   assert.equal(buyerSummaryBefore.length, 1, "the approval itself is recorded immediately");
-  assert.equal(buyerSummaryBefore[0].counterpartName, null, "must not reveal the counterpart before the seller has also confirmed");
-  assert.equal(buyerSummaryBefore[0].counterpartPhone, null);
+  assert.equal(buyerSummaryBefore[0].counterpartPhone, "seller-privacy-1", "revealed as soon as this side approves, without waiting for the seller");
   assert.match(buyerSummaryBefore[0].listingDescription, /Rolex/, "the watch itself is never sensitive — safe to show immediately");
 
   await approveMatch(matchId, "seller-privacy-1");
 
-  const buyerSummaryAfter = await getApprovedMatchesSummary("buyer-privacy-1");
-  assert.equal(buyerSummaryAfter[0].counterpartPhone, "seller-privacy-1", "now safe to reveal — the seller has also confirmed");
-
   const sellerSummary = await getApprovedMatchesSummary("seller-privacy-1");
-  assert.equal(sellerSummary[0].counterpartPhone, "buyer-privacy-1", "the completing approver's own summary is revealed immediately too");
+  assert.equal(sellerSummary[0].counterpartPhone, "buyer-privacy-1", "the seller's own approval reveals the buyer to the seller too, independently");
 });
 
 test("repeated clicks after mutual confirmation never re-send the introduction or re-reveal redundantly", async (t) => {

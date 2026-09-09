@@ -10,7 +10,6 @@ import { getWeeklyApprovalCount, recordApprovalEvent, markApprovalRevealed } fro
 import { sendText } from "../channels";
 import { config } from "../config";
 import { isPostingMonitoringEnabled } from "../admin/store";
-import { markPendingEscrowOffer } from "../conversation/stateStore";
 import { getListingLimits } from "./listingConfig";
 import { saveMoreContext } from "./moreContext";
 import { getNotificationPreference, resolveNotifyIdentity, resolveFallbackIdentity } from "./notificationPreferences";
@@ -428,21 +427,18 @@ async function getRecipientRow(
 }
 
 /**
- * Fi Build Spec v4 §9/§11 — atomic, idempotent approval transaction that ends in an actual
- * introduction, not just a recorded click, while never revealing either party's contact info
- * to someone who hasn't themselves confirmed:
+ * Fi Build Spec v4 §9/§11 — atomic, idempotent approval transaction. Approving reveals the
+ * counterpart's contact info to the approver immediately, in the same reply — it does not wait
+ * for the counterpart to also approve. (Real reported ask: the earlier mutual-confirmation
+ * design left the FIRST approver seeing nothing until the other side separately approved too,
+ * which read as "approve did nothing." Each side's own approval now stands entirely on its
+ * own — whoever approves sees the other side right away, and nothing here pushes a person's own
+ * contact info to the counterpart on their behalf; the counterpart still only sees it once
+ * THEY approve.)
  *
- * - When the counterpart is a real WhatsApp user, BOTH sides must independently approve
- *   before EITHER learns the other's contact info. The first approver gets
- *   "pending_confirmation" (nothing revealed). The second approver's own approval reveals to
- *   them synchronously (returned here) AND pushes a one-time introduction back to the first
- *   approver, who was left waiting — see the sendText call after the transaction below.
- * - When the counterpart has no WhatsApp identity (an API-mirrored WatchFacts listing),
- *   there's no one to wait on, so a single approval reveals immediately.
  * - matches.connected_at is the match-level "connected" record; match_recipients.connected_at
- *   is the per-side idempotency claim — a duplicate click, a second approval from the same
- *   side, or the counterpart's own later approval can never re-trigger a send once a side's
- *   connected_at is set.
+ *   is the per-side idempotency claim — a duplicate click, or a second approval from the same
+ *   side, can never re-run this twice for one side.
  * - A posting that already hit its 5-approved-match cap (status != 'active') refuses any
  *   further approval outright, even against a match that was created/surfaced before it
  *   closed.
@@ -458,22 +454,22 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
   const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
   const entitlement = await getEntitlement(phone);
 
-  const result = await withTransaction(async (client) => {
+  return withTransaction(async (client) => {
     const matchRow = await client.query(`SELECT fs_posting_id, wtb_posting_id FROM matches WHERE id=$1`, [matchId]);
-    if (matchRow.rows.length === 0) return { outcome: { status: "invalid" as const }, notify: null };
+    if (matchRow.rows.length === 0) return { status: "invalid" as const };
     const { fs_posting_id, wtb_posting_id } = matchRow.rows[0];
 
     // Checked at decision time, not just at ingestion — a posting from a group that's no
     // longer allowed (or with the master flag now off) must not accept an approve decision.
     if (!(await isOwnPostingChatEnabled(client, fs_posting_id, wtb_posting_id, canonicalUserId))) {
-      return { outcome: { status: "invalid" as const }, notify: null };
+      return { status: "invalid" as const };
     }
 
     const userResult = await client.query(`SELECT * FROM canonical_users WHERE id=$1 FOR UPDATE`, [canonicalUserId]);
     const user = userResult.rows[0];
 
     const recipient = await getRecipientRow(client, matchId, canonicalUserId, true);
-    if (!recipient) return { outcome: { status: "invalid" as const }, notify: null };
+    if (!recipient) return { status: "invalid" as const };
 
     const ownPostingId = await resolveOwnPostingId(client, fs_posting_id, wtb_posting_id, canonicalUserId);
 
@@ -484,7 +480,7 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
       if (ownPostingId !== null) {
         const ownPosting = await client.query(`SELECT status FROM postings WHERE id=$1 FOR UPDATE`, [ownPostingId]);
         if (ownPosting.rows[0]?.status !== "active") {
-          return { outcome: { status: "posting_closed" as const }, notify: null };
+          return { status: "posting_closed" as const };
         }
       }
 
@@ -498,23 +494,18 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
       if (!isComplimentary) {
         const weeklyLimit = weeklyLimitFor(entitlement);
         if (weeklyLimit === 0) {
-          return { outcome: { status: "locked" as const, lockReason: "no_plan" as const }, notify: null };
+          return { status: "locked" as const, lockReason: "no_plan" as const };
         }
         if (weeklyLimit !== null) {
           const weeklyUsed = await getWeeklyApprovalCount(client, canonicalUserId);
           if (weeklyUsed >= weeklyLimit) {
-            return {
-              outcome: { status: "locked" as const, lockReason: "weekly_cap" as const, plan: entitlement.plan as PlanKey, weeklyLimit },
-              notify: null,
-            };
+            return { status: "locked" as const, lockReason: "weekly_cap" as const, plan: entitlement.plan as PlanKey, weeklyLimit };
           }
         }
       }
 
       // Idempotency key: match_id + approving_canonical_user_id. A duplicate/racing click hits
-      // this conflict and is treated as a no-op rather than double-counting. No counterpart
-      // passed here — mutual confirmation may still be pending; markApprovalRevealed below
-      // fills it in the moment it's actually safe to.
+      // this conflict and is treated as a no-op rather than double-counting.
       const fsPostingForDescription = await client.query(`SELECT * FROM postings WHERE id=$1`, [fs_posting_id]);
       const listingDescription = watchLabel(fsPostingForDescription.rows[0]);
       const approved = await recordApprovalEvent(client, canonicalUserId, matchId, isComplimentary, listingDescription);
@@ -539,72 +530,17 @@ export async function approveMatch(matchId: number, phone: string): Promise<Appr
     const counterpart = await getCounterpartContact(client, matchId, canonicalUserId);
     const counterpartPhoto = await client.query(`SELECT source_url FROM posting_images WHERE posting_id=$1 ORDER BY is_primary DESC, display_order ASC LIMIT 1`, [counterpart.posting.id]);
     const presentation = presentationFor(counterpart.posting, counterpartPhoto.rows[0]?.source_url);
-    const counterpartRecipient =
-      counterpart.canonicalUserId !== null ? await getRecipientRow(client, matchId, counterpart.canonicalUserId, false) : null;
-    const counterpartReady = counterpart.canonicalUserId === null || counterpartRecipient?.decision === "approved";
 
-    if (!counterpartReady) {
-      return { outcome: { status: "pending_confirmation" as const, match: presentation }, notify: null };
-    }
-
-    // Mutual condition met (or no counterpart confirmation was ever needed) — reveal to me
-    // now. Both UPDATEs are idempotency claims (WHERE ... IS NULL): harmless no-ops on a
-    // duplicate click or the counterpart's own later approval.
+    // Reveal to me now — no waiting on the counterpart's own decision. Both UPDATEs are
+    // idempotency claims (WHERE ... IS NULL): harmless no-ops on a duplicate click.
     await client.query(`UPDATE match_recipients SET connected_at = now() WHERE id=$1 AND connected_at IS NULL`, [recipient.id]);
     await client.query(`UPDATE matches SET connected_at = now() WHERE id=$1 AND connected_at IS NULL`, [matchId]);
     // Exactly the moment my own "my approved matches" summary (approvalUsage.ts) becomes
     // allowed to show this counterpart — never before.
     await markApprovalRevealed(client, canonicalUserId, matchId, { name: counterpart.name, phone: counterpart.phone });
 
-    let notify: { canonicalUserId: number; myContact: { name: string; phone: string } } | null = null;
-    if (counterpartRecipient && !counterpartRecipient.connected_at) {
-      // I'm the second (mutual-completing) approver — the counterpart was left on
-      // "pending_confirmation" and never got revealed; tell them now, exactly once.
-      // Checked at (push) notification time, before claiming — the counterpart's own
-      // posting's group must still be allowed, even though it was allowed when the
-      // match/notification was originally created. Checking before the claim (rather than
-      // after) leaves this retryable rather than permanently consumed if their group is
-      // later re-allowed.
-      const counterpartStillEnabled = await isOwnPostingChatEnabled(client, fs_posting_id, wtb_posting_id, counterpart.canonicalUserId!);
-      if (counterpartStillEnabled) {
-        const claimCounterpart = await client.query(
-          `UPDATE match_recipients SET connected_at = now() WHERE id=$1 AND connected_at IS NULL RETURNING id`,
-          [counterpartRecipient.id]
-        );
-        if (claimCounterpart.rows.length > 0) {
-          const myContact = await getCounterpartContact(client, matchId, counterpart.canonicalUserId!);
-          notify = { canonicalUserId: counterpart.canonicalUserId!, myContact: { name: myContact.name, phone: myContact.phone } };
-          // The counterpart's own approvals row (inserted when THEY first approved and got
-          // left on "pending_confirmation") only now becomes safe to reveal too.
-          await markApprovalRevealed(client, counterpart.canonicalUserId!, matchId, { name: myContact.name, phone: myContact.phone });
-        }
-      }
-    }
-
-    return {
-      outcome: { status: "approved" as const, counterpart: { name: counterpart.name, phone: counterpart.phone }, match: presentation },
-      notify,
-    };
+    return { status: "approved" as const, counterpart: { name: counterpart.name, phone: counterpart.phone }, match: presentation };
   });
-
-  if (result.notify) {
-    const phone = await resolveNotifyIdentity(result.notify.canonicalUserId);
-    if (phone) {
-      try {
-        const deliveredTo = await sendToCanonicalUser(
-          result.notify.canonicalUserId,
-          phone,
-          `You're connected! ${result.notify.myContact.name}: ${formatPhoneForDisplay(result.notify.myContact.phone)}\n\n${config.fiFlow.escrowSuggestion}`
-        );
-        markPendingEscrowOffer(deliveredTo);
-      } catch (err) {
-        console.error(`[postings] failed to deliver connection introduction for match ${matchId} to ${phone}:`, err);
-        await recordNotificationFailure((err as Error).message);
-      }
-    }
-  }
-
-  return result.outcome;
 }
 
 async function resolveOwnPostingId(
