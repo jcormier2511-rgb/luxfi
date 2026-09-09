@@ -144,6 +144,15 @@ export async function sendTemplate(phone:string,name:string,language:string,para
 
 export async function sendBannerImage(phone: string, imageUrl: string, caption?: string): Promise<void> {
   if (!imageUrl) return;
+  // FOLLOW-UP, NOT YET CONFIRMED: extractIncomingMessages above now populates a RECEIVED image's
+  // `imageUrl` from Whapi's own `preview` (a base64 data: URI -- see that function's comment for
+  // the confirmed real payload shape), since a real image message never carries the `link` this
+  // code originally assumed. Every downstream use of an image received this way (a seller's own
+  // sell-intake photo persisted and later re-sent to a matched buyer, a photo forwarded by
+  // matching/photoRequests.ts) ends up calling THIS function with that same base64 string as
+  // `media`. Whether Whapi's send-image endpoint accepts inline base64 the same way its webhook
+  // sends it, or requires an actual hosted URL, is unconfirmed -- watch the first real match/
+  // forward that carries a private (non-WatchFacts-link) seller's photo to see which it is.
   await post("/messages/image", {
     to: digitsOnly(phone),
     media: imageUrl,
@@ -171,11 +180,16 @@ export interface IncomingWebhook {
     from: string;
     from_name?: string;
     text?: { body: string };
-    // NOTE: shape (image.link/image.caption) is Whapi's documented convention for media
-    // messages but hasn't been confirmed against a real captured image-message payload yet —
-    // same documented-limitation status as from_name above. If chat-originated postings never
-    // pick up an imageUrl from a real dealer-group photo post, check this shape first.
-    image?: { link?: string; caption?: string };
+    // CONFIRMED against a real captured payload (live-reported "photo not attaching" bug,
+    // chased down via Railway logs): `link` does NOT exist on a real Whapi image message at
+    // all -- there is no hosted-URL field. The actual media comes back as `id` (Whapi's own
+    // media reference, e.g. "jpeg-<hash>-<hash>-<hash>" -- no confirmed way yet to resolve this
+    // to a full-resolution download, so it's kept only for future use/debugging) and `preview`,
+    // a base64 data: URI Whapi embeds directly in the webhook (confirmed present on a normal
+    // photo message, not some low-res fallback -- this is the actual image data). `link` is kept
+    // in the type in case some other message shape does carry it, but every real message
+    // observed so far only ever has `preview`.
+    image?: { link?: string; caption?: string; id?: string; preview?: string };
     // NOTE: shape (location.latitude/longitude) follows the WhatsApp Business API's own
     // documented location-message convention, which Whapi.Cloud otherwise mirrors closely
     // (image/text above), but — same caveat as those — hasn't been confirmed against a real
@@ -201,6 +215,17 @@ export interface IncomingMessage {
   location?: { latitude: number; longitude: number };
 }
 
+// Live-reported bug, now confirmed against a real captured payload (chased down via Railway
+// logs): Whapi's real image message has no `link` field at all -- the actual media comes back as
+// `preview`, a base64 `data:image/...;base64,...` URI embedded directly in the webhook. `link` is
+// tried first only in case some other message shape does carry it; every real message observed
+// so far only ever has `preview`. Every image anywhere (group-monitored dealer posts, a seller's
+// own sell-intake photo, an answer to Fi's private "please send photos" request) shares this one
+// extraction, so this single fix reaches all of them at once.
+function imageUrlOf(image: { link?: string; preview?: string } | undefined): string | undefined {
+  return image?.link ?? image?.preview;
+}
+
 export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[] {
   // Diagnostic only: real reported bug (still under investigation) -- every genuine text message
   // from WhatsApp arrives alongside a SECOND webhook delivery, same phone, same instant, a
@@ -211,17 +236,13 @@ export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[
   // what that companion actually is before deciding how (or whether) to exclude it.
   for (const m of body.messages ?? []) {
     console.log(
-      `[whapi] raw id=${m.id} type=${m.type} from_me=${m.from_me} text=${JSON.stringify(m.text?.body ?? null)} hasImage=${Boolean(m.image?.link)}`
+      `[whapi] raw id=${m.id} type=${m.type} from_me=${m.from_me} text=${JSON.stringify(m.text?.body ?? null)} hasImage=${Boolean(imageUrlOf(m.image))}`
     );
-    // Live-reported bug: a real image message consistently logs hasImage=false above -- WHAPI's
-    // own webhook confirms type="image" but our code never finds a usable link at `image.link`,
-    // so the message is filtered out below before it ever reaches the conversation flow (the
-    // photo is silently dropped). The assumed shape (image.link/image.caption) was "documented
-    // but never confirmed against a real payload" per the type comment on IncomingWebhook above
-    // -- this dumps the COMPLETE raw message for exactly the case that assumption is failing, so
-    // the real field name/shape can be read directly out of these logs instead of guessed at.
-    if (m.type === "image" && !m.image?.link) {
-      console.log(`[whapi] raw image message with no usable link, full payload: ${JSON.stringify(m)}`);
+    // Belt and braces: dumps the full payload for the rare case a future image message STILL
+    // carries neither `link` nor `preview` (a message shape not yet seen), so any further gap
+    // can be read directly out of logs again instead of guessed at.
+    if (m.type === "image" && !imageUrlOf(m.image)) {
+      console.log(`[whapi] raw image message with no usable link or preview, full payload: ${JSON.stringify(m)}`);
     }
   }
   return (body.messages ?? [])
@@ -248,7 +269,7 @@ export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[
       (m) =>
         !m.from_me &&
         m.type !== "reaction" &&
-        (m.type === "text" ? Boolean(m.text?.body) : m.type === "image" ? Boolean(m.image?.link) : true)
+        (m.type === "text" ? Boolean(m.text?.body) : m.type === "image" ? Boolean(imageUrlOf(m.image)) : true)
     )
     .map((m) => {
       const isGroup = (m.chat_id ?? "").includes("@g.us");
@@ -259,7 +280,7 @@ export function extractIncomingMessages(body: IncomingWebhook): IncomingMessage[
         isGroup,
         groupId: isGroup ? digitsOnly(m.chat_id) : undefined,
         senderName: m.from_name,
-        imageUrl: m.type === "image" ? m.image?.link : undefined,
+        imageUrl: m.type === "image" ? imageUrlOf(m.image) : undefined,
         location:
           m.type === "location" && m.location?.latitude !== undefined && m.location?.longitude !== undefined
             ? { latitude: m.location.latitude, longitude: m.location.longitude }

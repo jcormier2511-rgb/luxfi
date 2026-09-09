@@ -84,3 +84,39 @@ test("plain text messages are unaffected by the image-filter change", () => {
   assert.equal(msg.text, "buy: Rolex Daytona");
   assert.equal(msg.imageUrl, undefined);
 });
+
+/**
+ * Live-reported bug, confirmed against a real captured payload (chased down via Railway
+ * production logs on a live "photo not attaching" report): a real Whapi image message has NO
+ * `link` field at all -- every photo, in a group post or a direct sell-intake reply alike, was
+ * silently dropped before ever reaching the conversation flow, because the code only ever
+ * checked a field that doesn't exist in the real API. The actual media comes back as `preview`,
+ * a base64 data: URI embedded directly in the webhook (this is the real shape confirmed live,
+ * not a shortened/placeholder example) alongside an `id` (Whapi's own media reference, kept in
+ * the type for future use but not otherwise acted on yet).
+ */
+test("required regression: an image message with the REAL Whapi payload shape (no `link`, a base64 `preview` data URI instead) is captured, not dropped", () => {
+  const realShapePreview =
+    "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAQFBQkGCQkJCQkKCAkICgsLCgoLCwwKCwoLCgwMDAwNDQwMDAwMDw4PDAwNDw8PDw0OERERDhEQEBETERMREQ0BBAQECAYIBwgIBwgGCAYICAgHBwgICQcHBwcHCQoJCAgICAkKCQgIBggICQkJCgoJCQoICQgKCgoKCg4QDg4Od//CABEIAEgANgMBIgACEQEDEQH/xABiAAEAAgEFAQAAAAAAAAAAAAAIBgcEAAECAwUJEAABAgQCBAgKBggHAAAAAAACAQMABBESBSEGEyIxBxQyNUFCUWEjQ1JicXWBkbG0FXKCodHwFzM0RJKTs8JTVGR0g8Hx/9k=";
+  const [msg] = extractIncomingMessages(
+    webhook([
+      {
+        id: "SuDnhw9WxxhuWA-op4DChKpKA-XFtLwQ",
+        from_me: false,
+        type: "image",
+        chat_id: "13053897000-1549487041@g.us",
+        from: "16464967422",
+        from_name: "Elite Time NYC",
+        image: {
+          id: "jpeg-4ae0e7870f56c7186e58-a29e030a12a928-5c5b4bc1",
+          caption: "Rolex 69173 no holes case am dial $5,100 plus label",
+          preview: realShapePreview,
+        },
+      },
+    ])
+  );
+  assert.ok(msg, "a real image message must never be silently dropped");
+  assert.equal(msg.imageUrl, realShapePreview, "the base64 preview must be used as the image URL when there's no link");
+  assert.equal(msg.text, "Rolex 69173 no holes case am dial $5,100 plus label");
+  assert.equal(msg.isGroup, true);
+});
