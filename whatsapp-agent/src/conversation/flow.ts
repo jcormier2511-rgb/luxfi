@@ -298,6 +298,13 @@ function parsePhotoRequestCommand(text: string): number | null {
 // while help must always return the complete deterministic menu without consuming onboarding.
 const MENU_COMMAND = /^(?:help|menu)\b/i;
 const CANCEL_COMMAND = /^cancel\b/i;
+// Real reported gap: a customer stuck in a confusing state (the pendingReplacementRequest
+// "replace or add another" prompt was the reported case, but any one-shot pending branch below
+// can trap someone the same way) had no way out except knowing to type the undocumented "cancel"
+// command. This is the plain-language version of it -- checked in the exact same early spot, so
+// it reaches every stuck state cancel already does -- for a customer who instead just says they're
+// lost, in whatever words come naturally.
+const RESET_COMMAND = /\bi'?m (?:so |really |a bit )?confused\b|\bthis is confusing\b|\bstart over\b|^reset\b/i;
 // Real reported bug: the escrow offer said "just ask and I can connect you", which is not
 // something the deterministic router can recognize -- a customer replying "connect me" (not
 // "yes") fell straight through to the generic "I'm not sure I understood that" fallback. Anyone
@@ -951,9 +958,18 @@ async function handleMembershipCommand(state: ConversationState, messages: strin
   messages.push(lines.join("\n"));
 }
 
-function handleCancelCommand(state: ConversationState, messages: string[]): void {
+// Shared by both "cancel" and the plain-language RESET_COMMAND below -- every pending one-shot
+// state a customer could get stuck behind, cleared the same way regardless of which phrase they
+// used to ask for a way out.
+function clearAllPendingState(state: ConversationState): boolean {
   const hadSomethingToCancel = Boolean(
-    state.pendingMatches || state.pendingPreferenceCollection || state.pendingNaturalFollowUp || state.pendingSellIntake || state.pendingBuyIntake || state.pendingChannelLink
+    state.pendingMatches ||
+      state.pendingPreferenceCollection ||
+      state.pendingNaturalFollowUp ||
+      state.pendingSellIntake ||
+      state.pendingBuyIntake ||
+      state.pendingChannelLink ||
+      state.pendingReplacementRequest
   );
   state.pendingMatches = undefined;
   state.pendingPreferenceCollection = undefined;
@@ -964,11 +980,27 @@ function handleCancelCommand(state: ConversationState, messages: string[]): void
   state.pendingEscrowOffer = false;
   state.pendingListingsMenu = false;
   state.pendingChannelLink = undefined;
+  state.intakeFallbackCount = 0;
+  return hadSomethingToCancel;
+}
+
+function handleCancelCommand(state: ConversationState, messages: string[]): void {
+  const hadSomethingToCancel = clearAllPendingState(state);
   messages.push(
     hadSomethingToCancel
       ? "Okay, I've cleared your current matches. Send a new buy/sell request anytime."
       : "There's nothing pending to cancel right now."
   );
+}
+
+// Same reset as "cancel", but for someone who never knew "cancel" was the word to use -- the
+// friendlier "let's start over" copy already used by bailOutOfStuckIntake's automatic version of
+// this same recovery, so a customer who typed it themselves and one who got bailed out
+// automatically after repeating the same stuck answer land on an identical, familiar reply.
+function handleResetCommand(state: ConversationState, messages: string[]): void {
+  clearAllPendingState(state);
+  messages.push("I think I got confused somewhere — let's start over.");
+  messages.push(FI_MENU);
 }
 
 export interface FlowResult {
@@ -2649,6 +2681,14 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   }
   if (CANCEL_COMMAND.test(text.trim())) {
     handleCancelCommand(state, messages);
+    saveState(state);
+    return { state, messages };
+  }
+  // Checked in the exact same early spot as CANCEL_COMMAND above -- before every pending one-shot
+  // branch below (pendingReplacementRequest, pendingChannelLink, pendingListingsMenu, the
+  // sell/buy intake handlers, etc.) so it reaches every stuck state cancel already does.
+  if (RESET_COMMAND.test(text.trim())) {
+    handleResetCommand(state, messages);
     saveState(state);
     return { state, messages };
   }

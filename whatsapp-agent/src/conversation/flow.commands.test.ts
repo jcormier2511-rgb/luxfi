@@ -138,6 +138,57 @@ test('"cancel" with nothing pending says so rather than pretending something was
   assert.match(result.messages[0], /nothing pending to cancel/i);
 });
 
+test('required (live-reported confusion): "I\'m confused, let\'s start over" escapes a stuck pendingReplacementRequest prompt, same as "cancel" would', async () => {
+  const phone = "19991110017";
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+
+  await handleIncomingMessage(phone, "hi");
+  const draft = await handleIncomingMessage(phone, "Sell my Rolex Daytona 116500LN black dial, pre-owned, full set, Miami");
+  assert.equal(draft.state.pendingSellIntake?.step, "price", "the draft must be waiting on a price for this reproduction");
+
+  // A second, fresh sell request while that draft is still open arms the "replace or add
+  // another" prompt -- the exact state the live user got stuck behind.
+  const conflict = await handleIncomingMessage(phone, "Sell my Rolex Daytona 116500LN black dial, pre-owned, full set, Miami");
+  assert.ok(conflict.state.pendingReplacementRequest, "the replace/add prompt must be pending before the reset command is tested");
+  assert.match(conflict.messages[0], /replace it or add another/i);
+
+  const reset = await handleIncomingMessage(phone, "I'm confused, let's start over");
+  assert.match(reset.messages[0], /let's start over/i);
+  assert.match(reset.messages[1], /here's what I can do/i, "the reset reply includes the full Fi menu, same as the automatic stuck-intake bailout");
+  assert.equal(reset.state.pendingReplacementRequest, undefined);
+  assert.equal(reset.state.pendingSellIntake, undefined);
+
+  // Fully unstuck afterward -- a new request works normally, with no leftover replace/add prompt.
+  const fresh = await handleIncomingMessage(phone, "Sell my Rolex Daytona 116500LN black dial, pre-owned, full set, Miami");
+  assert.equal(fresh.state.pendingReplacementRequest, undefined);
+  assert.equal(fresh.state.pendingSellIntake?.step, "price");
+});
+
+test('"start over" and "reset" reach the same universal recovery as "I\'m confused"', async () => {
+  const phone = "19991110018";
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("reset-1")], new Date().toISOString());
+
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  const searchResult = await handleIncomingMessage(phone, "any");
+  assert.ok(searchResult.state.pendingMatches, "a match must be pending before the reset command is tested");
+
+  const result = await handleIncomingMessage(phone, "can we start over please");
+  assert.match(result.messages[0], /let's start over/i);
+  assert.equal(result.state.pendingMatches, undefined);
+  assert.notEqual(result.state.stage, "opted_out", "the reset command must never unsubscribe the contact");
+
+  resetState("19991110019");
+  const bareReset = await handleIncomingMessage("19991110019", "reset");
+  assert.match(bareReset.messages[0], /let's start over/i);
+});
+
 test('required (live-reported bug): after the only match is already approved, "hi" gets a personalized greeting, not the stale approve/pass reminder', async () => {
   const phone = "19991110006";
   resetState(phone);
