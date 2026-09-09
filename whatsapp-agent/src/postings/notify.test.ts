@@ -756,6 +756,30 @@ test("formatMatchPresentation leaves a model that does NOT already contain the r
   assert.match(text, /Watch: Rolex Submariner 116610LV/);
 });
 
+test("required: the counterpart's own free-text description shows as its own line, labeled and truncated", () => {
+  const short = notify.formatMatchPresentation(1, "Seller", { brand: "Rolex", model: "Submariner", description: "Firm on price, can ship worldwide." });
+  assert.match(short, /💬 In their words: Firm on price, can ship worldwide\./);
+
+  const long = notify.formatMatchPresentation(2, "Seller", { brand: "Rolex", description: "x".repeat(200) });
+  const line = long.split("\n").find((l) => l.startsWith("💬"))!;
+  assert.ok(line.length < 200, "a long description must be truncated, not reprinted in full");
+  assert.match(line, /…$/);
+});
+test("required: no description means no 💬 line at all", () => {
+  const text = notify.formatMatchPresentation(1, "Seller", { brand: "Rolex", model: "Submariner" });
+  assert.doesNotMatch(text, /💬/);
+});
+
+test("required: formatMatchMessage's reply instructions ask only for \"approve\" (not \"pass\") since ignoring already has the same effect, and point people to \"listings\" to close a request once they're done", () => {
+  const self = { type: "WTB", brand: "Rolex", model: "Daytona", reference: "", dial: "", condition: "", price: null, currency: "USD", location: "", contact_name: "", contact_phone: "", source_type: "chat", original_text: "" } as any;
+  const counterpart = { type: "FS", brand: "Rolex", model: "Daytona", reference: "116500LN", dial: "", condition: "", price: "35000", currency: "USD", location: "", contact_name: "", contact_phone: "", source_type: "api", original_text: "" } as any;
+  const text = notify.formatMatchMessage(555, self, counterpart, ["Same brand: Rolex"], null);
+  assert.match(text, /Reply "approve 555" to get their contact info\./);
+  assert.doesNotMatch(text, /pass 555/, "pass is no longer asked for -- ignoring a match already has the same effect");
+  assert.match(text, /Not for you\? No need to reply/);
+  assert.match(text, /Reply "listings" to close that request/);
+});
+
 test("isRealDisplayName: a real name (with or without a business-y suffix) passes; a bare or platform-prefixed identity does not", () => {
   assert.equal(notify.isRealDisplayName("John Smith"), true);
   assert.equal(notify.isRealDisplayName("ABC Watches"), true);

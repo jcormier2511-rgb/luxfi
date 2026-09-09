@@ -148,6 +148,11 @@ export interface MatchPresentation {
   photoUrl?: string;
   /** "Groups active in" signal — omitted (not 0) when unknown, see groupActivity.ts. */
   activeGroupCount?: number;
+  /** The counterpart's own free-text description, in their own words -- the structured fields
+   *  above are a parsed summary, not necessarily everything they actually said (extra context
+   *  like "firm on price" or "can ship" never gets its own structured field). A supplement to
+   *  the structured summary, not a replacement for it -- shown as its own line. */
+  description?: string;
 }
 
 /**
@@ -186,11 +191,12 @@ function presentationFor(posting: PostingRow, photoUrl?: string | null, activeGr
     sourceUrl: posting.detail_url || undefined,
     photoUrl: photoUrl || undefined,
     activeGroupCount: activeGroupCount && activeGroupCount > 0 ? activeGroupCount : undefined,
+    description: posting.original_text?.trim() || undefined,
   };
 }
 
 export function formatMatchPresentation(matchId: number, roleLabel: string, match: MatchPresentation, heading = "Match"): string {
-  const lines = [`${heading} ${matchId}`];
+  const lines = [`🎯 ${heading} ${matchId}`];
   // The seller/buyer's own name (already shown right below) is the identifier a person actually
   // recognizes — a raw internal id ("Candidate ID: 9fd0c621-53e6-...") added nothing but noise
   // and was the real reported complaint here.
@@ -222,6 +228,13 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
   if (match.location) lines.push(match.location);
   if (match.sourceUrl) lines.push(`Source: ${match.sourceUrl}`);
   if (match.photoUrl) lines.push(`Photo: ${match.photoUrl}`);
+  // Their own words, not just the parsed fields above -- extra context (firm on price, can
+  // ship, etc.) never gets its own structured field. Trimmed to keep the card skimmable rather
+  // than reprinting a long raw message in full.
+  if (match.description) {
+    const trimmed = match.description.length > 140 ? `${match.description.slice(0, 140)}…` : match.description;
+    lines.push(`💬 In their words: ${trimmed}`);
+  }
   return lines.join("\n");
 }
 
@@ -247,8 +260,18 @@ export function formatMatchMessage(
     // useful to people scanning a chat, downstream channel consumers and the PR #20 regression
     // suite intentionally recognize automatic notifications by the "Match ID#" heading.
     formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl, activeGroupCount), "Match ID#") +
-    (reasons.length ? `\n\nWhy it matched:\n${reasons.map((r) => `• ${r}`).join("\n")}` : "") +
-    `\n\nReply "approve ${matchId}" to connect, or "pass ${matchId}" to skip.`
+    (reasons.length ? `\n\n✅ Why it's a good match:\n${reasons.map((r) => `• ${r}`).join("\n")}` : "") +
+    // "pass" is deliberately not mentioned as its own step -- doing nothing already has the
+    // exact same effect (this candidate still counts toward the per-listing cap either way, see
+    // notifyOneRecipient), so telling someone to reply just to decline was an extra step with no
+    // actual purpose. "approve" is the only reply that does anything, so it's the only one asked
+    // for; ignoring a match a person isn't interested in stays completely safe.
+    `\n\n📞 Reply "approve ${matchId}" to get their contact info.\nNot for you? No need to reply — just leave it.` +
+    // Emoji-only styling (no *bold*/_italic_ markdown) is deliberate -- WhatsApp renders that
+    // syntax natively but channels/telegram.ts's sendText sets no parse_mode, so Telegram would
+    // show literal asterisks/underscores instead of formatting. Plain text + emoji renders
+    // identically on both channels without needing per-platform escaping.
+    `\n\n✅ Already found what you need? Reply "listings" to close that request so I stop sending you new matches for it.`
   );
 }
 
