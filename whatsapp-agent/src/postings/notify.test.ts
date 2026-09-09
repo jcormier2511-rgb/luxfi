@@ -399,6 +399,30 @@ test("required (privacy): a private WhatsApp user's own phone number is never sh
   assert.equal(outcome.match?.identity, undefined, "no display name was ever captured, so the fallback (the raw phone) must not be surfaced as an identity");
 });
 
+test("required (privacy): a Telegram/SMS counterpart's raw identity (\"telegram:5703391972\") is never shown as an 'identity' before approval — the platform prefix's own letters defeated the digit-only check the WhatsApp case relies on", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+
+  const buyerIdentity = "telegram:5703391972";
+  const sellerPhone = "15557654321";
+  const n = ++counter;
+  const ref = `TGRAM${n}`;
+  await ingestChatPosting({ platform: "whatsapp", chatId: "g1", messageId: `fs-tg-${n}`, senderIdentity: sellerPhone, text: `FS Rolex ${ref} $10,000` });
+  const wtb = await ingestChatPosting({ platform: "telegram", chatId: "g1", messageId: `wtb-tg-${n}`, senderIdentity: buyerIdentity, text: `WTB Rolex ${ref} budget $12,000` });
+  await runImmediateMatch(wtb.posting!);
+  const matches = await db.withSchema((pool) => pool.query(`SELECT id FROM matches WHERE wtb_posting_id=$1`, [wtb.posting!.id]));
+  const matchId = matches.rows[0].id;
+
+  for (const card of sent.map((s) => s.message)) {
+    assert.doesNotMatch(card, /5703391972/, "the very first match card must never leak a counterpart's raw Telegram identity");
+  }
+
+  const outcome = await approveMatch(matchId, sellerPhone);
+  assert.equal(outcome.status, "pending_confirmation");
+  assert.equal(outcome.match?.identity, undefined, "no display name was ever captured, so the raw \"telegram:...\" identity must not be surfaced as an identity");
+});
+
 test("once both sides approve, the second approver is revealed immediately and the first is sent a one-time introduction", async (t) => {
   await resetAll();
   const sent: { phone: string; message: string }[] = [];

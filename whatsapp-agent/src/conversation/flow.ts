@@ -190,6 +190,17 @@ function classify(segment: string): ItemRequest | null {
   else return null;
   const query = stripLeadingIntent(text);
   if (!query) return null;
+  // A bare intent word ("want"/"need") with no product of its own and no explicit command
+  // ("WTB"/"buy"/"looking for"/"FS"/"sell"/...) is too weak a signal by itself -- real reported
+  // bug: "Hi, I want to join LuxFi network" (no watch mentioned at all) silently started an
+  // empty WTB draft and asked "What would you like to buy?", purely because "want" appears
+  // anywhere in BUY_KEYWORDS -- which then blocked the customer's real next message behind an
+  // unnecessary "you already have an incomplete request" prompt. An explicit command is still
+  // enough on its own (a genuinely unconstrained "WTB anything"/"looking for anything" is a
+  // real, if broad, request), and a stated product is enough even from a soft "want"/"need" ("I
+  // want a Rolex").
+  const explicitCommand = action === "buy" ? FRESH_BUY_LEAD_IN.test(text) : FRESH_SELL_LEAD_IN.test(text);
+  if (!explicitCommand && !carriesProductIdentity(query)) return null;
   return { action, query };
 }
 
@@ -1422,7 +1433,7 @@ async function handleDecision(state: ConversationState, decision: DecisionComman
   const usage = await getApprovalUsage(state.phone);
   const gate = evaluateApprovalGate(usage);
   if (!gate.allowed) {
-    messages.push(gate.reason === "no_plan" ? config.fiFlow.noPlanMessage : config.fiFlow.weeklyCapMessage(gate.plan, gate.weeklyLimit));
+    messages.push(gate.reason === "no_plan" ? config.fiFlow.noPlanMessage(config.trial.maxApprovedMatches) : config.fiFlow.weeklyCapMessage(gate.plan, gate.weeklyLimit));
     return;
   }
 

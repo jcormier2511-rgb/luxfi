@@ -69,6 +69,22 @@ test('required keyword recognized: "selling: Hermes Birkin"', () => {
   assert.equal(item.query, "Hermes Birkin");
 });
 
+test('required regression: "Hi, I want to join LuxFi network" is never classified as a buy request -- real reported bug: a bare "want" with no explicit command and no product named started an empty WTB draft', () => {
+  assert.deepEqual(parseItemRequests("Hi, I want to join LuxFi network"), []);
+});
+
+test('a bare command word alone still opens a genuinely broad request, even with no product named: "I am looking for anything"', () => {
+  const [item] = parseItemRequests("I am looking for anything");
+  assert.equal(item.action, "buy");
+  assert.equal(item.query, "anything");
+});
+
+test('a soft intent word ("want"/"need") still counts once it names a real product: "I want a Rolex"', () => {
+  const [item] = parseItemRequests("I want a Rolex");
+  assert.equal(item.action, "buy");
+  assert.equal(item.query, "Rolex");
+});
+
 test("stripLeadingIntent handles a bare reference with no lead-in at all", () => {
   assert.equal(stripLeadingIntent("Rolex Daytona 116500LN"), "Rolex Daytona 116500LN");
 });

@@ -198,9 +198,11 @@ export const config = {
       `Need more room? Upgrade anytime — ${MEMBERSHIP_PLANS.tier2.weeklyLimit}/week for ${MEMBERSHIP_PLANS.tier2.priceLabel}, or unlimited for ${MEMBERSHIP_PLANS.tier3.priceLabel}.\n\n` +
       `I'll continuously help you find buyers, find sellers, check pricing, and verify dealer reputation.\n\n` +
       `Reply "join" to keep Fi working for you.`,
-    // Locked with no plan at all (never joined, or joined and was never assigned one).
-    noPlanMessage:
-      'No problem — I\'ll still flag matches for you, but approving one going forward means becoming a Fi member first.\nMessage me "join" anytime you\'re ready.',
+    // Locked with no plan at all (never joined, or joined and was never assigned one). Real
+    // reported ask: say plainly that the free trial is what ran out, not just "no problem" —
+    // someone hitting this the first time has no way to know 3 free approvals was ever the deal.
+    noPlanMessage: (maxApprovedMatches: number) =>
+      `You've reached your limit of ${maxApprovedMatches} free approval${maxApprovedMatches === 1 ? "" : "s"} — I'll still flag matches for you, but approving one going forward means becoming a Fi member first.\nMessage me "join" anytime you're ready.`,
     // Locked with an active plan, but this week's introductions are used up.
     weeklyCapMessage: (plan: PlanKey, weeklyLimit: number) => {
       const current = MEMBERSHIP_PLANS[plan];

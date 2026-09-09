@@ -100,7 +100,7 @@ export function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number)
     case "locked":
       return outcome.lockReason === "weekly_cap"
         ? config.fiFlow.weeklyCapMessage(outcome.plan!, outcome.weeklyLimit!)
-        : config.fiFlow.noPlanMessage;
+        : config.fiFlow.noPlanMessage(config.trial.maxApprovedMatches);
     case "invalid":
       return `I couldn't find match ${matchId}.`;
   }

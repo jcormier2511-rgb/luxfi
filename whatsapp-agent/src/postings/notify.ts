@@ -153,15 +153,21 @@ export interface MatchPresentation {
 
 /**
  * A dealer/business name ("ABC Watches") is fine to surface before either side has approved —
- * it's already public. A private WhatsApp user's contact_name falls back to their raw phone
- * number when no display name was ever captured (see postingsStore.ts's `senderName || phone`),
- * and that number must never be shown pre-approval — the real reported bug this guards against
- * was a buyer's/seller's own phone number appearing in the very first "Match ID#" card,
- * before they had any chance to decide whether to connect at all. A digit-only string can never
- * be a real display name, so this is a safe, simple filter rather than a phone-format parser.
+ * it's already public. A private WhatsApp user's contact_name falls back to their raw identity
+ * when no display name was ever captured (see postingsStore.ts's `senderName || senderIdentity`),
+ * and that identity must never be shown pre-approval — the real reported bug this guards against
+ * was a buyer's/seller's own phone number appearing in the very first "Match ID#" card, before
+ * they had any chance to decide whether to connect at all.
+ *
+ * A bare WhatsApp identity is digit-only, but Telegram's/SMS's own identity carries a
+ * "telegram:"/"sms:" prefix (see channels/identity.ts) — which is letters, not digits, so the
+ * original digit-only check alone let a raw Telegram identity ("telegram:5703391972") straight
+ * through as though it were a real name. Stripping either known prefix first closes that gap
+ * without needing to import channels/identity.ts's own (unexported) prefix constants here.
  */
 function isRealDisplayName(value: string): boolean {
-  return /[a-zA-Z]/.test(value);
+  const withoutPlatformPrefix = value.replace(/^(?:telegram|sms):/i, "");
+  return /[a-zA-Z]/.test(withoutPlatformPrefix);
 }
 
 function presentationFor(posting: PostingRow, photoUrl?: string | null, activeGroupCount?: number): MatchPresentation {
