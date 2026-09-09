@@ -151,6 +151,22 @@ async function tryInterpretPostingsDecisionNaturally(
     console.log(`[postings-decision] natural-language decision skipped for ${phone}: not on the AI-matching test-phone allowlist (or AI matching not enabled/configured)`);
     return null;
   }
+  // Live-reported bug, confirmed via Railway logs: a sell-intake draft's own plain price reply
+  // ("32000") was intercepted here and sent to the AI to interpret as a decision on 20 UNRELATED
+  // pending matches (other people's names), rather than being left for the draft's own price
+  // step to claim -- the AI correctly failed to resolve it (twice: this function is called from
+  // both tryHandleDirectPostingDecision and tryHandleV4Decision in sequence for the same message),
+  // burning two AI calls before the reply finally fell through to handleIncomingMessage and was
+  // accepted as the price answer. Same priority rule already applied to photo interception
+  // (processIncomingMessages' hasOpenDraft check): whatever pending matches this phone has to
+  // decide on, a plain reply sent while actively mid-draft must first go to that draft's own flow.
+  // The deterministic "approve <id>"/"pass <id>" pattern match in each caller runs BEFORE this
+  // function and is unaffected -- an explicit command still works regardless of an open draft.
+  const draftState = getState(phone);
+  if (draftState.pendingSellIntake || draftState.pendingBuyIntake) {
+    console.log(`[postings-decision] natural-language decision skipped for ${phone}: an open sell/buy-intake draft owns this reply`);
+    return null;
+  }
   const options = await getPendingMatchesForRecipient(canonicalUserId, sourceType ? { sourceType } : undefined);
   if (options.length === 0) {
     console.log(`[postings-decision] natural-language decision skipped for ${phone}: no pending${sourceType ? ` ${sourceType}-sourced` : ""} match found to decide on`);

@@ -41,6 +41,10 @@ const server = require("./server") as typeof import("./server");
 const notify = require("./postings/notify") as typeof import("./postings/notify");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const decisionInterpreter = require("./ai/decisionInterpreter") as typeof import("./ai/decisionInterpreter");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { handleIncomingMessage } = require("./conversation/flow") as typeof import("./conversation/flow");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { resetState, getState } = require("./conversation/stateStore") as typeof import("./conversation/stateStore");
 
 const { ingestChatPosting } = postingsStore;
 const { ingestDirectSellPosting } = ingestModule;
@@ -146,4 +150,34 @@ test("a message that isn't actually a decision (interpretPostingsDecision return
 
   const stillPending = await tryHandleDirectPostingDecision(TEST_PHONE, `approve ${matchId}`);
   assert.match(stillPending!, /connected|as soon as the other side confirms/i, "the match must still be pending — untouched by the non-decision message");
+});
+
+/**
+ * Live-reported bug, confirmed via Railway logs: a seller's own sell-intake draft was sitting at
+ * its price step ("What's your asking price?") when they replied "32000". Because this same phone
+ * also had 20 unrelated pending matches to decide on and was on the AI-matching test-phone
+ * allowlist, the plain price reply got intercepted here FIRST and sent to the AI to interpret as
+ * an approve/pass decision against those 20 OTHER people's matches — burning two AI calls (this
+ * function is invoked from both tryHandleDirectPostingDecision and tryHandleV4Decision for the
+ * same message) before the reply finally fell through to the real conversation flow and was
+ * accepted as the price answer. An open sell/buy-intake draft must always win: a plain reply sent
+ * while actively mid-draft belongs to that draft, not to an unrelated pending-match decision.
+ */
+test("required regression: a plain reply is never routed to natural-language match-decision interpretation while the sender has an open sell-intake draft of their own", async (t) => {
+  await db._resetDbForTests();
+  const spy = t.mock.method(decisionInterpreter, "interpretPostingsDecision", async () => {
+    throw new Error("must never be called while an open sell-intake draft owns this reply");
+  });
+
+  // The seller has a pending match to decide on (same setup as every other test in this file)...
+  await seedMatch(t, TEST_PHONE);
+  // ...AND, separately, their own open sell-intake draft sitting at the price step.
+  resetState(TEST_PHONE);
+  await handleIncomingMessage(TEST_PHONE, "hi");
+  await handleIncomingMessage(TEST_PHONE, "WTS Rolex Daytona 116500LN");
+  assert.equal(getState(TEST_PHONE).pendingSellIntake?.step, "price", "precondition: the draft is waiting on its own price question");
+
+  const reply = await tryHandleDirectPostingDecision(TEST_PHONE, "32000");
+  assert.equal(reply, null, "must fall through to the ordinary flow rather than misinterpreting the price as a match decision");
+  assert.equal(spy.mock.callCount(), 0, "the AI must never be asked to interpret a price reply as a decision on unrelated matches");
 });
