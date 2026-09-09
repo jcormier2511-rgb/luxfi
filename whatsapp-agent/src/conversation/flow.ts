@@ -2564,7 +2564,19 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   // different reply than "/start" -- the same word meant two different things depending on
   // punctuation the customer never typed themselves. Both now show the same full onboarding
   // menu, on either channel.
-  if (normalize(commandText) === "start") {
+  //
+  // Live-reported bug: this used to require an EXACT match ("start" and nothing else), so
+  // watchfacts' own "Message Fi" button -- a Telegram deep link, t.me/Luxfi_Fi_Bot?start=join --
+  // never showed the intro message at all. Telegram's own client always sends that link as
+  // "/start join" (the payload after "start=" appended, space-separated); after the leading
+  // slash is stripped above this became commandText "start join", which the exact-equality check
+  // rejected outright. A prefix match tolerates that payload (today's "join", and whatever a
+  // future deep link's payload might be) while /^start\b/ still requires the message to actually
+  // OPEN with the word "start" -- "restart"/"starting" never match. The negative lookahead keeps
+  // this from swallowing a bare "start over" -- RESET_COMMAND below already owns that exact
+  // phrase (see handleResetCommand), and its friendlier "let's start over" + menu reply must
+  // still win over this plainer onboarding intro.
+  if (/^start\b(?!\s+over\b)/i.test(commandText)) {
     state.stage = "active";
     state.pendingMatches = undefined;
     state.pendingPreferenceCollection = undefined;

@@ -75,6 +75,45 @@ test('required: "/start" returns the configured onboarding intro', async () => {
   assert.equal(result.state.stage, "active");
 });
 
+test('required regression: a Telegram deep-link payload ("/start join", from t.me/Luxfi_Fi_Bot?start=join -- the website\'s own "Message Fi" button) still shows the onboarding intro', async () => {
+  // Live-reported bug: the website's "Message Fi" button is a Telegram deep link with a payload
+  // (?start=join), which Telegram's own client always delivers as "/start join", never a bare
+  // "/start". The old check required an EXACT match against "start" alone, so this button never
+  // showed the intro message at all -- a customer clicking it landed on a generic fallback
+  // instead of onboarding. Telegram may attach a different payload in the future ("start hi",
+  // etc.); any of them must still trigger the same intro.
+  const phone = "19991110020";
+  resetState(phone);
+  const result = await handleIncomingMessage(phone, "/start join");
+  assert.match(result.messages[0], /personal luxury concierge/i);
+  assert.equal(result.state.stage, "active");
+
+  const phone2 = "19991110021";
+  resetState(phone2);
+  const withDifferentPayload = await handleIncomingMessage(phone2, "start hi");
+  assert.match(withDifferentPayload.messages[0], /personal luxury concierge/i, "any deep-link payload must work, not only the one payload in use today");
+});
+
+test('required regression: "restart"/"starting" never trigger the onboarding intro just because they open with the letters "start"', async () => {
+  const phone = "19991110022";
+  resetState(phone);
+  await handleIncomingMessage(phone, "hi"); // move past first-contact onboarding first
+  const result = await handleIncomingMessage(phone, "starting fresh here");
+  assert.doesNotMatch(result.messages.join("\n"), /personal luxury concierge/i);
+});
+
+test('required regression: a bare "start over" still reaches the friendlier reset reply, not the plain onboarding intro', async () => {
+  // The new deep-link-payload tolerance on "/start" must not swallow RESET_COMMAND's own
+  // "start over" phrase -- a customer typing that expects the same "I think I got confused
+  // somewhere -- let's start over" + menu reply "I'm confused" already gets, not the (correct,
+  // but different) unrelated onboarding intro.
+  const phone = "19991110023";
+  resetState(phone);
+  const result = await handleIncomingMessage(phone, "start over");
+  assert.match(result.messages[0], /let's start over/i);
+  assert.doesNotMatch(result.messages[0], /personal luxury concierge/i);
+});
+
 test("help and onboarding routing are identical across WhatsApp, Telegram, and SMS identities", async () => {
   for (const identity of ["whatsapp:19991110013", "telegram:991110014", "sms:19991110015"]) {
     resetState(identity);
