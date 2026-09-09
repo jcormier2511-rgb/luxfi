@@ -2115,7 +2115,7 @@ async function sellPriceQuestion(p: PendingSellIntake): Promise<string> {
     year: p.year,
     boxPapers: p.boxPapers,
   });
-  return `${formatMarketGuide(guide)}\n\nWhat would you like to ask?`;
+  return `${formatMarketGuide(guide, undefined, identityLine(p))}\n\nWhat would you like to ask?`;
 }
 
 async function nextSell(p: PendingSellIntake): Promise<string | null> {
@@ -2229,7 +2229,7 @@ async function sellSummaryWithMarketGuide(p: PendingSellIntake): Promise<string>
     askingPrice: p.price,
     currency: p.currency,
   });
-  const guideText = formatMarketGuide(guide, p.price !== undefined ? { amount: p.price, currency: p.currency ?? "USD" } : undefined);
+  const guideText = formatMarketGuide(guide, p.price !== undefined ? { amount: p.price, currency: p.currency ?? "USD" } : undefined, identityLine(p));
   return [...reviewLines("FS", p, p.price!), "", guideText, ...CONFIRM_QUESTION_BLOCK].join("\n");
 }
 

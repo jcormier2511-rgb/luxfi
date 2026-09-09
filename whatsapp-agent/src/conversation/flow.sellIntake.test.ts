@@ -98,7 +98,7 @@ test("required regression: a seller who names a reference but no asking price st
   await handleIncomingMessage(phone, "hi");
   const result = await handleIncomingMessage(phone, "Sell my Rolex Daytona 116500LN black dial, pre-owned, full set, Miami");
   const text = result.messages.join("\n");
-  assert.match(text, /MARKET GUIDE/);
+  assert.match(text, /CURRENT MARKET FOR "Rolex Daytona 116500LN"/);
   assert.match(text, /Current sellers: 3/);
   assert.match(text, /Dealer asking range: \$/);
   assert.match(text, /Median dealer ask: \$/);
@@ -118,11 +118,11 @@ test("required regression: an unrecognized reply on the price step re-asks the q
   );
   await handleIncomingMessage(phone, "hi");
   const first = await handleIncomingMessage(phone, "Sell my Rolex Daytona 116500LN black dial, pre-owned, full set, Miami");
-  assert.match(first.messages.join("\n"), /MARKET GUIDE/, "sanity: the guide is shown the first time");
+  assert.match(first.messages.join("\n"), /CURRENT MARKET FOR/, "sanity: the guide is shown the first time");
 
   const second = await handleIncomingMessage(phone, "hmm not sure yet");
   const secondText = second.messages.join("\n");
-  assert.doesNotMatch(secondText, /MARKET GUIDE/, "nothing about the draft changed, so the guide must not be reprinted just to re-ask the same question");
+  assert.doesNotMatch(secondText, /CURRENT MARKET FOR/, "nothing about the draft changed, so the guide must not be reprinted just to re-ask the same question");
   assert.match(secondText, /What would you like to ask\?/, "the short question is still repeated");
   assert.match(secondText, /I kept your listing draft open\./);
 });
@@ -317,7 +317,7 @@ test("required regression: Market Guide appears at the review step (not activati
   await handleIncomingMessage(phone, "Sell my 2022 Rolex Daytona 116500LN black dial, pre-owned, full set for $24,500, Miami");
   const review = await handleIncomingMessage(phone, "skip");
   const reviewText = review.messages.join("\n");
-  assert.match(reviewText, /MARKET GUIDE/);
+  assert.match(reviewText, /CURRENT MARKET FOR "Rolex Daytona 116500LN"/);
   assert.match(reviewText, /Current sellers: 5/);
   assert.match(reviewText, /Current buyers: 1/);
   assert.match(reviewText, /Dealer asking range: \$/);
@@ -362,8 +362,11 @@ test("required regression: Telegram and WhatsApp show equivalent Market Guide in
   const viaWhatsApp = (await handleIncomingMessage(whatsapp, "skip")).messages.join("\n");
   const viaTelegram = (await handleIncomingMessage(telegram, "skip")).messages.join("\n");
 
-  const marketGuideBlock = (s: string) => s.slice(s.indexOf("MARKET GUIDE"));
-  assert.notEqual(marketGuideBlock(viaWhatsApp).indexOf("MARKET GUIDE"), -1, "WhatsApp must show a Market Guide");
+  // Anchored on the first data line, not the "CURRENT MARKET FOR ..." heading itself -- the
+  // heading now names the specific watch, which is exactly what's being asserted identical here.
+  const marketGuideBlock = (s: string) => s.slice(s.indexOf("Current sellers:"));
+  assert.notEqual(marketGuideBlock(viaWhatsApp).indexOf("Current sellers:"), -1, "WhatsApp must show a Market Guide");
+  assert.match(viaWhatsApp, /CURRENT MARKET FOR "Rolex Daytona 116500LN"/, "the heading names the specific watch");
   assert.equal(marketGuideBlock(viaWhatsApp), marketGuideBlock(viaTelegram), "the same request must produce the same Market Guide regardless of channel");
 });
 
@@ -394,7 +397,11 @@ test("required: equivalent natural-language phrasings that state the same refere
     "FS 116500LN black 2022 preowned full set 24.5k Miami",
   ];
 
-  const marketGuideBlock = (s: string) => s.slice(s.indexOf("MARKET GUIDE"));
+  // Anchored on the first data line, not the "CURRENT MARKET FOR ..." heading -- the heading now
+  // names the specific watch, and these phrasings deliberately state that watch differently (one
+  // never even says "Rolex"), so only the underlying numbers are required to match, not the
+  // heading text.
+  const marketGuideBlock = (s: string) => s.slice(s.indexOf("Current sellers:"));
   const blocks: string[] = [];
   for (const [i, phrasing] of phrasings.entries()) {
     const phone = phones[i];
@@ -403,7 +410,7 @@ test("required: equivalent natural-language phrasings that state the same refere
     // Each phrasing states a different subset of slots; answer whichever ones are still missing
     // (dial/condition/location/photo) so every phrasing reaches the same review step regardless
     // of which details it happened to state up front.
-    for (let guard = 0; guard < 5 && !/MARKET GUIDE/.test(reply.messages.join("\n")); guard++) {
+    for (let guard = 0; guard < 5 && !/Current sellers:/.test(reply.messages.join("\n")); guard++) {
       const last = reply.messages.join("\n");
       if (/black dial, white dial/i.test(last)) reply = await handleIncomingMessage(phone, "black");
       else if (/What condition/i.test(last)) reply = await handleIncomingMessage(phone, "pre-owned");
@@ -413,7 +420,7 @@ test("required: equivalent natural-language phrasings that state the same refere
     }
     const combined = reply.messages.join("\n");
     assert.equal(reply.state.pendingSellIntake?.reference, "116500LN", `"${phrasing}" must resolve reference 116500LN`);
-    assert.match(combined, /MARKET GUIDE/, `"${phrasing}" must show a Market Guide`);
+    assert.match(combined, /CURRENT MARKET FOR/, `"${phrasing}" must show a Market Guide`);
     blocks.push(marketGuideBlock(combined).split("\n").slice(0, 5).join("\n"));
   }
   assert.equal(blocks[0], blocks[1], "same reference must produce the same Market Guide numbers regardless of phrasing");
@@ -428,7 +435,7 @@ test("known limitation: a phrasing that never states a reference number or the b
   // "Daytona" alone does not uniquely determine a reference (116500LN, 116503, 116508, etc. all
   // exist), so Fi asks rather than assuming the current ceramic-bezel steel model — guessing here
   // would risk exactly the "fake precision" the spec elsewhere prohibits.
-  assert.doesNotMatch(text, /MARKET GUIDE/);
+  assert.doesNotMatch(text, /CURRENT MARKET FOR/);
   assert.equal(result.state.pendingSellIntake?.reference, undefined);
 });
 

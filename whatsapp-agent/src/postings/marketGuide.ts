@@ -414,9 +414,14 @@ function formatUsd(amount: number): string {
  * Conversation formatting only — every number here already comes from getMarketGuide's
  * deterministic calculation; this function makes no pricing decisions of its own. Deliberately
  * never called "valuation" — spec: use "Market Guide" or "Market Snapshot".
+ *
+ * `itemLabel` names the specific watch this guide is for (e.g. "Rolex Daytona 116500LN") --
+ * real reported ask: a bare "MARKET GUIDE" heading read as generic/unscoped, especially once a
+ * seller had already named their exact watch a message earlier. Falls back to the canonical
+ * reference alone when no fuller label is available (callers with no brand/model on hand yet).
  */
-export function formatMarketGuide(result: MarketGuideResult, sellerAsk?: { amount: number; currency: string }): string {
-  const lines = ["MARKET GUIDE", ""];
+export function formatMarketGuide(result: MarketGuideResult, sellerAsk?: { amount: number; currency: string }, itemLabel?: string): string {
+  const lines = [`CURRENT MARKET FOR "${itemLabel || result.canonicalReference}"`, ""];
   lines.push(`Current sellers: ${result.fsCount}`);
   lines.push(`Current buyers: ${result.wtbCount}`);
 
