@@ -5,6 +5,7 @@ import { withSchema } from "./postings/db";
 import { PostingRow } from "./postings/postingsStore";
 import { sendText } from "./channels";
 import { Entitlement, getEntitlement } from "./billing/entitlementStore";
+import { getMarketPulse } from "./postings/marketPulse";
 
 // "morning"/"afternoon" are kept as still-valid values (the delivery ledger's period column
 // only needs a distinct key per delivery window, not a specific vocabulary) so existing rows
@@ -29,6 +30,12 @@ interface DigestWatch extends MarketCounts {
   model: string;
   reference: string;
   newMatches: number;
+  /** This reference's current avg dealer ask (see postings/marketPulse.ts's getMarketPulse) --
+   *  null when there's no reference to look one up for (a brand/model-only watch). */
+  averageFsAsk: number | null;
+  /** Change since the LAST successful Market Edge run for this exact posting -- null on that
+   *  posting's first run (nothing to diff against yet) or whenever averageFsAsk itself is null. */
+  priceDelta: number | null;
 }
 
 interface RecipientRow {
@@ -153,24 +160,42 @@ function displayName(watch: DigestWatch): string {
  * "Active buyers: N\nActive sellers/listings: M\n(past 15 days)" three-line block -- same
  * numbers, no repeated header, no plural to get wrong at N=1.
  */
+function priceLabel(value: number | null): string {
+  return value === null ? "Unavailable" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
+}
+function priceDeltaTag(delta: number | null): string {
+  if (delta === null) return "";
+  if (delta === 0) return " (no change this week)";
+  const formatted = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(Math.abs(delta));
+  return ` (${delta > 0 ? "+" : "-"}${formatted} this week)`;
+}
+
 export function formatDigest(watches: DigestWatch[], minimumObservations: number): string {
   const sections = watches.map((watch, i) => {
     const icon = watch.type === "WTB" ? "🔍" : "🏷️";
     const buyerWord = watch.buyers === 1 ? "buyer" : "buyers";
     const sellerWord = watch.sellers === 1 ? "seller" : "sellers";
     const matchLine = watch.newMatches === 0 ? "✨ No new matches this week." : `✨ ${watch.newMatches} new match${watch.newMatches === 1 ? "" : "es"} this week!`;
+    // Omitted entirely (not "Unavailable") when there's no reference to price at all -- a
+    // brand/model-only watch. "Unavailable" is reserved for a real reference that genuinely has
+    // no comparable listings right now, same distinction lifecycle.ts's own trend block makes.
+    const priceLine = watch.reference ? [`💰 Avg ask: ${priceLabel(watch.averageFsAsk)}${priceDeltaTag(watch.priceDelta)}`] : [];
     return [
       `${i + 1}. ${icon} ${displayName(watch)}`,
       `👥 ${watch.buyers} ${buyerWord} · ${watch.sellers} ${sellerWord} (network-wide)`,
       `📊 ${marketSentiment(watch.buyers, watch.sellers, minimumObservations)}`,
+      ...priceLine,
       matchLine,
     ].join("\n");
   });
   return `📈 Market Edge — your weekly watch market update\n\n${sections.join("\n\n")}\n\n🔗 See live listings: watchfacts.com`;
 }
 
+// Price is part of the change signal now too -- a week where buyer/seller counts held steady
+// but the average ask genuinely moved must still count as "changed," not get suppressed as an
+// unchanged digest.
 function signature(watches: DigestWatch[]): string {
-  return crypto.createHash("sha256").update(JSON.stringify(watches.map((w) => [w.postingId, w.buyers, w.sellers]))).digest("hex");
+  return crypto.createHash("sha256").update(JSON.stringify(watches.map((w) => [w.postingId, w.buyers, w.sellers, w.averageFsAsk]))).digest("hex");
 }
 
 export function shouldSendDigest(watches: DigestWatch[], previousSignature: string | null, allowUnchanged: boolean): boolean {
@@ -229,6 +254,27 @@ async function buildWatches(userId: number): Promise<{ watches: DigestWatch[]; p
            AND fs.status='active' AND fs.expires_at > now() AND wtb.status='active' AND wtb.expires_at > now()`,
         [own.id, since]
       );
+      let averageFsAsk: number | null = null;
+      let priceDelta: number | null = null;
+      if (own.reference) {
+        // Same source lifecycle.ts's own daily trend reads from -- never touches that
+        // command's/that feature's own usage counters, since this is Fi pushing it
+        // proactively, not the customer spending a look-up on it.
+        try { averageFsAsk = (await getMarketPulse(own.reference)).averageFsAsk; }
+        catch (e) { console.error(`[market-updates] market pulse lookup failed for posting ${own.id} (omitting price):`, e); }
+        const priorRow = await pool.query<{ avg_fs_ask_usd: number | null }>(
+          `SELECT avg_fs_ask_usd FROM market_update_watch_state WHERE canonical_user_id=$1 AND posting_id=$2`,
+          [userId, own.id]
+        );
+        const prior = priorRow.rows[0]?.avg_fs_ask_usd ?? null;
+        if (prior !== null && averageFsAsk !== null) priceDelta = averageFsAsk - prior;
+        await pool.query(
+          `INSERT INTO market_update_watch_state (canonical_user_id, posting_id, avg_fs_ask_usd, updated_at)
+           VALUES ($1,$2,$3,now())
+           ON CONFLICT (canonical_user_id, posting_id) DO UPDATE SET avg_fs_ask_usd=excluded.avg_fs_ask_usd, updated_at=now()`,
+          [userId, own.id, averageFsAsk]
+        );
+      }
       watches.push({
         postingId: own.id,
         type: own.type,
@@ -237,6 +283,8 @@ async function buildWatches(userId: number): Promise<{ watches: DigestWatch[]; p
         reference: own.reference,
         ...counts,
         newMatches: Number(matches.rows[0].count),
+        averageFsAsk,
+        priceDelta,
       });
     }
     return { watches, previousSignature: previous.rows[0]?.activity_signature ?? null };

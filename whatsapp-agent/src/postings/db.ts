@@ -343,6 +343,21 @@ async function ensureSchema(): Promise<void> {
         ALTER TABLE market_update_deliveries ADD CONSTRAINT market_update_deliveries_period_check
           CHECK (period IN ('morning', 'afternoon', 'weekly'));
 
+        -- Last known avg dealer ask (see postings/marketPulse.ts's getMarketPulse) for one own
+        -- posting's own reference, so the NEXT Market Edge run can show how the price actually
+        -- MOVED since last week, not just this week's raw number -- same pattern as
+        -- briefing_posting_state.avg_fs_ask_usd (the free daily briefing's own trend), kept as a
+        -- separate table/row rather than reused: the two features run on different cadences, and
+        -- sharing one row would mean the daily briefing's every-day write silently overwrites
+        -- what Market Edge is diffing against, breaking its own week-over-week comparison.
+        CREATE TABLE IF NOT EXISTS market_update_watch_state (
+          canonical_user_id INTEGER NOT NULL REFERENCES canonical_users(id) ON DELETE CASCADE,
+          posting_id INTEGER NOT NULL REFERENCES postings(id) ON DELETE CASCADE,
+          avg_fs_ask_usd DOUBLE PRECISION,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (canonical_user_id, posting_id)
+        );
+
         -- Widens source_type for the private "sell a watch" conversational intake
         -- (conversation/flow.ts's sell-intake flow, see postingsStore.ts's createDirectPosting):
         -- a person telling Fi directly what they're selling, as distinct from 'chat' (a passively

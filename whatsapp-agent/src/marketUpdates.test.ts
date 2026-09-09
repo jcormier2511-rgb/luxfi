@@ -88,15 +88,15 @@ test("scheduler restart recovery is limited to the configurable one-hour grace w
 });
 
 test("required: renamed and restyled -- 'Market Edge' must read as a different message from the free daily briefing, not a repeat of it", () => {
-  const text = formatDigest([{ postingId: 1, type: "FS", brand: "Patek Philippe", model: "", reference: "5712G", buyers: 8, sellers: 3, newMatches: 2 }], 3);
+  const text = formatDigest([{ postingId: 1, type: "FS", brand: "Patek Philippe", model: "", reference: "5712G", buyers: 8, sellers: 3, newMatches: 2, averageFsAsk: null, priceDelta: null }], 3);
   assert.match(text, /^📈 Market Edge — your weekly watch market update/);
   assert.doesNotMatch(text, /Your LuxFi market update|Good morning|Here's your Fi update/);
 });
 
 test("multiple watches are combined, numbered, with aggregate-only counts (no private contact info)", () => {
   const text = formatDigest([
-    { postingId: 1, type: "FS", brand: "Patek Philippe", model: "", reference: "5712G", buyers: 8, sellers: 3, newMatches: 2 },
-    { postingId: 2, type: "WTB", brand: "Rolex", model: "", reference: "126500LN", buyers: 12, sellers: 5, newMatches: 0 },
+    { postingId: 1, type: "FS", brand: "Patek Philippe", model: "", reference: "5712G", buyers: 8, sellers: 3, newMatches: 2, averageFsAsk: null, priceDelta: null },
+    { postingId: 2, type: "WTB", brand: "Rolex", model: "", reference: "126500LN", buyers: 12, sellers: 5, newMatches: 0, averageFsAsk: null, priceDelta: null },
   ], 3);
   assert.match(text, /1\. 🏷️ Patek Philippe 5712G\n👥 8 buyers · 3 sellers \(network-wide\)/);
   assert.match(text, /2\. 🔍 Rolex 126500LN\n👥 12 buyers · 5 sellers \(network-wide\)/);
@@ -107,20 +107,38 @@ test("multiple watches are combined, numbered, with aggregate-only counts (no pr
 });
 
 test("a count of one never reads as a plural — the prose it replaced said \"1 active buyers\"", () => {
-  const text = formatDigest([{ postingId: 3, type: "WTB", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 1, sellers: 1, newMatches: 1 }], 3);
+  const text = formatDigest([{ postingId: 3, type: "WTB", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 1, sellers: 1, newMatches: 1, averageFsAsk: null, priceDelta: null }], 3);
   assert.match(text, /👥 1 buyer · 1 seller \(network-wide\)/);
   assert.match(text, /✨ 1 new match this week!/);
   assert.doesNotMatch(text, /1 active buyers|1 active sellers|1 buyers|1 sellers|1 new matches/);
 });
 
+test("required: shows the average ask, and its change since last week once there's a prior value to diff against", () => {
+  const first = formatDigest([{ postingId: 1, type: "FS", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 3, sellers: 8, newMatches: 0, averageFsAsk: 29800, priceDelta: null }], 3);
+  assert.match(first, /💰 Avg ask: \$29,800\n/, "no invented delta on the first run for this posting");
+  const later = formatDigest([{ postingId: 1, type: "FS", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 3, sellers: 8, newMatches: 0, averageFsAsk: 29800, priceDelta: 650 }], 3);
+  assert.match(later, /💰 Avg ask: \$29,800 \(\+\$650 this week\)/);
+  const dropped = formatDigest([{ postingId: 1, type: "FS", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 3, sellers: 8, newMatches: 0, averageFsAsk: 29800, priceDelta: -400 }], 3);
+  assert.match(dropped, /💰 Avg ask: \$29,800 \(-\$400 this week\)/);
+  const flat = formatDigest([{ postingId: 1, type: "FS", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 3, sellers: 8, newMatches: 0, averageFsAsk: 29800, priceDelta: 0 }], 3);
+  assert.match(flat, /💰 Avg ask: \$29,800 \(no change this week\)/);
+});
+test("required: an unresolvable average ask still shows Unavailable when there IS a reference, but the price line is omitted entirely when there's no reference at all", () => {
+  const noComparables = formatDigest([{ postingId: 1, type: "FS", brand: "Rolex", model: "Daytona", reference: "116500LN", buyers: 0, sellers: 0, newMatches: 0, averageFsAsk: null, priceDelta: null }], 3);
+  assert.match(noComparables, /💰 Avg ask: Unavailable\n/);
+  const noReference = formatDigest([{ postingId: 2, type: "WTB", brand: "Rolex", model: "", reference: "", buyers: 0, sellers: 0, newMatches: 0, averageFsAsk: null, priceDelta: null }], 3);
+  assert.doesNotMatch(noReference, /💰/);
+});
+
 test("no-activity and unchanged digests are suppressed unless explicitly allowed", () => {
-  const quiet = [{ postingId: 1, type: "WTB" as const, brand: "Rolex", model: "Daytona", reference: "126500LN", buyers: 0, sellers: 0, newMatches: 0 }];
+  const quiet = [{ postingId: 1, type: "WTB" as const, brand: "Rolex", model: "Daytona", reference: "126500LN", buyers: 0, sellers: 0, newMatches: 0, averageFsAsk: null, priceDelta: null }];
   assert.equal(shouldSendDigest(quiet, null, false), false);
   assert.equal(shouldSendDigest(quiet, null, true), true);
   const active = [{ ...quiet[0], sellers: 2 }];
   assert.equal(shouldSendDigest(active, null, false), true);
   const crypto = require("crypto");
-  const prior = crypto.createHash("sha256").update(JSON.stringify([[1, 0, 2]])).digest("hex");
+  const prior = crypto.createHash("sha256").update(JSON.stringify([[1, 0, 2, null]])).digest("hex");
   assert.equal(shouldSendDigest(active, prior, false), false);
   assert.equal(shouldSendDigest([{ ...active[0], newMatches: 1 }], prior, false), true);
+  assert.equal(shouldSendDigest([{ ...active[0], averageFsAsk: 30000 }], prior, false), true, "a price-only change must still count as changed, not be suppressed");
 });
