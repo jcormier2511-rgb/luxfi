@@ -9,7 +9,7 @@ process.env.WEBHOOK_TOKEN = "test";
 process.env.PERSIST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "luxfi-phantom-companion-test-"));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { isSuspectedPhantomCompanion, recordOutboundActivity, _resetPhantomCompanionForTests } = require("./stateStore") as typeof import("./stateStore");
+const { isSuspectedPhantomCompanion, isSuspectedOutboundEcho, recordOutboundActivity, _resetPhantomCompanionForTests } = require("./stateStore") as typeof import("./stateStore");
 
 beforeEach(() => {
   _resetPhantomCompanionForTests();
@@ -71,6 +71,56 @@ test("the phantom window expires -- a genuinely separate content-less message se
   try {
     Date.now = () => realNow() + 10_000;
     assert.equal(isSuspectedPhantomCompanion("15551234567", "", undefined), false, "well outside the window, a content-less message is treated as its own genuine message");
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+/**
+ * Real reported bug, same still-unidentified family as the content-less phantom companion above,
+ * but carrying real content: an inbound message that closely echoes Fi's OWN last outbound text.
+ * Live-reported symptom: right after Fi sent a "CURRENT MARKET FOR "Rolex Daytona 116500LN" ...
+ * Current sellers: ... Current buyers: ... Dealer asking range ..." reply, an inbound "message"
+ * carrying that same content arrived and got treated as genuine input -- since it names a real
+ * brand and reference, it read as a legitimate answer and corrupted the open sell draft's model
+ * field with fragments spliced verbatim out of Fi's own reply.
+ */
+test("required regression: an inbound message that closely echoes Fi's own last outbound text is flagged as a suspected outbound echo", () => {
+  const sent = 'CURRENT MARKET FOR "Rolex Daytona 116500LN"\n\nCurrent sellers: 3\nCurrent buyers: 0\nDealer asking range: $24,250–$25,300\nMedian dealer ask: $24,700';
+  recordOutboundActivity("15551234567", sent);
+  assert.equal(
+    isSuspectedOutboundEcho("15551234567", "Current sellers: 3\nCurrent buyers: 0\nDealer asking range"),
+    true,
+    "a close copy of Fi's own last reply arriving as inbound text is recognized as the echo"
+  );
+});
+
+test("a short reply is never mistaken for an echo, even if it happens to appear inside Fi's last message", () => {
+  recordOutboundActivity("15551234567", "Would you like to attach a photo? Send it now, or reply \"skip\" or \"no photo\".");
+  assert.equal(isSuspectedOutboundEcho("15551234567", "skip"), false, "a short, genuine reply must never be blocked just because it's a substring of Fi's own message");
+  assert.equal(isSuspectedOutboundEcho("15551234567", "usa"), false);
+});
+
+test("an inbound message unrelated to Fi's last outbound text is never flagged", () => {
+  recordOutboundActivity("15551234567", "CURRENT MARKET FOR \"Rolex Daytona 116500LN\"\n\nCurrent sellers: 3\nCurrent buyers: 0");
+  assert.equal(
+    isSuspectedOutboundEcho("15551234567", "Sell my Patek Philippe Nautilus 5711/1A pre-owned $85,000 in Hong Kong"),
+    false,
+    "a genuine, unrelated new request must never be blocked"
+  );
+});
+
+test("with no prior outbound send, nothing is ever flagged as an echo", () => {
+  assert.equal(isSuspectedOutboundEcho("15551234567", "Sell my Rolex Daytona 116500LN black dial, pre-owned, full set, Miami"), false);
+});
+
+test("the echo window expires -- a genuine later message that happens to resemble Fi's old reply is not flagged", () => {
+  const sent = "CURRENT MARKET FOR \"Rolex Daytona 116500LN\"\n\nCurrent sellers: 3\nCurrent buyers: 0\nDealer asking range: $24,250-$25,300";
+  recordOutboundActivity("15551234567", sent);
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 10_000;
+    assert.equal(isSuspectedOutboundEcho("15551234567", "Current sellers: 3\nCurrent buyers: 0"), false, "well outside the window, a resembling message is treated as genuine");
   } finally {
     Date.now = realNow;
   }

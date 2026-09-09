@@ -120,6 +120,15 @@ export function _resetContentDedupeForTests(): void {
 const PHANTOM_COMPANION_WINDOW_MS = 4_000;
 let recentMessagesByPhone: { phone: string; at: number; hadContent: boolean }[] = [];
 
+/** The most recent outbound text sent to each phone, so isSuspectedOutboundEcho below can compare
+ *  an inbound message against exactly what Fi itself just said. */
+const lastOutboundTextByPhone = new Map<string, { text: string; at: number }>();
+
+// A coincidental short overlap ("yes"? "skip"? a number Fi's own message also happens to
+// contain) must never be mistaken for an echo -- only a genuinely substantial chunk of text is
+// ever treated as suspect.
+const ECHO_MIN_LENGTH = 20;
+
 /**
  * Real reported bug, still not fully root-caused: every genuine WhatsApp text message is
  * followed by a SECOND webhook delivery -- same phone, same instant, a different id, with no
@@ -151,16 +160,43 @@ export function isSuspectedPhantomCompanion(phone: string, text: string, imageUr
  * channels/index.ts's sendText/sendBannerImage, the single funnel every part of the app already
  * uses) now feeds the SAME window, so a phantom arriving shortly after Fi's own message is
  * recognized exactly like one arriving after a genuine inbound one.
+ *
+ * `text` additionally feeds isSuspectedOutboundEcho below -- kept optional so a caller with no
+ * text handy (there is none today, but the signature shouldn't force one) still works.
  */
-export function recordOutboundActivity(phone: string): void {
+export function recordOutboundActivity(phone: string, text?: string): void {
   const now = Date.now();
   recentMessagesByPhone = recentMessagesByPhone.filter((r) => now - r.at < PHANTOM_COMPANION_WINDOW_MS);
   recentMessagesByPhone.push({ phone, at: now, hadContent: true });
+  if (text) lastOutboundTextByPhone.set(phone, { text, at: now });
 }
 
 /** Test-only -- clears the in-memory phantom-companion window between tests. */
 export function _resetPhantomCompanionForTests(): void {
   recentMessagesByPhone = [];
+  lastOutboundTextByPhone.clear();
+}
+
+/**
+ * Real reported bug, same still-unidentified family as the content-less phantom companion above:
+ * an inbound message has also been observed carrying back a close copy of Fi's OWN most recent
+ * outbound text, arriving as if it were genuine user input. Because that text routinely names a
+ * real brand and reference (it's Fi's own reply, after all -- "Rolex Daytona 116500LN... Current
+ * sellers:... Current buyers:... Dealer asking range..."), it reads as a legitimate answer and
+ * corrupts whatever draft is open: the live-reported symptom was a sell draft's model field
+ * ending up stored as "Daytona \" Current sellers: Current buyers: Dealer asking range" --
+ * fragments spliced verbatim out of Fi's own last Market Guide reply, with the photo question
+ * re-asked right alongside it. Recognized the same way isSuspectedPhantomCompanion recognizes its
+ * own case: normalized containment against the exact text Fi itself just sent, within the same
+ * short window.
+ */
+export function isSuspectedOutboundEcho(phone: string, text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < ECHO_MIN_LENGTH) return false;
+  const last = lastOutboundTextByPhone.get(phone);
+  if (!last || Date.now() - last.at > PHANTOM_COMPANION_WINDOW_MS) return false;
+  const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  return normalize(last.text).includes(normalize(trimmed));
 }
 
 export interface OpenDraftSummary {

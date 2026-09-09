@@ -318,6 +318,39 @@ test("formatMarketGuide renders the seller's ask, native currency, and USD hint 
   assert.doesNotMatch(text, /valuation/i, "spec: never call this a valuation");
 });
 
+test("required regression: the buyer count never reads as a promise of matches -- it's every WTB for the reference, not ones that will necessarily match this listing", async () => {
+  // Live-reported confusion: "I found 5 buyers currently looking for this reference. Should I
+  // start monitoring?" read as a guarantee, then the listing activated and the real match engine
+  // (scoreMatch, which requires price/dial/condition/location to actually align) found zero --
+  // because this count is deliberately unfiltered by any of that (see the top-of-file comment on
+  // wtbCount). The wording now says so plainly instead of implying those buyers will connect.
+  const zero = formatMarketGuide({
+    canonicalReference: "116500LN", scope: "116500LN — all configurations", fsCount: 0, wtbCount: 0,
+    rawSampleSize: 0, cleanSampleSize: 0, outliersExcluded: 0, p25AskUsd: null, medianAskUsd: null, p75AskUsd: null,
+    sellerAskUsd: null, marketPosition: null, demandSupplyRatio: null, liquidityLabel: null, confidence: "none",
+    calculatedAt: new Date().toISOString(), comparableIdsUsed: [], comparableIdsExcluded: [],
+  });
+  assert.match(zero, /No buyers are currently watching this reference\./);
+  assert.doesNotMatch(zero, /I don't see any buyers/i);
+
+  const one = formatMarketGuide({
+    canonicalReference: "116500LN", scope: "116500LN — all configurations", fsCount: 0, wtbCount: 1,
+    rawSampleSize: 0, cleanSampleSize: 0, outliersExcluded: 0, p25AskUsd: null, medianAskUsd: null, p75AskUsd: null,
+    sellerAskUsd: null, marketPosition: null, demandSupplyRatio: null, liquidityLabel: null, confidence: "none",
+    calculatedAt: new Date().toISOString(), comparableIdsUsed: [], comparableIdsExcluded: [],
+  });
+  assert.match(one, /1 buyer is watching this reference \(may not match your exact price, dial, or condition\)\./);
+
+  const five = formatMarketGuide({
+    canonicalReference: "116500LN", scope: "116500LN — all configurations", fsCount: 0, wtbCount: 5,
+    rawSampleSize: 0, cleanSampleSize: 0, outliersExcluded: 0, p25AskUsd: null, medianAskUsd: null, p75AskUsd: null,
+    sellerAskUsd: null, marketPosition: null, demandSupplyRatio: null, liquidityLabel: null, confidence: "none",
+    calculatedAt: new Date().toISOString(), comparableIdsUsed: [], comparableIdsExcluded: [],
+  });
+  assert.match(five, /5 buyers are watching this reference \(not all may match your exact price, dial, or condition\)\./);
+  assert.doesNotMatch(five, /I found 5 buyers/i);
+});
+
 test("dial refinement narrows to the seller's own dial only when enough comparables share it, otherwise falls back to all configurations", async () => {
   for (let i = 0; i < 4; i++) {
     await insertFsPosting({ id: `black-${i}`, reference: "116500LN", price: 24000 + i * 200, dial: "Black", contactPhone: `black-${i}` });

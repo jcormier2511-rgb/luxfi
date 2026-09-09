@@ -439,13 +439,20 @@ export function formatMarketGuide(result: MarketGuideResult, sellerAsk?: { amoun
     if (result.marketPosition) lines.push(`Market position: ${MARKET_POSITION_LABEL[result.marketPosition]}`);
   }
 
+  // Real reported confusion: this count is EVERY active WTB for the reference, unfiltered by
+  // price/dial/condition/location -- the actual matching engine (postings/matching.ts's
+  // scoreMatch) is much stricter, requiring all of those to align. The old wording ("I found N
+  // buyers currently looking for this reference. Should I start monitoring?") read as a promise
+  // that got contradicted the moment the listing activated and the real match sweep found none of
+  // them actually qualified. Now says plainly that this is reference-level interest, not a count
+  // of buyers who will match THIS specific listing.
   lines.push("");
   lines.push(
     result.wtbCount === 1
-      ? "I found 1 buyer currently looking for this reference."
+      ? "1 buyer is watching this reference (may not match your exact price, dial, or condition)."
       : result.wtbCount > 0
-      ? `I found ${result.wtbCount} buyers currently looking for this reference.`
-      : "I don't see any buyers currently looking for this reference yet."
+      ? `${result.wtbCount} buyers are watching this reference (not all may match your exact price, dial, or condition).`
+      : "No buyers are currently watching this reference."
   );
 
   return lines.join("\n");

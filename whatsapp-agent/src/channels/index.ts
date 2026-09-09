@@ -29,8 +29,10 @@ export async function sendText(identity: string, message: string): Promise<void>
   const target = applyOutboundRestriction(identity, message);
   // See stateStore.ts's recordOutboundActivity -- a phantom companion webhook has been observed
   // following Fi's own sends, not only a genuine inbound message, so every send feeds the same
-  // phantom-companion detection window an inbound message would.
-  recordOutboundActivity(target.identity);
+  // phantom-companion detection window an inbound message would. The message text itself also
+  // feeds isSuspectedOutboundEcho, which catches an inbound message that carries back a close
+  // copy of what Fi just sent.
+  recordOutboundActivity(target.identity, target.message);
   switch (platformForIdentity(target.identity)) {
     case "telegram":
       return telegram.sendText(target.identity, target.message);
@@ -43,7 +45,7 @@ export async function sendText(identity: string, message: string): Promise<void>
 
 export async function sendBannerImage(identity: string, imageUrl: string, caption?: string): Promise<void> {
   const target = applyOutboundRestriction(identity, caption ?? "");
-  recordOutboundActivity(target.identity);
+  recordOutboundActivity(target.identity, target.message);
   const targetCaption = target.message || undefined;
   switch (platformForIdentity(target.identity)) {
     case "telegram":

@@ -8,7 +8,7 @@ import { sendText, sendBannerImage, NormalizedIncomingMessage } from "./channels
 import { platformForIdentity } from "./channels/identity";
 import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
 import { verifyTwilioSignature, extractIncomingMessage as extractSmsMessage } from "./channels/sms";
-import { alreadyProcessed, alreadyProcessedContent, isSuspectedPhantomCompanion, getState, resetState, markPendingEscrowOffer, listOpenDrafts } from "./conversation/stateStore";
+import { alreadyProcessed, alreadyProcessedContent, isSuspectedPhantomCompanion, isSuspectedOutboundEcho, getState, resetState, markPendingEscrowOffer, listOpenDrafts } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
@@ -263,9 +263,14 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
     // genuine second message. Only reached when the same-batch check above didn't already
     // resolve it (a phantom arriving in a SEPARATE webhook delivery from its real sibling).
     const phantom = !idSeen && !contentSeen && !batchSibling && isSuspectedPhantomCompanion(m.phone, m.text, m.imageUrl, m.location);
-    const duplicate = idSeen || contentSeen || batchSibling || phantom;
+    // Same still-unidentified family as the phantom companion above, but carrying real content: a
+    // close copy of Fi's OWN last outbound text arriving as if it were genuine user input (see
+    // stateStore.ts's isSuspectedOutboundEcho) -- live-reported to corrupt an open sell/buy draft's
+    // model/description field with fragments spliced out of Fi's own Market Guide reply.
+    const echo = !idSeen && !contentSeen && !batchSibling && !phantom && isSuspectedOutboundEcho(m.phone, m.text);
+    const duplicate = idSeen || contentSeen || batchSibling || phantom || echo;
     console.log(
-      `[webhook] ${duplicate ? `duplicate (${idSeen ? "id" : contentSeen ? "content" : batchSibling ? "phantom-companion-batch" : "phantom-companion"}), skipping` : "processing"} id=${m.id} phone=${m.phone} text=${JSON.stringify(m.text.slice(0, 80))}`
+      `[webhook] ${duplicate ? `duplicate (${idSeen ? "id" : contentSeen ? "content" : batchSibling ? "phantom-companion-batch" : phantom ? "phantom-companion" : "outbound-echo"}), skipping` : "processing"} id=${m.id} phone=${m.phone} text=${JSON.stringify(m.text.slice(0, 80))}`
     );
     return !duplicate;
   });
