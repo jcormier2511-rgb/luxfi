@@ -119,8 +119,45 @@ test("the echo window expires -- a genuine later message that happens to resembl
   recordOutboundActivity("15551234567", sent);
   const realNow = Date.now;
   try {
-    Date.now = () => realNow() + 10_000;
+    Date.now = () => realNow() + 31 * 60 * 1000;
     assert.equal(isSuspectedOutboundEcho("15551234567", "Current sellers: 3\nCurrent buyers: 0"), false, "well outside the window, a resembling message is treated as genuine");
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+/**
+ * Live-reported bug (the SAME "Current sellers:... Dealer asking range..." corruption
+ * recurring in production): the original fix only ever compared against the single MOST RECENT
+ * outbound text. A confirmed-live WHAPI delivery delay of over 20 minutes meant that by the time
+ * the echoed Market Guide reply finally arrived, Fi had already sent a SECOND message in the same
+ * turn (e.g. the photo question that normally follows it) -- overwriting the one thing the echo
+ * would have matched against, so the delayed echo of the FIRST message sailed through undetected.
+ */
+test("required regression: a delayed echo of an EARLIER outbound message is still caught, even after Fi sent a second message in between", () => {
+  const marketGuide = "CURRENT MARKET FOR \"Rolex Daytona 116500LN\"\n\nCurrent sellers: 3\nCurrent buyers: 0\nDealer asking range: $24,250-$25,300";
+  recordOutboundActivity("15551234567", marketGuide);
+  recordOutboundActivity("15551234567", "Would you like to attach a photo? Send it now, or reply \"skip\" or \"no photo\".");
+  assert.equal(
+    isSuspectedOutboundEcho("15551234567", "Current sellers: 3\nCurrent buyers: 0\nDealer asking range"),
+    true,
+    "the echo of the FIRST message must still be recognized, not missed just because a later message superseded it"
+  );
+});
+
+/** A delayed echo arriving well within the widened window (but well outside the old 4-second
+ *  one) must now be caught -- the exact live-reported timing this fix exists for. */
+test("required regression: an echo delayed by several minutes -- confirmed live via WHAPI delivery lag -- is still caught", () => {
+  const sent = "CURRENT MARKET FOR \"Rolex Daytona 116500LN\"\n\nCurrent sellers: 3\nCurrent buyers: 0\nDealer asking range: $24,250-$25,300";
+  recordOutboundActivity("15551234567", sent);
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 22 * 60 * 1000;
+    assert.equal(
+      isSuspectedOutboundEcho("15551234567", "Current sellers: 3\nCurrent buyers: 0\nDealer asking range"),
+      true,
+      "a 22-minute delay (the exact worst case confirmed live) must not slip past a too-short window"
+    );
   } finally {
     Date.now = realNow;
   }

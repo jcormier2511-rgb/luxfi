@@ -763,6 +763,33 @@ export async function closeDuplicatePostings(): Promise<{ groupsClosed: number; 
   return { groupsClosed: groups.length, postingsClosed: ids.length };
 }
 
+/**
+ * Every currently-active posting, grouped by type (FS/WTB) -- built to answer, directly from the
+ * real stored fields, a question a one-line morning-briefing summary or a bot "listings" reply
+ * can't: why does a broad request ("any Rolex Daytona") show fewer matches than a more specific
+ * sibling ("Daytona 116500LN") that it should logically be a superset of. Optionally scoped to one
+ * phone/identity (digits-only match against contact_phone) so an admin isn't wading through every
+ * active posting on the system to debug one account.
+ */
+export async function listActivePostingsByType(phone?: string): Promise<{ FS: PostingRow[]; WTB: PostingRow[] }> {
+  return withSchema(async (pool) => {
+    const conditions = ["status='active'", "expires_at > now()"];
+    const values: string[] = [];
+    if (phone) {
+      values.push(phone.replace(/[^\d]/g, ""));
+      conditions.push(`regexp_replace(contact_phone, '[^0-9]', '', 'g') = $${values.length}`);
+    }
+    const result = await pool.query<PostingRow>(
+      `SELECT * FROM postings WHERE ${conditions.join(" AND ")} ORDER BY type, updated_at DESC`,
+      values
+    );
+    return {
+      FS: result.rows.filter((r) => r.type === "FS"),
+      WTB: result.rows.filter((r) => r.type === "WTB"),
+    };
+  });
+}
+
 /** Run on a schedule — expires postings past their expires_at that haven't been extended. */
 export async function expireStalePostings(): Promise<number> {
   return withSchema(async (pool) => {

@@ -120,14 +120,32 @@ export function _resetContentDedupeForTests(): void {
 const PHANTOM_COMPANION_WINDOW_MS = 4_000;
 let recentMessagesByPhone: { phone: string; at: number; hadContent: boolean }[] = [];
 
-/** The most recent outbound text sent to each phone, so isSuspectedOutboundEcho below can compare
- *  an inbound message against exactly what Fi itself just said. */
-const lastOutboundTextByPhone = new Map<string, { text: string; at: number }>();
+/** Recent outbound texts sent to each phone, so isSuspectedOutboundEcho below can compare an
+ *  inbound message against what Fi itself recently said. A short bounded history per phone, not
+ *  just the single last message -- live-reported: Fi often sends a SECOND message in the same
+ *  turn (e.g. a photo question right after a Market Guide reply), which would otherwise overwrite
+ *  the one thing being compared against before a delayed echo of the FIRST message ever arrives. */
+const MAX_TRACKED_OUTBOUND_TEXTS_PER_PHONE = 5;
+const outboundTextsByPhone = new Map<string, { text: string; at: number }[]>();
 
 // A coincidental short overlap ("yes"? "skip"? a number Fi's own message also happens to
 // contain) must never be mistaken for an echo -- only a genuinely substantial chunk of text is
 // ever treated as suspect.
 const ECHO_MIN_LENGTH = 20;
+
+/**
+ * Deliberately its own, much wider window than PHANTOM_COMPANION_WINDOW_MS above -- the two bugs
+ * look similar (Fi's own text coming back as if it were inbound) but have different real-world
+ * timing. The content-less phantom companion is confirmed to arrive within the same second. An
+ * outbound-text echo has no such guarantee: it rides on the SAME unreliable WHAPI delivery pipeline
+ * already confirmed (via real Railway logs, live-reported "32000" price-reply investigation) to
+ * delay a genuine inbound message by over 20 minutes. Reusing the 4-second phantom-companion
+ * window meant this exact bug (a Market Guide reply's "Current sellers:... Current buyers:...
+ * Dealer asking range..." spliced into an open draft's field) kept recurring whenever WHAPI's
+ * delay exceeded a few seconds, which live traffic shows is routine, not rare. Sized with comfortable
+ * margin over the worst delay actually observed so far.
+ */
+const OUTBOUND_ECHO_WINDOW_MS = 30 * 60 * 1000;
 
 /**
  * Real reported bug, still not fully root-caused: every genuine WhatsApp text message is
@@ -168,13 +186,18 @@ export function recordOutboundActivity(phone: string, text?: string): void {
   const now = Date.now();
   recentMessagesByPhone = recentMessagesByPhone.filter((r) => now - r.at < PHANTOM_COMPANION_WINDOW_MS);
   recentMessagesByPhone.push({ phone, at: now, hadContent: true });
-  if (text) lastOutboundTextByPhone.set(phone, { text, at: now });
+  if (text) {
+    const list = (outboundTextsByPhone.get(phone) ?? []).filter((r) => now - r.at < OUTBOUND_ECHO_WINDOW_MS);
+    list.push({ text, at: now });
+    while (list.length > MAX_TRACKED_OUTBOUND_TEXTS_PER_PHONE) list.shift();
+    outboundTextsByPhone.set(phone, list);
+  }
 }
 
 /** Test-only -- clears the in-memory phantom-companion window between tests. */
 export function _resetPhantomCompanionForTests(): void {
   recentMessagesByPhone = [];
-  lastOutboundTextByPhone.clear();
+  outboundTextsByPhone.clear();
 }
 
 /**
@@ -187,16 +210,21 @@ export function _resetPhantomCompanionForTests(): void {
  * ending up stored as "Daytona \" Current sellers: Current buyers: Dealer asking range" --
  * fragments spliced verbatim out of Fi's own last Market Guide reply, with the photo question
  * re-asked right alongside it. Recognized the same way isSuspectedPhantomCompanion recognizes its
- * own case: normalized containment against the exact text Fi itself just sent, within the same
- * short window.
+ * own case: normalized containment against text Fi itself recently sent -- but checked against a
+ * short HISTORY of recent outbound texts, not just the single last one (see
+ * outboundTextsByPhone), and over OUTBOUND_ECHO_WINDOW_MS, a much wider window than the phantom
+ * companion's -- both changed after this exact bug recurred live because a delayed WHAPI delivery
+ * (confirmed over 20 minutes on a real message) outlasted the original 4-second window this used
+ * to share with isSuspectedPhantomCompanion.
  */
 export function isSuspectedOutboundEcho(phone: string, text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length < ECHO_MIN_LENGTH) return false;
-  const last = lastOutboundTextByPhone.get(phone);
-  if (!last || Date.now() - last.at > PHANTOM_COMPANION_WINDOW_MS) return false;
+  const now = Date.now();
+  const recent = (outboundTextsByPhone.get(phone) ?? []).filter((r) => now - r.at < OUTBOUND_ECHO_WINDOW_MS);
   const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
-  return normalize(last.text).includes(normalize(trimmed));
+  const normalizedText = normalize(trimmed);
+  return recent.some((r) => normalize(r.text).includes(normalizedText));
 }
 
 export interface OpenDraftSummary {

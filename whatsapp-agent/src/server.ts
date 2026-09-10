@@ -47,7 +47,7 @@ import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
 import { getLinkedIdentities, resetNotificationPreference } from "./postings/notificationPreferences";
 import { debugMarketGuideComparables } from "./postings/marketGuide";
-import { getPosting, extendPosting, getOwnPostingForMatch, getActivePostingsForUser, closePosting, findDuplicatePostings, closeDuplicatePostings } from "./postings/postingsStore";
+import { getPosting, extendPosting, getOwnPostingForMatch, getActivePostingsForUser, closePosting, findDuplicatePostings, closeDuplicatePostings, listActivePostingsByType } from "./postings/postingsStore";
 import { getV4OperationalStatus } from "./postings/status";
 import { initSchema } from "./postings/db";
 import { handleCoverageCommand } from "./fulfillment/coverage";
@@ -1239,6 +1239,17 @@ export function createServer() {
       return res.status(400).json({error:"confirm:true is required to resend to everyone (or pass testRecipient to trial-send to just one identity first)"});
     }
     res.json(await resendMorningBriefingToAll(new Date(),{testRecipient}));
+  });
+
+  // Every currently-active FS/WTB posting, grouped by type -- built to inspect the REAL stored
+  // fields (reference, dial, condition, budget) behind a confusing morning-briefing summary
+  // line, rather than guessing from one-line aggregates. ?phone=<digits> scopes to one account.
+  app.get("/admin/api/postings/active", async (req, res) => {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    const phone = typeof req.query.phone === "string" ? req.query.phone : undefined;
+    res.json({ ok: true, ...(await listActivePostingsByType(phone)) });
   });
 
   // Fi Concierge expansion, Stage 1: Group Registry (additive to the existing

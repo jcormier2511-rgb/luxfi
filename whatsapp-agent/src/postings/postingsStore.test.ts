@@ -684,3 +684,45 @@ test("closeDuplicatePostings is a no-op when there are no duplicates", async () 
   await db._resetDbForTests();
   assert.deepEqual(await store.closeDuplicatePostings(), { groupsClosed: 0, postingsClosed: 0 });
 });
+
+test("listActivePostingsByType groups every active posting by FS/WTB, newest updated first within each group", async () => {
+  await db._resetDbForTests();
+  const wtb1 = await store.createDirectPosting({
+    phone: "15550007001", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 30000, type: "WTB",
+  });
+  const fs1 = await store.createDirectPosting({
+    phone: "15550007002", description: "FS Rolex Daytona 116500LN", brand: "Rolex", model: "Daytona", reference: "116500LN", price: 28000, type: "FS",
+  });
+  const wtb2 = await store.createDirectPosting({
+    phone: "15550007003", description: "WTB Rolex Daytona 116500LN", brand: "Rolex", model: "Daytona", reference: "116500LN", price: 29000, type: "WTB",
+  });
+
+  const grouped = await store.listActivePostingsByType();
+  assert.deepEqual(new Set(grouped.WTB.map((p) => p.id)), new Set([wtb1.id, wtb2.id]));
+  assert.deepEqual(grouped.FS.map((p) => p.id), [fs1.id]);
+});
+
+test("listActivePostingsByType scoped to a phone only returns that account's own postings", async () => {
+  await db._resetDbForTests();
+  const mine = await store.createDirectPosting({
+    phone: "15550007010", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 30000, type: "WTB",
+  });
+  await store.createDirectPosting({
+    phone: "15550007011", description: "WTB Patek 5711", brand: "Patek", model: "5711", reference: null, price: 90000, type: "WTB",
+  });
+
+  const grouped = await store.listActivePostingsByType("15550007010");
+  assert.deepEqual(grouped.WTB.map((p) => p.id), [mine.id]);
+  assert.deepEqual(grouped.FS, []);
+});
+
+test("listActivePostingsByType never includes a closed posting", async () => {
+  await db._resetDbForTests();
+  const closed = await store.createDirectPosting({
+    phone: "15550007020", description: "WTB Rolex Daytona", brand: "Rolex", model: "Daytona", reference: null, price: 30000, type: "WTB",
+  });
+  await closePosting(closed.id, "stopped");
+
+  const grouped = await store.listActivePostingsByType("15550007020");
+  assert.deepEqual(grouped.WTB, []);
+});
