@@ -554,6 +554,57 @@ test("reuse matching for an already-open posting is case/punctuation-insensitive
   assert.equal(second.id, first.id, "116500LN and 116500-ln are the same reference and must reuse the same posting");
 });
 
+/**
+ * Live-reported: repeating the same intake with the reference typed inconsistently ("116500"
+ * one time, "116500LN" the next) fell through the exact-match reuse check above and produced
+ * several near-identical WTB requests, each generating its own match-card notification for
+ * essentially the same watch.
+ */
+test("required regression: a reference that's a plain prefix of an already-open posting's reference reuses that posting, not a new one", async () => {
+  await db._resetDbForTests();
+  const first = await store.createDirectPosting({
+    phone: "15550003334", description: "WTB Rolex 116500", brand: "Rolex", reference: "116500", price: 28000, type: "WTB",
+  });
+  const second = await store.createDirectPosting({
+    phone: "15550003334", description: "WTB Rolex 116500LN", brand: "Rolex", reference: "116500LN", price: 29000, type: "WTB",
+  });
+  assert.equal(second.id, first.id, "116500 and 116500LN name the same underlying watch, missing suffix aside -- must reuse the same posting");
+  assert.equal(second.reference, "116500LN", "the more specific reference from the later intake wins");
+});
+
+test("required regression: prefix reuse also works in the other direction -- the full reference typed first, the bare number typed later", async () => {
+  await db._resetDbForTests();
+  const first = await store.createDirectPosting({
+    phone: "15550003335", description: "WTB Rolex 116500LN", brand: "Rolex", reference: "116500LN", price: 28000, type: "WTB",
+  });
+  const second = await store.createDirectPosting({
+    phone: "15550003335", description: "WTB Rolex 116500", brand: "Rolex", reference: "116500", price: 29000, type: "WTB",
+  });
+  assert.equal(second.id, first.id, "the same watch named less precisely the second time must still reuse the existing posting");
+});
+
+test("a genuinely different reference (not a prefix of the other) is never merged, even for the same brand", async () => {
+  await db._resetDbForTests();
+  const first = await store.createDirectPosting({
+    phone: "15550003336", description: "WTB Rolex 116500LN", brand: "Rolex", reference: "116500LN", price: 28000, type: "WTB",
+  });
+  const second = await store.createDirectPosting({
+    phone: "15550003336", description: "WTB Rolex 126500LN", brand: "Rolex", reference: "126500LN", price: 28000, type: "WTB",
+  });
+  assert.notEqual(second.id, first.id, "126500LN is a different reference number entirely, not a missing-suffix variant of 116500LN");
+});
+
+test("an unspecified reference never fuzzy-matches an already-open posting that names a specific one", async () => {
+  await db._resetDbForTests();
+  const specific = await store.createDirectPosting({
+    phone: "15550003337", description: "WTB Rolex 116500LN", brand: "Rolex", reference: "116500LN", price: 28000, type: "WTB",
+  });
+  const unspecified = await store.createDirectPosting({
+    phone: "15550003337", description: "WTB Rolex Daytona, any reference", brand: "Rolex", reference: null, price: 28000, type: "WTB",
+  });
+  assert.notEqual(unspecified.id, specific.id, "not naming a reference at all is a genuinely different, broader request than one naming a specific reference");
+});
+
 test("two different users' identical requests never collide -- each gets their own posting", async () => {
   await db._resetDbForTests();
   const userA = await store.createDirectPosting({

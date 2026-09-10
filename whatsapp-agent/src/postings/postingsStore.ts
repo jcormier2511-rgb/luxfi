@@ -263,13 +263,27 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
     // that already has an open direct posting (same brand/model/reference) updates it in place
     // instead of piling up a duplicate row -- duplicates were flooding match notifications with
     // near-identical postings for the same watch every time the flow was re-run.
+    //
+    // Live-reported: typing a reference inconsistently across separate intake attempts for the
+    // SAME watch (e.g. "116500" one time, "116500LN" the next) fell through this exact-match
+    // check as two different items, producing several near-identical WTB requests that each
+    // generated their own match card. A reference suffix is a real, meaningful variant most of
+    // the time (a different bezel/material can be a different watch entirely), so this can't
+    // just ignore letters -- but one reference that's a plain PREFIX of the other (the shorter
+    // one simply missing the suffix) is treated as the same item, in either direction, only
+    // when both sides actually name a reference (an unspecified reference stays its own group,
+    // matched only against another unspecified one, same as before).
     const existing = await pool.query<PostingRow>(
-      `SELECT * FROM postings
+      `SELECT * FROM (
+         SELECT *, regexp_replace(LOWER(COALESCE(reference, '')), '[^a-z0-9]', '', 'g') AS ref_norm
+         FROM postings
          WHERE canonical_user_id=$1 AND source_type='direct' AND type=$2 AND status='active' AND expires_at > now()
            AND regexp_replace(LOWER(brand), '[^a-z0-9]', '', 'g') = $3
            AND regexp_replace(LOWER(COALESCE(model, '')), '[^a-z0-9]', '', 'g') = $4
-           AND regexp_replace(LOWER(COALESCE(reference, '')), '[^a-z0-9]', '', 'g') = $5
-         ORDER BY id DESC LIMIT 1`,
+       ) matched
+       WHERE ref_norm = $5
+          OR ($5 <> '' AND ref_norm <> '' AND ($5 LIKE ref_norm || '%' OR ref_norm LIKE $5 || '%'))
+       ORDER BY id DESC LIMIT 1`,
       [canonicalUserId, type, canonicalIdentity(brand), canonicalIdentity(model), canonicalIdentity(reference)]
     );
 
