@@ -1276,7 +1276,7 @@ function parseMarketReferenceCommand(text: string): MarketReferenceCommandResult
   return null;
 }
 
-interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "reference" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB"; indices?: number[]; all?: boolean }
+interface ListingEditCommand { action: "edit" | "price" | "location" | "dial" | "reference" | "pause" | "resume" | "close"; index: number | null; value?: string | number; typeHint?: "FS" | "WTB"; indices?: number[]; all?: boolean; referenceHint?: string }
 
 /** "listing 1", "listing #1", "listing  2" — anywhere in the sentence, not only after the verb. */
 const LISTING_INDEX_PATTERN = /\blisting\s*#?\s*(\d+)\b/i;
@@ -1354,6 +1354,27 @@ function parseListingEditCommand(text: string): ListingEditCommand | null {
       : "close";
     const indices = lifecycle[2].split(/[^\d]+/).filter(Boolean).map(Number);
     return indices.length > 1 ? { action, index: null, indices } : { action, index: indices[0] };
+  }
+
+  // Real reported ask: closing a listing that just got a fresh match notification meant going
+  // to Listings, finding its number, then "close listing N" -- three steps for what's really one
+  // intent ("I don't need this search anymore"). These work directly from any thread, no listing
+  // number required. A bare intent phrase resolves the same way an index-less close already does
+  // below (the one active listing if there's only one, otherwise Fi asks which) -- checked before
+  // LISTING_INDEX_PATTERN since none of these ever say the word "listing" with a number attached.
+  const bareCloseIntent =
+    /^(?:please\s+)?(?:close(?:\s+(?:it|this|that|now|request))?|already\s+found\s+it|found\s+it\s+already|i(?:'ve| have)\s+already\s+found\s+it|no\s+longer\s+(?:looking|need(?:ed)?|interested)|not\s+looking(?:\s+for\s+(?:it|this|that))?\s+anymore|cancel\s+(?:my\s+)?(?:search|request))\s*[.!]*$/i;
+  if (bareCloseIntent.test(t)) return { action: "close", index: null };
+
+  // Naming the reference instead of a number ("close request 126710BLNR") resolves by matching
+  // it against the caller's own listings rather than by position -- a bare number here would
+  // already have been caught by the `lifecycle` pattern above as a listing INDEX, so reaching
+  // this with a real extractable reference means the caller meant the watch, not a list position.
+  const closeByReference = t.match(/^(?:please\s+)?close\s+(?:request|listing)?\s*(?:for\s+)?(.+)$/i);
+  if (closeByReference) {
+    const candidate = closeByReference[1].trim();
+    const reference = extractReference(candidate);
+    if (reference) return { action: "close", index: null, referenceHint: reference };
   }
 
   const indexMatch = t.match(LISTING_INDEX_PATTERN);
@@ -1434,6 +1455,18 @@ async function handleListingEdit(phone: string, command: ListingEditCommand): Pr
   let rows = await userListings(phone);
   if (command.typeHint) rows = rows.filter((p) => p.type === command.typeHint);
   if (command.all && rows.length === 0) return none("You have no listings to manage right now.");
+  // "close request 126710BLNR" — named by reference rather than by list position, so it works
+  // from any thread without the caller ever having to look up which listing number it is first.
+  if (command.referenceHint) {
+    const matches = rows.filter((p) => p.reference && referencesMatch(p.reference, command.referenceHint!));
+    if (matches.length === 0) {
+      return none(`I don't have an active listing for reference ${command.referenceHint} — say "my listings" to see what's currently open.`);
+    }
+    if (matches.length > 1) return none(chooseListingMessage(matches, "to close"));
+    const updated = await setPostingManagementStatus(matches[0].id, command.action as "pause" | "resume" | "close");
+    if (!updated) return none(`That listing is not currently eligible to ${command.action}.`);
+    return none(`${command.action === "pause" ? "Paused" : command.action === "resume" ? "Resumed" : "Closed"}:\n\n${formatStructuredPosting(updated)}`);
+  }
   // "close all listings" acts on every row in this same snapshot — reuses the indices path below
   // rather than a separate loop, since "every index" and "these specific indices" are the same
   // operation once the row count is known.
@@ -2988,8 +3021,14 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   // without also checking `all` here, it would read as naming NONE (index null, no indices) and
   // fall to the open draft's answer handler whenever one was open, the exact bug the "all" form
   // was added to fix.
-  const namesAListing = Boolean(listingEdit && (listingEdit.index !== null || listingEdit.indices?.length || listingEdit.all));
-  if (listingEdit && (namesAListing || !(state.pendingBuyIntake || state.pendingSellIntake))) {
+  const namesAListing = Boolean(listingEdit && (listingEdit.index !== null || listingEdit.indices?.length || listingEdit.all || listingEdit.referenceHint));
+  // A bare close-intent phrase ("close now", "already found it", "no longer looking") is a
+  // different case: unlike "change ... to ..." (a genuinely ambiguous shape a mid-interview
+  // answer could also take), nothing in a price/location/dial/condition interview is ever
+  // sensibly answered with one of these, so it's unambiguous enough to beat an open draft too --
+  // the same "I don't need this search anymore" intent the feature exists for in the first place.
+  const isBareCloseIntent = Boolean(listingEdit && listingEdit.action === "close" && !namesAListing);
+  if (listingEdit && (namesAListing || isBareCloseIntent || !(state.pendingBuyIntake || state.pendingSellIntake))) {
     const editResult = await handleListingEdit(state.phone, listingEdit);
     messages.push(editResult.message);
     // Listing edits are persisted by the postings store. Do not re-save the unrelated

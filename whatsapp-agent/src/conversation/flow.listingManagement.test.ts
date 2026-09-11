@@ -218,6 +218,73 @@ test('"close all listings" beats an open draft too, just like a specific listing
   assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), draftBefore, "the WTB draft must be untouched");
 });
 
+// ---------------------------------------------------------------------------------------------
+// Real reported ask: "I should be able to close it directly from here by saying something like
+// 'Close now' or 'Already found it.' If the system needs more context, I could simply say 'Close
+// request 126710BLNR.' Going back and forth to Listings just to close a request feels like too
+// many steps." -- closing a listing by natural language, from any thread, no listing number
+// looked up first.
+// ---------------------------------------------------------------------------------------------
+
+test('"close now" closes the caller\'s only active listing with no listing number given at all', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "WTB", "116500LN", 30000);
+
+  const reply = await handleIncomingMessage(phone, "close now");
+  assert.match(reply.messages.join("\n"), /closed/i);
+  assert.equal(await statusOf(one.id), "stopped");
+});
+
+test('"already found it" closes the only active listing the same way "close now" does', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "WTB", "116500LN", 30000);
+
+  await handleIncomingMessage(phone, "Already found it.");
+  assert.equal(await statusOf(one.id), "stopped");
+});
+
+test('a bare close intent with MORE THAN ONE active listing asks which one, same as an index-less "close" already does', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "FS", "116500LN", 30000);
+  const two = await makeListing(phone, "FS", "126610LN", 14000, { model: "Submariner" });
+
+  const reply = await handleIncomingMessage(phone, "close this");
+  assert.match(reply.messages.join("\n"), /Which listing would you like/i);
+  assert.equal(await statusOf(one.id), "active", "nothing should be closed yet — ambiguous without a number");
+  assert.equal(await statusOf(two.id), "active");
+});
+
+test('"Close request 126710BLNR" resolves by the stated reference, not by list position', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "WTB", "116500LN", 30000);
+  const two = await makeListing(phone, "WTB", "126710BLNR", 22000, { model: "GMT-Master II" });
+
+  const reply = await handleIncomingMessage(phone, "Close request 126710BLNR");
+  assert.match(reply.messages.join("\n"), /closed/i);
+  assert.equal(await statusOf(one.id), "active", "only the named reference's listing must close");
+  assert.equal(await statusOf(two.id), "stopped");
+});
+
+test('closing by reference reports clearly when nothing matches, instead of silently doing nothing', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "WTB", "116500LN", 30000);
+
+  const reply = await handleIncomingMessage(phone, "close request 999999XY");
+  assert.match(reply.messages.join("\n"), /don't have an active listing/i);
+  assert.equal(await statusOf(one.id), "active");
+});
+
+test('a bare close intent beats an open draft, just like a specific listing number already does', async () => {
+  const phone = freshPhone();
+  const one = await makeListing(phone, "WTB", "116500LN", 30000);
+  const draftBefore = await openBuyDraft(phone);
+
+  const reply = await handleIncomingMessage(phone, "close now");
+  assert.doesNotMatch(reply.messages.join("\n"), /kept your request draft open/i);
+  assert.equal(await statusOf(one.id), "stopped");
+  assert.equal(JSON.stringify(getState(phone).pendingBuyIntake), draftBefore, "the WTB draft must be untouched");
+});
+
 test('"pause all my listings" accepts the "my" variant, and reports gracefully with none', async () => {
   const phone = freshPhone();
   const one = await makeListing(phone, "FS", "116500LN", 30000);
