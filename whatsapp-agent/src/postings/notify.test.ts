@@ -30,7 +30,7 @@ const matching = require("./matching") as typeof import("./matching");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const notify = require("./notify") as typeof import("./notify");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const whapiClient = require("../whapi/client") as typeof import("../whapi/client");
+const whapiClient = require("../channels/whatsappCloud") as typeof import("../channels/whatsappCloud");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const telegramClient = require("../channels/telegram") as typeof import("../channels/telegram");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -244,6 +244,45 @@ test("required: a dealer listing that already has a Source: link never double-at
   assert.ok(toBuyer);
   assert.equal(toBuyer!.image, undefined, "the Source: link's own auto-preview already shows the photo -- attaching it again would be a duplicate");
   assert.match(toBuyer!.text ?? "", /Source: https:\/\/watchfacts\.com\/listings\/dealer-photo/);
+});
+
+test("required: a match notification appends the one-time first-contact intro on someone's genuine first-ever contact with Fi, never again after", async (t) => {
+  await resetAll();
+  const sent: { phone: string; text?: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, text: message }));
+  t.mock.method(whapiClient, "sendBannerImage", async (phone: string, _imageUrl: string, caption?: string) => sent.push({ phone, text: caption }));
+
+  const buyerPhone = "buyer-firstcontact";
+  await createMatch(buyerPhone);
+  await createMatch(buyerPhone);
+
+  // Loose (same-brand) matching means the second createMatch's own new FS listing can also match
+  // the FIRST WTB posting, so more than 2 notifications can go out here -- irrelevant to what
+  // this test actually checks: the intro appears exactly once, on the very first send ever, and
+  // never again regardless of how many further matches follow.
+  const toBuyer = sent.filter((s) => s.phone === buyerPhone);
+  assert.ok(toBuyer.length >= 2, "sanity: at least two matches were delivered to the same buyer");
+  const introCount = toBuyer.filter((s) => /I'm Fi, your personal luxury concierge/.test(s.text ?? "")).length;
+  assert.equal(introCount, 1, "the intro appears exactly once, ever, regardless of how many matches this identity receives");
+  assert.match(toBuyer[0].text ?? "", /I'm Fi, your personal luxury concierge/, "the first-ever notification to a brand-new identity carries the one-time intro");
+});
+
+test("required: the first-contact intro is never appended for an identity that already messaged Fi directly before any match", async (t) => {
+  await resetAll();
+  const sent: { phone: string; text?: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, text: message }));
+  t.mock.method(whapiClient, "sendBannerImage", async (phone: string, _imageUrl: string, caption?: string) => sent.push({ phone, text: caption }));
+
+  const buyerPhone = "buyer-alreadyknown";
+  // Simulate having already introduced this identity (e.g. a prior match, or any other Fi send).
+  const lifecycle = require("../lifecycle") as typeof import("../lifecycle");
+  await lifecycle.consumeFirstContact(buyerPhone);
+
+  await createMatch(buyerPhone);
+
+  const toBuyer = sent.find((s) => s.phone === buyerPhone);
+  assert.ok(toBuyer);
+  assert.doesNotMatch(toBuyer!.text ?? "", /I'm Fi, your personal luxury concierge/, "already-introduced identities never see the intro on a later match");
 });
 
 test("approveMatch succeeds and returns the counterpart's contact info", async () => {

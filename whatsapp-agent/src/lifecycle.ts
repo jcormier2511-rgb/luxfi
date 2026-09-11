@@ -115,6 +115,33 @@ function isMorningBriefingPaused(user: { morning_briefing_paused_indefinitely: b
   return Boolean(user.morning_briefing_paused_until && new Date(user.morning_briefing_paused_until) > now);
 }
 
+/**
+ * True exactly once per identity: the first call ever made for a given identity claims it
+ * (setting intro_sent_at) and returns true; every call after that returns false. A single
+ * atomic upsert rather than a separate read-then-write -- two match notifications racing for
+ * the same brand-new recipient (both sides of a match can resolve to the same person's OTHER
+ * open posting) must never both see "not yet introduced" and both append the intro.
+ *
+ * Upserts the row rather than requiring one to already exist: recordInboundActivity normally
+ * creates it first (server.ts calls it on every inbound message before anything else runs), but
+ * a caller here should never depend on that ordering having already happened.
+ */
+export async function consumeFirstContact(identity: string): Promise<boolean> {
+  const channel = platformForIdentity(identity);
+  const userId = await getOrCreateCanonicalUser(channel, identity);
+  const claimed = await withSchema((db) =>
+    db.query(
+      `INSERT INTO user_lifecycle(canonical_user_id,channel,identity,last_inbound_at,intro_sent_at)
+       VALUES($1,$2,$3,now(),now())
+       ON CONFLICT(canonical_user_id) DO UPDATE SET intro_sent_at=now()
+         WHERE user_lifecycle.intro_sent_at IS NULL
+       RETURNING canonical_user_id`,
+      [userId, channel, identity]
+    )
+  );
+  return claimed.rowCount === 1;
+}
+
 async function claim(userId:number,kind:"morning_briefing"|"dormant",date:string):Promise<boolean>{
   return withSchema(async db=>(await db.query(`INSERT INTO lifecycle_deliveries(canonical_user_id,kind,local_date,status) VALUES($1,$2,$3,'sending')
     ON CONFLICT(canonical_user_id,kind,local_date) DO UPDATE SET status='sending',claimed_at=now(),error=NULL

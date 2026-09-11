@@ -1,7 +1,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 process.env.NODE_ENV="test"; process.env.WEBHOOK_TOKEN="test";
-import { formatBriefing, formatDormant, localClock, runMorningBriefings, resendMorningBriefingToAll, setLifecycleSettings, BriefingTrend, pauseMorningBriefing, resumeMorningBriefing, getMorningBriefingPauseStatus } from "./lifecycle";
+import { formatBriefing, formatDormant, localClock, runMorningBriefings, resendMorningBriefingToAll, setLifecycleSettings, BriefingTrend, pauseMorningBriefing, resumeMorningBriefing, getMorningBriefingPauseStatus, consumeFirstContact } from "./lifecycle";
 import { PostingRow } from "./postings/postingsStore";
 import { _resetDbForTests, withSchema, _closePoolForTests } from "./postings/db";
 import { initAdminSchema } from "./admin/store";
@@ -304,4 +304,29 @@ test("required: resendMorningBriefingToAll (the admin-forced broadcast) also res
   const result = await resendMorningBriefingToAll(new Date("2026-09-01T12:00:00Z"));
   assert.equal(result.sent, 1);
   assert.deepEqual(sent, ["15559990031"], "a forced admin resend must not override a user's own explicit pause");
+});
+
+// --- consumeFirstContact (postings/notify.ts's one-time "by the way, I'm Fi" postscript) ---
+
+test("consumeFirstContact returns true exactly once per identity, never again after", async () => {
+  await _resetDbForTests();
+  const phone = "15559990040";
+
+  assert.equal(await consumeFirstContact(phone), true, "the first-ever call for a brand-new identity claims it");
+  assert.equal(await consumeFirstContact(phone), false, "a second call for the same identity must not claim it again");
+  assert.equal(await consumeFirstContact(phone), false, "nor a third");
+});
+
+test("consumeFirstContact works for an identity that already has a user_lifecycle row (e.g. from recordInboundActivity)", async () => {
+  await _resetDbForTests();
+  const phone = "15559990041";
+  // Simulates the normal case: server.ts's recordInboundActivity already created the row (via
+  // a group post, say) before this identity's first-ever OUTBOUND send happens.
+  await getOrCreateCanonicalUser("whatsapp", phone);
+  await withSchema((db) =>
+    db.query(`INSERT INTO user_lifecycle(canonical_user_id,channel,identity,last_inbound_at) SELECT id,'whatsapp',$1,now() FROM canonical_users WHERE id=(SELECT canonical_user_id FROM linked_identities WHERE platform='whatsapp' AND identity=$1)`, [phone])
+  );
+
+  assert.equal(await consumeFirstContact(phone), true);
+  assert.equal(await consumeFirstContact(phone), false);
 });

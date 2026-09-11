@@ -411,6 +411,13 @@ async function ensureSchema(): Promise<void> {
         -- an ambiguous "how far in the future counts as indefinite" value to reason about.
         ALTER TABLE user_lifecycle ADD COLUMN IF NOT EXISTS morning_briefing_paused_until TIMESTAMPTZ;
         ALTER TABLE user_lifecycle ADD COLUMN IF NOT EXISTS morning_briefing_paused_indefinitely BOOLEAN NOT NULL DEFAULT false;
+        -- Set the first (and only the first) time Fi ever sends this identity anything -- see
+        -- lifecycle.ts's consumeFirstContact. Lets a match notification (postings/notify.ts),
+        -- which is a pure proactive send with no onboarding framing of its own, append a one-time
+        -- "by the way, I'm Fi" introduction for someone whose first-ever contact with Fi is a
+        -- cold match card (e.g. they only ever posted in a group Fi monitors, never messaged Fi
+        -- directly) -- without ever repeating it on their second match.
+        ALTER TABLE user_lifecycle ADD COLUMN IF NOT EXISTS intro_sent_at TIMESTAMPTZ;
         CREATE TABLE IF NOT EXISTS fi_returning_promotions (
           canonical_user_id INTEGER PRIMARY KEY REFERENCES canonical_users(id) ON DELETE CASCADE,
           tasks_granted INTEGER NOT NULL DEFAULT 3 CHECK(tasks_granted=3),

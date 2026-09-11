@@ -13,6 +13,7 @@ import { isPostingMonitoringEnabled } from "../admin/store";
 import { getListingLimits } from "./listingConfig";
 import { saveMoreContext } from "./moreContext";
 import { getNotificationPreference, resolveNotifyIdentity, resolveFallbackIdentity } from "./notificationPreferences";
+import { consumeFirstContact } from "../lifecycle";
 
 // Same cap groupPublishing.ts's own image+caption send already respects -- a caption over this
 // gets silently truncated or rejected depending on the channel, so a match card that runs long
@@ -260,6 +261,12 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
   return lines.join("\n");
 }
 
+// Appended once, after the match card, on someone's genuine first-ever contact with Fi (see
+// consumeFirstContact in notifyOneRecipient below) -- never a full onboarding/capabilities dump,
+// just enough context for who's messaging them and how to learn more on their own terms.
+const FIRST_CONTACT_INTRO =
+  '👋 I\'m Fi, your personal luxury concierge — this is the kind of match I find automatically, day and night. Reply "help" to see everything I can do.';
+
 /**
  * Spec §9.1's Match ID# format, minus the "Fi Intelligence" block (dealer
  * reputation/price trend/market range/authenticity) — no data source for any of that exists,
@@ -399,7 +406,14 @@ async function notifyOneRecipient(
 
   try {
     const fromGroup=self.source_type==="chat"&&Boolean(self.source_chat_id);
-    const message = fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl, activeGroupCount);
+    let message = fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl, activeGroupCount);
+    // A match notification is a pure proactive send with no onboarding framing of its own (see
+    // consumeFirstContact's doc comment) -- someone whose first-ever contact with Fi is a cold
+    // match card (e.g. only ever posted in a monitored group, never messaged Fi directly) would
+    // otherwise see this content with zero context for who's messaging them or why. Appended
+    // AFTER the match, not before -- leading with the actual value reads better than a generic
+    // intro landing first. Exactly once per identity, ever, regardless of how many matches follow.
+    if (await consumeFirstContact(phone)) message += `\n\n—\n${FIRST_CONTACT_INTRO}`;
     // A listing with its own detail_url (a WatchFacts dealer-feed link) already gets a rich
     // preview -- image included -- for free from the Source: line in `message`; sending the
     // SAME photo again as a second attached image would be a duplicate. A private/direct-
