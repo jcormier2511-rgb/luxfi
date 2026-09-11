@@ -32,9 +32,13 @@ const server = require("./server") as typeof import("./server");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const notify = require("./postings/notify") as typeof import("./postings/notify");
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const stateStore = require("./conversation/stateStore") as typeof import("./conversation/stateStore");
+
 const { ingestChatPosting } = postingsStore;
 const { ingestDirectSellPosting } = ingestModule;
 const { tryHandleDirectPostingDecision, tryHandleV4Decision, formatApprovalOutcome } = server;
+const { getState, saveState } = stateStore;
 
 after(async () => {
   await db._closePoolForTests();
@@ -110,6 +114,39 @@ test("required: the seller can pass on a direct-posting match via tryHandleDirec
 
   const reply = await tryHandleDirectPostingDecision(sellerPhone, `pass ${matchId}`);
   assert.equal(reply, `Passing on match ${matchId}.`);
+});
+
+/**
+ * Real reported bug: "approve 1279" (a genuine Match ID# from notify.ts's own async
+ * notification) got "I don't have a match #1279 — pick a number from the list above" instead of
+ * approving the real match. Root cause: pendingMatches (the OLD v3 search flow's own local
+ * numbered list) is only ever replaced by a new search, never cleared just because every entry
+ * in it was already decided -- so a customer who had done ANY earlier v3 search, fully resolved
+ * or not, had every later "approve <realMatchId>" reply swallowed by the stale `if (pendingMatches)
+ * return null` guard at the top of tryHandleDirectPostingDecision/tryHandleV4Decision, falling
+ * through into the unrelated v3 position-based handler instead.
+ */
+test("required regression: a STALE, fully-resolved v3 pendingMatches set does not swallow a real Match ID# approval", async (t) => {
+  assert.equal(config.postingsV4.enabled, false);
+  await db._resetDbForTests();
+  const sellerPhone = "19990000006";
+  const { matchId } = await seedMatch(t, sellerPhone);
+
+  // Simulate an earlier, unrelated v3 search this same person already fully decided on -- exactly
+  // the kind of stale state that lingers in a real conversation (pendingMatches is never cleared
+  // just because it's fully resolved).
+  const state = getState(sellerPhone);
+  state.pendingMatches = {
+    request: { action: "buy", query: "some other unrelated watch" },
+    matches: [{}] as unknown as import("./types").InventoryListing[],
+    decisions: ["approved"],
+  };
+  saveState(state);
+
+  const reply = await tryHandleDirectPostingDecision(sellerPhone, `approve ${matchId}`);
+  assert.ok(reply, "the real match must still be approvable despite the stale, fully-resolved v3 list");
+  assert.doesNotMatch(reply!, /pick a number from the list above/i);
+  assert.match(reply!, /connected|as soon as the other side confirms/i);
 });
 
 test("tryHandleV4Decision (the group-chat monitoring surface) stays a no-op for the exact same direct-posting match while the flag is off", async (t) => {

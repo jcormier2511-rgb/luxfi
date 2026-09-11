@@ -186,9 +186,24 @@ async function tryInterpretPostingsDecisionNaturally(
   return { matchId, action: interpreted.action };
 }
 
+/**
+ * A stale, fully-decided pendingMatches set must never claim a reply meant for a real
+ * match-id-based decision below -- real reported bug: "approve 1279" (a genuine Match ID# from
+ * notify.ts's own async notification, well outside the v3 search flow entirely) was swallowed by
+ * the old `if (pendingMatches) return null` guard purely because an OLD, already fully approved/
+ * passed v3 search list was still sitting in state (pendingMatches is only ever replaced by a new
+ * search, never cleared just because every entry in it was already decided -- same staleness
+ * flow.ts's own "unresolvedCount" checks already guard against elsewhere). The reply then fell
+ * through to the unrelated v3 handler, which produced "I don't have a match #1279 -- pick a
+ * number from the list above" instead of ever reaching the real match.
+ */
+function hasUnresolvedPendingMatches(phone: string): boolean {
+  return (getState(phone).pendingMatches?.decisions.filter((d) => d === "pending").length ?? 0) > 0;
+}
+
 export async function tryHandleV4Decision(phone: string, text: string): Promise<string | null> {
   if (!config.postingsV4.enabled) return null; // whole v4 surface stays inert until verified
-  if (getState(phone).pendingMatches) return null; // v3 flow owns this reply
+  if (hasUnresolvedPendingMatches(phone)) return null; // v3 flow owns this reply
   const m = text.trim().match(V4_DECISION_PATTERN);
   if (m) return applyPostingsDecision(parseInt(m[2], 10), m[1].toLowerCase() === "approve" ? "approve" : "pass", phone);
 
@@ -211,7 +226,7 @@ export async function tryHandleV4Decision(phone: string, text: string): Promise<
  * fallback below is scoped the exact same way (sourceType:"direct").
  */
 export async function tryHandleDirectPostingDecision(phone: string, text: string): Promise<string | null> {
-  if (getState(phone).pendingMatches) return null; // v3 flow owns this reply
+  if (hasUnresolvedPendingMatches(phone)) return null; // v3 flow owns this reply
   const canonicalUserId = await getOrCreateCanonicalUser(platformForIdentity(phone), phone);
   const m = text.trim().match(V4_DECISION_PATTERN);
   if (m) {
