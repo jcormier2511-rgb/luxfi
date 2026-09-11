@@ -156,6 +156,21 @@ test("an invalid/unrecognized intent value from the model is rejected rather tha
   assert.equal(await extractIntent("something ambiguous"), null);
 });
 
+test('required regression: a bare imperative "Sell <item>" (no pronoun) sends the model an explicit instruction not to misread it as a command to go buy/find one -- live-reported bug: "Sell 116500ln black dial 35k" came back as a BUY search (matched against sellers, showed "Asking" prices) instead of a sell listing', async (t) => {
+  let capturedSystem = "";
+  t.mock.method(client, "callAiJson", async (args: { system: string }) => {
+    capturedSystem = args.system;
+    return aiResult({ intent: "sell", reference: "116500LN", dial: "black", priceMax: 35000 });
+  });
+  const result = await extractIntent("Sell 116500ln black dial 35k");
+  assert.equal(result!.intent.intent, "sell", "must still come back as sell once the model is instructed correctly");
+  assert.match(
+    capturedSystem,
+    /bare imperative starting with "Sell".*not a command telling you to go sell or find them one/is,
+    "the system prompt sent to the model must explicitly disambiguate a bare 'Sell X' as the sender's own offer, never a request directed at Fi"
+  );
+});
+
 test("isConfidentIntent rejects a low-confidence or 'unknown' result", async (t) => {
   t.mock.method(client, "callAiJson", async () => aiResult({ intent: "buy", confidence: 0.2 }));
   const low = await extractIntent("mumble mumble");

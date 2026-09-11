@@ -88,6 +88,8 @@ const INTENT_SYSTEM = `You convert one WhatsApp message into structured shopping
 
 intent is exactly one of: "buy" (wants to acquire a watch — buy/find/search/available/looking for/ISO/need/WTB), "sell" (offering one — sell/selling/FS/WTS/"I have"), "price_check" (asking what something is worth, no buy/sell action), "dealer_reference" (asking about a dealer's reputation/references), "request_photos" (asking to see photos of something already shown), "approve" (accepting/connecting on something already shown), "pass" (skipping something already shown), "help" (asking what Fi can do), "general_question" (anything else conversational), or "unknown" (can't tell).
 
+A bare imperative starting with "Sell" ("Sell 116500LN black dial 35k") is the SENDER stating they are offering that watch, not a command telling you to go sell or find them one — read every "sell"/"selling"/"FS"/"WTS" message as the sender's own item being offered, and classify it "sell", never "buy", regardless of whether it's phrased as "I'm selling my X" or as a bare "Sell X" with no pronoun. The reverse holds too: "buy"/"looking for"/"WTB"/"ISO" always means the sender wants to acquire the watch, never that they're telling you to go sell one.
+
 brand is the FULL canonical maker name (e.g. "Patek" or "PP" -> "Patek Philippe", "AP" -> "Audemars Piguet") — null if none is named.
 model is the model line if named (e.g. "Daytona", "Nautilus") — null if only a brand/reference is given.
 reference is the reference number exactly as written (e.g. "5712", "5712G", "116500LN") — a bare reference-shaped number is NEVER a price, and a 4-digit year is NEVER a reference.

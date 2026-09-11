@@ -164,6 +164,49 @@ test('required regression: a bare one-word follow-up answer ("New") is still rec
   assert.ok(matchCard, "the deterministic fallback filled the last missing field, so the search must run");
 });
 
+test('required regression: a bare one-word follow-up answer ("USA") is still recognized as the location, even when the AI interpreter extracts nothing from it -- live-reported bug: Fi kept re-asking "what\'s your location?" forever even after the customer answered it', async (t) => {
+  resetState(TEST_PHONE);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("a", { location: "North America", condition: "New" })], new Date().toISOString());
+  t.mock.method(queryInterpreterModule, "interpretQuery", async (text: string) => {
+    if (text.includes("looking for")) return interpreted({ maxPrice: 27000, dialColor: "black", condition: "New" }); // location alone missing
+    return interpreted(); // the AI extracts nothing usable from the bare follow-up reply itself
+  });
+  mockAlwaysMatches(t);
+
+  await handleIncomingMessage(TEST_PHONE, "hi");
+  const asked = await handleIncomingMessage(TEST_PHONE, "looking for a rolex daytona 116500 under 27k, black dial, New");
+  assert.match(asked.messages.join("\n"), /what's your location\?/i, "precondition: location is the only field left missing");
+
+  const result = await handleIncomingMessage(TEST_PHONE, "USA");
+  assert.doesNotMatch(result.messages.join("\n"), /what's your location\?/i, "must not ask the identical question again");
+  const matchCard = result.messages.find((m) => /Potential Match/.test(m));
+  assert.ok(matchCard, "the deterministic fallback filled the last missing field, so the search must run");
+});
+
+test('required regression: a bare word that already answers CONDITION must never also be misread as the location, when both are still missing', async (t) => {
+  resetState(TEST_PHONE);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("a", { location: "North America", condition: "pre-owned" })], new Date().toISOString());
+  t.mock.method(queryInterpreterModule, "interpretQuery", async (text: string) => {
+    if (text.includes("looking for")) return interpreted({ maxPrice: 27000, dialColor: "black" }); // location AND condition missing
+    return interpreted();
+  });
+  mockAlwaysMatches(t);
+
+  await handleIncomingMessage(TEST_PHONE, "hi");
+  const asked = await handleIncomingMessage(TEST_PHONE, "looking for a rolex daytona 116500 under 27k, black dial");
+  assert.match(asked.messages.join("\n"), /location/i);
+  assert.match(asked.messages.join("\n"), /condition/i);
+
+  const result = await handleIncomingMessage(TEST_PHONE, "used");
+  assert.match(
+    result.messages.join("\n"),
+    /what's your location\?/i,
+    "condition is now filled, but location is still genuinely missing and must still be asked for -- 'used' must not have been misapplied to it"
+  );
+});
+
 test("a fully-specified message never triggers a follow-up at all", async (t) => {
   resetState(TEST_PHONE);
   await inventoryDb._resetDbForTests();

@@ -1871,6 +1871,17 @@ async function handleNaturalFollowUpAnswer(state: ConversationState, text: strin
     dialColor: aiMerged.dialColor ?? slots.dial,
     condition: aiMerged.condition ?? slots.condition,
   };
+  // The comment above already called out "USA" as exactly the shape this gap covers, but
+  // intakeSlots' own location extraction never actually catches it: extractLocation only fires
+  // for a full buy/sell request sentence or an explicit locative phrase ("in the USA"), neither
+  // of which a bare interview reply is -- live-reported bug this closes: "what's your location?"
+  // kept getting re-asked forever even after replying "USA". looksLikePlace already exists for
+  // exactly this bare-interview-answer shape (see its own comment); only applied when this reply
+  // wasn't already claimed as the condition or dial answer instead (a bare "used"/"black" must
+  // never also get read as a place name).
+  if (!merged.location && !slots.dial && !slots.condition && looksLikePlace(text.trim())) {
+    merged.location = text.trim();
+  }
 
   const stillMissing = missingPreferenceFields(merged);
   if (stillMissing.length > 0) {
