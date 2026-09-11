@@ -449,7 +449,7 @@ test("findOppositeSideCandidates returns active opposite-type postings from othe
   assert.equal(candidates[0].type, "FS");
 });
 
-test("requests expire at 15 days and explicit renewal resets the exact 15-day window", async () => {
+test("requests expire at 15 days and explicit renewal resets to a fresh 2-week (14-day) window", async () => {
   await db._resetDbForTests();
   const createdAt = Date.now();
   const created = await ingestChatPosting(chatInput());
@@ -459,7 +459,7 @@ test("requests expire at 15 days and explicit renewal resets the exact 15-day wi
   const extended = await extendPosting(created.posting!.id);
   assert.ok(extended);
   const after = new Date(extended!.expires_at).getTime();
-  assert.ok(Math.abs(after - renewedAt - 15 * 86400_000) < 5_000, "renewal starts a fresh 15-day window");
+  assert.ok(Math.abs(after - renewedAt - 14 * 86400_000) < 5_000, "renewal starts a fresh 2-week (14-day) window, deliberately distinct from the 15-day original lifetime");
 });
 
 test("an ordinary edit does not renew or move a request's expiry", async () => {
@@ -541,6 +541,36 @@ test("a direct posting for a different model from the same user creates a separa
     phone: "15550002222", description: "WTB Rolex Submariner", brand: "Rolex", model: "Submariner", reference: null, price: 12000, type: "WTB",
   });
   assert.notEqual(submariner.id, daytona.id, "a genuinely different model must not overwrite the existing request");
+});
+
+/**
+ * Live-reported bug: repeating a sell-intake for the exact same reference produced several
+ * separate active FS listings instead of updating the one already open. Root cause: the reuse
+ * check required an EXACT model-text match too, but inferDirectModel derives model text from
+ * whatever's in each attempt's own free-text description -- one attempt named "Daytona", another
+ * (worded slightly differently) inferred no model at all, so the same watch's own reference
+ * never actually got a chance to reuse the existing posting. A stated reference that already
+ * matches (or prefix-matches) is a strong enough identity signal on its own; model text should
+ * never be allowed to veto it.
+ */
+test("required regression: repeating a direct intake for the SAME reference reuses the open posting even when the model text differs (or is missing) between attempts", async () => {
+  await db._resetDbForTests();
+  const first = await store.createDirectPosting({
+    phone: "15550002223", description: "FS Rolex 116500LN", brand: "Rolex", model: "Daytona", reference: "116500LN", price: 32000, type: "FS",
+  });
+  const second = await store.createDirectPosting({
+    phone: "15550002223", description: "FS Rolex 116500LN black dial", brand: "Rolex", model: "", reference: "116500LN", price: 24250, type: "FS",
+  });
+  const third = await store.createDirectPosting({
+    phone: "15550002223", description: "FS Rolex Daytona 116500LN complete", brand: "Rolex", model: "Daytona 116500LN", reference: "116500LN", price: 35000, type: "FS",
+  });
+
+  assert.equal(second.id, first.id, "the same reference must reuse the open posting even though this attempt's model text is blank");
+  assert.equal(third.id, first.id, "the same reference must reuse the open posting even though this attempt's model text differs entirely");
+  assert.equal(third.price, "35000", "the most recent attempt's price wins on the single reused posting");
+
+  const rows = await db.withSchema((pool) => pool.query(`SELECT * FROM postings WHERE canonical_user_id=$1`, [first.canonical_user_id]));
+  assert.equal(rows.rows.length, 1, "only one posting row must exist for this reference, not three");
 });
 
 test("reuse matching for an already-open posting is case/punctuation-insensitive on the reference", async () => {

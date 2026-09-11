@@ -33,6 +33,7 @@ export interface PostingRow {
   approved_match_count: number;
   expires_at: string;
   reminder_sent_for_expires_at: string | null;
+  notes?: string | null;
 }
 
 const REQUEST_LIFETIME_MS = 15 * 24 * 60 * 60 * 1000;
@@ -273,16 +274,26 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
     // one simply missing the suffix) is treated as the same item, in either direction, only
     // when both sides actually name a reference (an unspecified reference stays its own group,
     // matched only against another unspecified one, same as before).
+    //
+    // Live-reported follow-up: requiring the MODEL text to also match exactly, even when a real
+    // reference already agrees, still let duplicates through -- inferDirectModel derives model
+    // text from whatever's in the free-text description each time, so a repeat listing for the
+    // exact same reference ("Rolex 116500LN" one attempt, "Rolex Daytona 116500LN black dial"
+    // the next) can land with a different model string (or none at all) purely from how that
+    // one message happened to be worded, never matching the earlier row's model text exactly.
+    // A stated reference is a far stronger, more reliable identity signal than model text ever
+    // is -- once both sides name one and it matches (exactly, or as a prefix), that's the same
+    // watch regardless of what model text either row carries, so model is only still checked
+    // when NEITHER side has a reference to go on at all.
     const existing = await pool.query<PostingRow>(
       `SELECT * FROM (
          SELECT *, regexp_replace(LOWER(COALESCE(reference, '')), '[^a-z0-9]', '', 'g') AS ref_norm
          FROM postings
          WHERE canonical_user_id=$1 AND source_type='direct' AND type=$2 AND status='active' AND expires_at > now()
            AND regexp_replace(LOWER(brand), '[^a-z0-9]', '', 'g') = $3
-           AND regexp_replace(LOWER(COALESCE(model, '')), '[^a-z0-9]', '', 'g') = $4
        ) matched
-       WHERE ref_norm = $5
-          OR ($5 <> '' AND ref_norm <> '' AND ($5 LIKE ref_norm || '%' OR ref_norm LIKE $5 || '%'))
+       WHERE ($5 <> '' AND ref_norm <> '' AND (ref_norm = $5 OR $5 LIKE ref_norm || '%' OR ref_norm LIKE $5 || '%'))
+          OR ($5 = '' AND ref_norm = '' AND regexp_replace(LOWER(COALESCE(model, '')), '[^a-z0-9]', '', 'g') = $4)
        ORDER BY id DESC LIMIT 1`,
       [canonicalUserId, type, canonicalIdentity(brand), canonicalIdentity(model), canonicalIdentity(reference)]
     );
@@ -291,8 +302,8 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
       const old = existing.rows[0];
       const update = await pool.query<PostingRow>(
         `UPDATE postings SET original_text=$1, brand=$2, model=$3, reference=$4, dial=$5, condition=$6, box_papers=$7,
-           year=$8, price=$9, currency=$10, location=$11, contact_name=$12, updated_at=now(), last_seen_at=now(), expires_at=$13
-         WHERE id=$14 RETURNING *`,
+           year=$8, price=$9, currency=$10, location=$11, contact_name=$12, notes=$13, updated_at=now(), last_seen_at=now(), expires_at=$14
+         WHERE id=$15 RETURNING *`,
         [
           input.description,
           brand,
@@ -306,6 +317,7 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
           input.currency ?? normalized.currency,
           input.location ?? "",
           input.senderName || input.phone,
+          input.notes ?? null,
           expiresAt,
           old.id,
         ]
@@ -317,8 +329,8 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
     const insert = await pool.query<PostingRow>(
       `INSERT INTO postings
          (source_platform, source_type, canonical_user_id, source_identity,
-          type, original_text, brand, model, reference, dial, condition, box_papers, year, price, currency, location, contact_name, contact_phone, status, expires_at)
-       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'active',$18)
+          type, original_text, brand, model, reference, dial, condition, box_papers, year, price, currency, location, contact_name, contact_phone, notes, status, expires_at)
+       VALUES ($1,'direct',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'active',$19)
        RETURNING *`,
       [
         platform,
@@ -338,6 +350,7 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
         input.location ?? "",
         input.senderName || input.phone,
         input.phone,
+        input.notes ?? null,
         expiresAt,
       ]
     );
@@ -672,10 +685,13 @@ export async function findOppositeSideCandidates(posting: PostingRow): Promise<P
   });
 }
 
+// Real reported spec: the original listing lifetime is 15 days, but an "extend" renewal is
+// explicitly 2 weeks (14 days) -- a shorter, deliberately distinct number from the initial
+// lifetime, not just a repeat of it.
 export async function extendPosting(id: number): Promise<PostingRow | null> {
   return withSchema(async (pool) => {
     const result = await pool.query<PostingRow>(
-      `UPDATE postings SET expires_at = now() + INTERVAL '15 days', renewed_at = now(), updated_at = now()
+      `UPDATE postings SET expires_at = now() + INTERVAL '14 days', renewed_at = now(), updated_at = now()
        WHERE id = $1 AND status = 'active' RETURNING *`,
       [id]
     );
