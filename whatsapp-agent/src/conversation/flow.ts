@@ -3298,26 +3298,37 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     return handleIncomingMessageInner(phone, text, contact, imageUrl);
   }
 
-  // Live-reported bug: a natural-language restatement of the SAME watch already on an open
-  // draft's CONFIRM step ("I want to sell 126710BLRO with papers $12,500", echoing the exact
-  // reference the draft is already waiting to confirm) got misread as a conflicting NEW request,
-  // forcing the seller through an unwanted "replace or add another?" detour -- worse, a
-  // non-text reply to THAT prompt (e.g. an unrelated photo, which carries no "replace"/"add"
-  // text) then re-armed the very same prompt, and the photo itself was silently discarded. Fi
-  // already knows how to apply a restatement like this AS A CORRECTION at the confirm step (see
-  // applyScopedSellAnswer's/applyScopedBuyAnswer's own `p.step === "confirm"` branch, which
-  // already handles "change my price to X" the same way) -- it only needs to actually reach that
-  // handler instead of being intercepted here first. Only the confirm step, and only the SAME
-  // reference: a fresh request for a genuinely different watch must still trigger the prompt.
-  const sameReferenceAsSellDraft =
-    state.pendingSellIntake?.step === "confirm" && referencesMatch(extractReference(text) ?? "", state.pendingSellIntake.reference ?? "");
-  const sameReferenceAsBuyDraft =
-    state.pendingBuyIntake?.step === "confirm" && referencesMatch(extractReference(text) ?? "", state.pendingBuyIntake.reference ?? "");
+  // Live-reported bug: a natural-language restatement of the SAME item an open draft's own
+  // question just asked about ("I want to sell my Daytona" -> "Sell 116500ln black dial 35k",
+  // exactly the brand/reference/dial/price Fi's "tell me a bit more" question asked for) got
+  // misread as a conflicting NEW request whenever it happened to start with a sell/buy lead-in
+  // word, forcing an unwanted "replace or add another?" detour before the seller ever reached
+  // the photo question -- this used to only be special-cased at the draft's CONFIRM step (see
+  // the original, narrower version of this comment), leaving every earlier step, including the
+  // very first follow-up right after the initial "tell me more" question, exposed to it.
+  //
+  // A restatement is only safe to treat as a continuation in two cases: the draft has no
+  // reference locked in yet at all (the common case right after the very first question -- there
+  // is nothing yet to conflict with), or the draft has already reached CONFIRM and the new
+  // message names that SAME reference (the original, narrower fix this replaces). A draft that
+  // already has a reference but is stuck somewhere EARLIER than confirm (e.g. abandoned at the
+  // photo step) still treats a fresh, self-contained restatement as a real new request needing
+  // the explicit replace/add prompt -- unlike the no-reference-yet case, there's a real prior
+  // answer here that a silent merge could clobber. A fresh request of the OTHER action (e.g. a
+  // buy request while only a sell draft is open) is never treated as a continuation of it.
+  const textReference = extractReference(text);
+  const fitsAsContinuation = (draft: { step: string; reference?: string | null } | undefined): boolean => {
+    if (!draft) return false;
+    if (!draft.reference) return true;
+    return draft.step === "confirm" && Boolean(textReference) && referencesMatch(textReference!, draft.reference);
+  };
+  const sellContinuation = isFreshSellRequest(text) && fitsAsContinuation(state.pendingSellIntake);
+  const buyContinuation = isFreshBuyRequest(text) && fitsAsContinuation(state.pendingBuyIntake);
   if (
     (state.pendingSellIntake || state.pendingBuyIntake) &&
     (isFreshSellRequest(text) || isFreshBuyRequest(text)) &&
-    !sameReferenceAsSellDraft &&
-    !sameReferenceAsBuyDraft
+    !sellContinuation &&
+    !buyContinuation
   ) {
     state.pendingReplacementRequest = text;
     messages.push("You already have an incomplete request. Should I replace it or add another?");

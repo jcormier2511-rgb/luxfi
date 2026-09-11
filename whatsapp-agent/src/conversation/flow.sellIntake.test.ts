@@ -238,6 +238,48 @@ test('required regression: a fresh request for a genuinely DIFFERENT watch at th
   assert.match(result.messages.join("\n"), /already have an incomplete request/i, "a genuinely different watch must still trigger the replace/add prompt");
 });
 
+test('required regression: a natural follow-up answering "tell me a bit more" is merged into the SAME open draft, not misread as a conflicting new request -- the actual live-reported case: "I want to sell my Daytona" -> "Sell 116500ln black dial 35k" never reached the photo question at all', async () => {
+  const phone = "19992220009"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests();
+  await handleIncomingMessage(phone, "hi");
+  const opened = await handleIncomingMessage(phone, "I want to sell my Daytona");
+  assert.match(opened.messages.join("\n"), /tell me a bit more/i, "precondition: the draft opens with no reference known yet");
+  assert.equal(opened.state.pendingSellIntake?.reference, null, "precondition: nothing has been stated yet for the reference to conflict against");
+
+  const result = await handleIncomingMessage(phone, "Sell 116500ln black dial 35k");
+  const text = result.messages.join("\n");
+  assert.doesNotMatch(text, /already have an incomplete request/i, "a follow-up answering the draft's own question must never be read as a competing new request");
+  assert.equal(result.state.pendingSellIntake?.reference, "116500LN", "the restated reference must be applied to the SAME draft");
+  assert.equal(result.state.pendingSellIntake?.dialColor, "black");
+  assert.equal(result.state.pendingSellIntake?.price, 35000);
+  assert.ok(result.state.pendingSellIntake, "the draft must still be open, not discarded/replaced");
+
+  const afterLocation = await handleIncomingMessage(phone, "USA");
+  assert.equal(afterLocation.state.pendingSellIntake?.step, "photo", "the draft must actually reach the photo question, the exact step the live report said it never got to");
+});
+
+test('required regression: a draft already stuck with a reference from an EARLIER step (not confirm) still treats a fresh, self-contained restatement of the SAME reference as a real new request', async () => {
+  // Distinguishes the fix above (no reference locked in yet -- always a continuation) from a
+  // draft that already answered its reference question and is simply stuck somewhere before
+  // confirm (e.g. abandoned at the photo step) -- that case keeps the original, more cautious
+  // behavior, unchanged (see the "abandoned draft stuck at the photo step" test above, which
+  // this mirrors but confirms explicitly stays a NEW/conflicting request even when the SAME
+  // reference is restated, not just a different one).
+  const phone = "19992220010"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests();
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "I want to sell a Rolex 116500");
+  await handleIncomingMessage(phone, "39000");
+  await handleIncomingMessage(phone, "pre-owned");
+  const afterLocation = await handleIncomingMessage(phone, "Miami");
+  assert.equal(afterLocation.state.pendingSellIntake?.step, "photo", "precondition: stuck at the photo step, with a reference already locked in");
+
+  const result = await handleIncomingMessage(phone, "I want to sell a rolex 116500 black dial or 38000 preowned");
+  assert.match(
+    result.messages.join("\n"),
+    /already have an incomplete request/i,
+    "a draft stuck before confirm, with its own reference already set, must still trigger the prompt even when the SAME reference is restated"
+  );
+});
+
 test("required: seller details are collected, summarized, and only saved after confirmation", async (t) => {
   const phone = "19992220003"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests(); mockSends(t);
   await handleIncomingMessage(phone, "hi");
