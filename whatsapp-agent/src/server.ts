@@ -261,7 +261,7 @@ export async function tryHandleV4Extend(phone: string, text: string): Promise<st
 
   const extended = await extendPosting(postingId);
   if (!extended) return `That listing is no longer active, so it can't be extended.`;
-  return `Renewed — active for 15 more days.`;
+  return `Renewed — active for 2 more weeks.`;
 }
 
 /**

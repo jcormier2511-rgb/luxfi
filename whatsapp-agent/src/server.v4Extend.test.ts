@@ -22,7 +22,7 @@ after(async () => {
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
 
-test("extend <id> explicitly renews the posting for 15 days for its own owner", async () => {
+test("extend <id> explicitly renews the posting for 2 weeks (14 days) for its own owner", async () => {
   await db._resetDbForTests();
   const posting = await store.ingestChatPosting({
     platform: "whatsapp",
@@ -37,7 +37,7 @@ test("extend <id> explicitly renews the posting for 15 days for its own owner", 
   assert.match(reply!, /Renewed/i);
 
   const after = await store.getPosting(posting.posting!.id);
-  assert.ok(Math.abs(new Date(after!.expires_at).getTime() - renewedAt - 15 * 86400_000) < 5_000);
+  assert.ok(Math.abs(new Date(after!.expires_at).getTime() - renewedAt - 14 * 86400_000) < 5_000);
 });
 
 test("extend <id> is refused (falls through as null) for a posting that isn't the requester's own", async () => {

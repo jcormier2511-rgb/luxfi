@@ -113,12 +113,13 @@ test("extending a posting past a sent reminder makes it eligible for a fresh rem
 
   // Successful extension (the working "extend" action the spec asks to prove). Compare against
   // the CURRENT expires_at (post-setExpiresInDays), not the posting's original creation-time
-  // value. Renewal starts a fresh 15-day window from the explicit action.
+  // value. Renewal starts a fresh 2-week (14-day) window from the explicit action -- a shorter,
+  // deliberately distinct number from the original 15-day listing lifetime.
   const renewedAt = Date.now();
   const extended = await extendPosting(posting.posting!.id);
   assert.ok(extended, "extendPosting must succeed on an active posting");
   const afterMs = new Date(extended!.expires_at).getTime();
-  assert.ok(Math.abs(afterMs - renewedAt - 15 * 86400_000) < 5_000, "extension should renew for exactly 15 days");
+  assert.ok(Math.abs(afterMs - renewedAt - 14 * 86400_000) < 5_000, "extension should renew for exactly 2 weeks (14 days)");
 
   // Right after extending, the posting is far from expiring again — no reminder yet.
   const afterExtend = await sendExpirationReminders();
