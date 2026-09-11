@@ -30,6 +30,23 @@ test("pause/resume/remove never treats a listing reference as a brand name", asy
   assert.deepEqual(await listCoverage(identity), [], "no phantom coverage rows were created for these");
 });
 
+/**
+ * Live-reported: "pause my morning updates for a day" (conversation/flow.ts's own
+ * pauseMorningBriefing command, also checked BEFORE flow.ts ever runs) was swallowed here too --
+ * replied "Paused my morning updates for a day WTB coverage." instead of actually pausing the
+ * morning briefing, since no real watch brand is ever phrased "(morning) updates"/"briefing(s)".
+ */
+test("pause/resume never treats a morning-updates/briefing phrase as a brand name", async () => {
+  await db._resetDbForTests();
+  const identity = "telegram:5559990003";
+
+  for (const text of ["pause my morning updates for a day", "pause updates for a week", "pause updates", "resume updates", "pause my briefing"]) {
+    assert.equal(await handleCoverageCommand(identity, text), null, `"${text}" must be left for flow.ts's own pause-updates command`);
+  }
+
+  assert.deepEqual(await listCoverage(identity), [], "no phantom coverage rows were created for these");
+});
+
 test("a real brand-name pause/resume/remove still works", async () => {
   await db._resetDbForTests();
   const identity = "telegram:5559990002";

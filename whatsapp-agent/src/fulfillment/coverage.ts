@@ -28,7 +28,14 @@ export async function handleCoverageCommand(identity:string,text:string):Promise
   // change for a "brand" like "listing 1" or "#1 and 2" that never actually matched any alert.
   // A target that's a listing reference (digits, "#", or the word "listing") is never a brand
   // name, so it's left for flow.ts to handle instead.
-  if((m=/^(pause|resume|remove)\s+(.+?)(?:\s+(?:coverage|alerts?))?$/i.exec(t))&&!/^#?\d|^listings?\b/i.test(m[2].trim())){await setCoverageStatus(identity,m[2],m[1].toLowerCase()==='pause'?'paused':m[1].toLowerCase()==='remove'?'removed':'active');return `${m[1][0].toUpperCase()+m[1].slice(1).toLowerCase()}d ${clean(m[2])} WTB coverage.`;}
+  //
+  // Live-reported: "pause my morning updates for a day" (flow.ts's own pauseMorningBriefing
+  // command, also checked BEFORE that handler ever ran) was swallowed the same way -- captured
+  // whole as the "brand", replying "Paused my morning updates for a day WTB coverage." instead
+  // of actually pausing the morning briefing. No real watch brand is ever phrased "(morning)
+  // updates"/"briefing(s)", so this is excluded here too, same pattern as the listing-reference
+  // exclusion just above.
+  if((m=/^(pause|resume|remove)\s+(.+?)(?:\s+(?:coverage|alerts?))?$/i.exec(t))&&!/^#?\d|^listings?\b/i.test(m[2].trim())&&!/^(?:my\s+)?(?:morning\s+)?(?:updates?|briefings?)\b/i.test(m[2].trim())){await setCoverageStatus(identity,m[2],m[1].toLowerCase()==='pause'?'paused':m[1].toLowerCase()==='remove'?'removed':'active');return `${m[1][0].toUpperCase()+m[1].slice(1).toLowerCase()}d ${clean(m[2])} WTB coverage.`;}
   if(/^stop\s+.+\s+alerts?$/i.test(t)){const brand=t.replace(/^stop\s+/i,'').replace(/\s+alerts?$/i,'');await setCoverageStatus(identity,brand,'removed');return `Stopped ${brand} WTB alerts.`;}
   if(/^pause all wtb alerts$/i.test(t)){await setAllAlerts(identity,true);return 'All WTB alerts paused.';}
   if(/^resume all wtb alerts$/i.test(t)){await setAllAlerts(identity,false);return 'All WTB alerts resumed.';}
