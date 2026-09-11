@@ -562,3 +562,15 @@ export function normalizeText(text: string): NormalizedFields {
     currency: money?.currency ?? "USD",
   };
 }
+
+// Shared between conversation/flow.ts (extraction) and matching/engine.ts (scoring) so both
+// agree on what counts as a dial nickname. Per the user's own framing: "the panda or Wimbledon,
+// that is like a ref number" — a nickname names one specific, unambiguous dial/bezel pattern
+// (unlike a generic color word, which needs a "dial"/"color" anchor to disambiguate) and, once
+// stated, should narrow a search the same way a reference number does rather than only ever
+// nudging a ranking score.
+export const DIAL_NICKNAMES = "reverse\\s+panda|panda|wimbledon|pepsi|batman|smurf|hulk|sprite|root\\s*beer|snowflake|tropical";
+
+export function isDialNickname(value: string): boolean {
+  return new RegExp(`^(?:${DIAL_NICKNAMES})$`, "i").test(value.trim());
+}

@@ -157,6 +157,44 @@ test('required regression: "under $20000" is never treated as a requested refere
   assert.equal(matches.length, 1, "20000 must be recognized as a price, not force an exact-reference-only search");
 });
 
+test('required regression: a stated dial NICKNAME ("Panda") excludes a same-brand listing whose dial does not carry it — the user\'s own framing: "that is like a ref number"', async () => {
+  await _resetDbForTests();
+  await upsertListings(
+    [
+      row("panda", { brand: "Rolex", description: "Rolex Daytona panda dial" }),
+      row("wimbledon", { brand: "Rolex", description: "Rolex Datejust Wimbledon dial" }),
+    ],
+    new Date().toISOString()
+  );
+
+  const matches = await findMatches({ action: "buy", query: "Rolex" }, 5, { dialColor: "panda" });
+  assert.equal(matches.length, 1, "brand-only overlap must not surface the Wimbledon listing for a stated Panda request");
+  assert.equal(matches[0].id, "panda");
+});
+
+test('required regression: a stated dial NICKNAME with no matching candidate returns empty, never the unfiltered pool "so there\'s something to show"', async () => {
+  await _resetDbForTests();
+  await upsertListings([row("wimbledon", { brand: "Rolex", description: "Rolex Datejust Wimbledon dial" })], new Date().toISOString());
+
+  const matches = await findMatches({ action: "buy", query: "Rolex" }, 5, { dialColor: "panda" });
+  assert.equal(matches.length, 0, "no listing carries the requested nickname — must not fall back to the broader pool");
+});
+
+test("a generic dial color (not a nickname) still only nudges sort order, never hard-excludes", async () => {
+  await _resetDbForTests();
+  await upsertListings(
+    [
+      row("black", { brand: "Rolex", description: "Rolex Submariner black dial" }),
+      row("blue", { brand: "Rolex", description: "Rolex Submariner blue dial" }),
+    ],
+    new Date().toISOString()
+  );
+
+  const matches = await findMatches({ action: "buy", query: "Rolex" }, 5, { dialColor: "black" });
+  assert.equal(matches.length, 2, "a generic color preference is a ranking nudge, not a hard filter");
+  assert.equal(matches[0].id, "black", "the resolving color still sorts first");
+});
+
 test("required regression: a stated location never excludes a listing outright — it only ranks a resolving match higher (WatchFacts' continent-level data can't support a hard exclusion)", async () => {
   await _resetDbForTests();
   await upsertListings(

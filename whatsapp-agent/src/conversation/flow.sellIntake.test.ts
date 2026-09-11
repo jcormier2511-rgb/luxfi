@@ -143,6 +143,7 @@ test('required regression: everyday grading words ("Good", "Fair", "Excellent", 
   const draft = result.state.pendingSellIntake;
   assert.equal(draft?.condition, "Good", "the stated condition must be used, not silently guessed as pre-owned");
   assert.equal(draft?.location, "USA", "the condition word must not leak into the location value");
+  assert.equal(draft?.dialColor, "panda", "required regression: a bare dial nickname stated as its own comma-separated item (no \"dial\" suffix) must still be captured");
 
   for (const [word, expected] of [
     ["Fair", "Fair"],

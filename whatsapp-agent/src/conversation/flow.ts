@@ -31,7 +31,7 @@ import { detectCurrency, convertMoneyToUsd, CurrencyCode, SUPPORTED_CURRENCIES }
 
 import { extractIntent, isConfidentIntent } from "../ai/intentExtractor";
 import { CURRENCY_CODES } from "../fx/currency";
-import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch, canonicalizeReference, normalizeReference, splitLeadingBrand, INTENT_TOKENS, isOnlyNonModelLanguage, identityForReference, regionsConflict } from "../postings/normalize";
+import { extractReference, containsKnownBrand, normalizePriceShorthand, normalizeText, referencesMatch, canonicalizeReference, normalizeReference, splitLeadingBrand, INTENT_TOKENS, isOnlyNonModelLanguage, identityForReference, regionsConflict, DIAL_NICKNAMES } from "../postings/normalize";
 import { getActiveListings, upsertListings } from "../watchfacts/inventoryDb";
 import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ingest";
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
@@ -1894,7 +1894,7 @@ function extractListingAmount(text: string, reference: string | null, prefer: "m
 // phrases ("very good", "like new") are listed before their shorter substrings ("good", "new") so
 // the fuller phrase is preferred where it appears.
 const CONDITION_WORDS = "pre[- ]?owned|unworn|brand\\s+new|bnib|very\\s+good|like\\s+new|excellent|fair|good|used|new|mint|any\\s+condition";
-const DIAL_COLORS = "black|white|blue|green|silver|champagne|grey|gray|salmon|panda";
+const DIAL_COLORS = "black|white|blue|green|silver|champagne|grey|gray|salmon";
 // Live-reported gap: "black diamond dial" (a standard trade term for a dial with diamond hour
 // markers -- not a color name of its own) sits between the color word and "dial", which none of
 // the DIAL_COLORS matches below used to bridge. "market pulse 126234 black diamond dial" fell
@@ -1909,6 +1909,15 @@ const DIAL_DESCRIPTOR_INFIX = "(?:(?:diamond|roman)\\s+)?";
 // Same live report also typed "diall" (a doubled trailing letter) instead of "dial" -- common
 // enough on a phone keyboard that every dial-phrase match below tolerates it the same way.
 const DIAL_WORD = "dial{1,2}";
+// Real reported bug: "Sell Rolex, Panda, 2023, $20000, USA, Good" never captured "Panda" as the
+// dial at all. Unlike DIAL_COLORS' generic color words (which need "dial"/"color" right after
+// them to safely tell "black dial" from an unrelated use of "black"), a trade nickname like
+// "Panda" or "Wimbledon" names one specific, unambiguous dial/bezel pattern and nothing else --
+// it needs no anchor word, and a dealer states it as its own comma-separated attribute the same
+// way they'd state a reference number. Per the user: "that is like a ref number, so you have to
+// search for those" -- so a stated nickname also has to act like a hard match filter, not just
+// nudge a score (see matching/engine.ts's use of preferences.dialColor). DIAL_NICKNAMES itself
+// lives in postings/normalize.ts, shared with matching/engine.ts so both agree on the list.
 /** Words that can follow a locative preposition without naming a place: "in stock", "in good
  *  condition", "in a black dial", "from 2019". A place is a proper noun or a known region. */
 const NOT_A_PLACE = /^(?:stock|good|great|excellent|mint|new|used|full|box|papers|a|an|the|my|this|that|good|perfect|condition|\d)/i;
@@ -1955,6 +1964,7 @@ function extractLocation(text: string, consumed: { model?: string; brand?: strin
     .replace(/\b[\d][\d,.]*\s*k\b/gi, " ")
     .replace(/\b(?:USD|CAD|HKD|EUR|GBP|AED|SGD|AUD|JPY|CNY|RMB|CHF)\b/gi, " ")
     .replace(new RegExp(`\\b(?:${CONDITION_WORDS})\\b`, "gi"), " ")
+    .replace(new RegExp(`\\b(?:${DIAL_NICKNAMES})\\b`, "gi"), " ")
     .replace(new RegExp(`\\b(?:${DIAL_COLORS}|either|any)\\s*${DIAL_DESCRIPTOR_INFIX}(?:${DIAL_WORD}s?|colou?rs?)?\\b`, "gi"), " ")
     .replace(/\b(?:full\s+set|box(?:\s+and\s+|\s*&\s*|\/)?papers?|papers)\b/gi, " ")
     .replace(/\b(?:19|20)\d{2}\b/g, " ");
@@ -1973,6 +1983,10 @@ function extractLocation(text: string, consumed: { model?: string; brand?: strin
  * clause. A colour that is FOLLOWED by another word is left alone — "Black Bay" is a model.
  */
 function extractDial(text: string, reference: string | null): string | undefined {
+  // Nicknames are checked first and matched anywhere in the text, with no "dial"/"color" anchor
+  // required -- they're unambiguous on their own, unlike the generic colors below.
+  const nickname = text.match(new RegExp(`\\b(${DIAL_NICKNAMES})\\b`, "i"))?.[1];
+  if (nickname) return nickname.toLowerCase().replace(/\s+/g, " ");
   const bare = text.match(new RegExp(`^\\s*(${DIAL_COLORS}|either|any)\\s*${DIAL_DESCRIPTOR_INFIX}(?:${DIAL_WORD}|color)?\\s*$`, "i"))?.[1];
   if (bare) return bare.toLowerCase();
   const explicit = text.match(new RegExp(`\\b(${DIAL_COLORS}|either|any)\\s*${DIAL_DESCRIPTOR_INFIX}(?:${DIAL_WORD}|colou?r)\\b`, "i"))?.[1];
@@ -2031,6 +2045,9 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
     .replace(new RegExp(`\\b(?:${DIAL_COLORS}|either|any)\\s*${DIAL_DESCRIPTOR_INFIX}(?:${DIAL_WORD}s?|colou?rs?)\\b`, "gi"), " ")
     // A bare colour that ENDS the clause is the dial, not part of the model ("116500LN black").
     .replace(new RegExp(`\\s+(?:${DIAL_COLORS})\\s*$`, "i"), " ")
+    // A stated dial nickname ("Panda", "Wimbledon") is the dial, not the model -- same rule as
+    // the colors above, but matched anywhere since a nickname needs no "dial"/"color" anchor.
+    .replace(new RegExp(`\\b(?:${DIAL_NICKNAMES})\\b`, "gi"), " ")
     .replace(/\bonly\b/gi, "")
     // Same budget markers extractListingAmount understands — "around $25k" must not leave
     // "around" behind as the model any more than "under 25k" leaves "under". Replaced with a

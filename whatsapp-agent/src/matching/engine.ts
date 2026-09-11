@@ -1,6 +1,6 @@
 import { findCandidateListings, getActiveListings } from "../watchfacts/inventoryDb";
 import { InventoryListing, ItemRequest, SearchPreferences } from "../types";
-import { normalizeReference, extractReference, referencesMatch, hasMultipleDistinctPrices } from "../postings/normalize";
+import { normalizeReference, extractReference, referencesMatch, hasMultipleDistinctPrices, isDialNickname } from "../postings/normalize";
 import { config, isAiMatchingEnabledForPhone } from "../config";
 import { interpretQuery } from "../ai/queryInterpreter";
 import { rerankCandidates } from "../ai/rerank";
@@ -202,6 +202,23 @@ function locationPreferenceMatches(listing: InventoryListing, preferences?: Sear
   return locationsMatch(preferences.location, listing.location);
 }
 
+/**
+ * A stated dial NICKNAME ("Panda", "Wimbledon") is treated like a reference number, not a
+ * freeform preference — per the user: "that is like a ref number, so you have to search for
+ * those." Unlike a generic dial color (which only ever nudges sort order below), a nickname
+ * names one specific, unambiguous dial/bezel pattern; a candidate whose own text doesn't mention
+ * it is excluded outright, the same way an out-of-budget listing is. Returns undefined when no
+ * nickname was stated, so callers can skip the filter entirely (a generic color like "black"
+ * still only ever soft-scores, via softPreferenceScore below).
+ */
+function statedDialNickname(preferences?: SearchPreferences): string | undefined {
+  return preferences?.dialColor && isDialNickname(preferences.dialColor) ? preferences.dialColor.toLowerCase() : undefined;
+}
+
+function matchesDialNickname(listing: InventoryListing, nickname: string): boolean {
+  return `${listing.description} ${listing.item}`.toLowerCase().includes(nickname);
+}
+
 /** Dial/condition/location are all freeform-ish and only ever nudge sort order — see
  *  locationPreferenceMatches above for why location stopped hard-excluding. */
 function softPreferenceScore(listing: InventoryListing, preferences?: SearchPreferences): number {
@@ -219,10 +236,12 @@ function softPreferenceScore(listing: InventoryListing, preferences?: SearchPref
  * a seller's request ("sell") matches against WTB (want to buy) listings.
  * `preferences` (price/location/dial/condition, collected once per contact) applies price as a
  * MANDATORY pre-filter, before any ranking — a listing outside the stated budget is excluded
- * outright, never shown anyway just to have something to display. Location/dial/condition all
- * only nudge sort order instead of hard-excluding (see locationPreferenceMatches/
- * softPreferenceScore) — location because WatchFacts' continent-level granularity makes a city
- * vs. region "mismatch" meaningless, dial/condition because they're free text.
+ * outright, never shown anyway just to have something to display. A stated dial NICKNAME
+ * ("Panda", "Wimbledon") is mandatory too — see statedDialNickname/matchesDialNickname below.
+ * Location/condition/a generic dial color all only nudge sort order instead of hard-excluding
+ * (see locationPreferenceMatches/softPreferenceScore) — location because WatchFacts'
+ * continent-level granularity makes a city vs. region "mismatch" meaningless, condition/color
+ * because they're free text and a nickname isn't stated every time.
  *
  * When the query names a specific reference number, that's a hard filter: only listings whose
  * own `ref` normalizes to an exact match are ever returned — never falling back to keyword
@@ -271,8 +290,16 @@ export async function findMatches(request: ItemRequest, limit: number, preferenc
   const tokens = tokenize(request.query);
   // Same mandatory price pre-filter as the reference branch above — a hard budget is never
   // relaxed just because nothing else in the broader pool happens to fit it. Location is NOT
-  // filtered here — see locationPreferenceMatches above.
-  const pool = candidates.filter((l) => inPriceRange(l, preferences, priceMap));
+  // filtered here — see locationPreferenceMatches above. A stated dial NICKNAME ("Panda",
+  // "Wimbledon") is filtered here too, just like price — see statedDialNickname above. This is
+  // what stops a brand-only match (e.g. an unrelated Wimbledon Datejust) from ever reaching a
+  // buyer who explicitly asked for a Panda dial — the "show something anyway" fallback below
+  // only ever widens WITHIN this already-narrowed pool, it never reintroduces a listing that
+  // doesn't carry the requested nickname.
+  const nickname = statedDialNickname(preferences);
+  const pool = candidates
+    .filter((l) => inPriceRange(l, preferences, priceMap))
+    .filter((l) => !nickname || matchesDialNickname(l, nickname));
 
   const ranked = pool
     .map((listing) => ({
