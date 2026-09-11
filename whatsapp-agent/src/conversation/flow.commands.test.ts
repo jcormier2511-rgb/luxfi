@@ -94,6 +94,36 @@ test('required regression: a Telegram deep-link payload ("/start join", from t.m
   assert.match(withDifferentPayload.messages[0], /personal luxury concierge/i, "any deep-link payload must work, not only the one payload in use today");
 });
 
+test('required: "start" (the website\'s "Message Fi" button, which now sends plain "start" instead of a full sentence) still asks for a name when the visitor\'s WhatsApp/Telegram profile has none', async () => {
+  const phone = "19991110024";
+  resetState(phone);
+  const result = await handleIncomingMessage(phone, "start");
+  assert.match(result.messages[0], /personal luxury concierge/i, "the intro is still shown first");
+  assert.match(result.messages.join("\n"), /may I have your name/i);
+
+  const named = await handleIncomingMessage(phone, "Alex");
+  assert.match(named.messages.join("\n"), /Nice to meet you, Alex/i);
+});
+
+test('required: "start" never asks for a name when the channel already supplied one', async () => {
+  const phone = "19991110025";
+  resetState(phone);
+  const result = await handleIncomingMessage(phone, "start", { phone, name: "Jordan Lee", tier: "A" });
+  assert.match(result.messages[0], /personal luxury concierge/i);
+  assert.doesNotMatch(result.messages.join("\n"), /may I have your name/i);
+});
+
+test('required: "start" never re-asks for a name Fi already collected from a previous exchange', async () => {
+  const phone = "19991110026";
+  resetState(phone);
+  await handleIncomingMessage(phone, "hi"); // organic first contact -- asks for a name
+  await handleIncomingMessage(phone, "Alex"); // ...and gets one
+
+  const result = await handleIncomingMessage(phone, "start"); // later, e.g. a website re-click
+  assert.match(result.messages[0], /personal luxury concierge/i);
+  assert.doesNotMatch(result.messages.join("\n"), /may I have your name/i, "Fi already knows this contact's name");
+});
+
 test('required regression: "restart"/"starting" never trigger the onboarding intro just because they open with the letters "start"', async () => {
   const phone = "19991110022";
   resetState(phone);

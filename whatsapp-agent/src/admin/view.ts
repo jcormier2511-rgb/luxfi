@@ -299,6 +299,20 @@ export function renderManagementPage(kind:"users"|"groups"|"administrators"|"cov
 export function renderPushGroupsPage(): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — Push Groups</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>Push Groups</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><script>${NAV_ACTIVE_SCRIPT}</script><main>
 
+<section class="card" id="limits-card">
+  <h2>Listing limits</h2>
+  <p class="muted">Site-wide caps applied to every listing. "Max push groups" is the ceiling on how many of the enabled push groups below actually get a confirmed listing (highest-priority groups first) — raising it to 6 with 6 groups enabled pushes to all of them; leaving it lower still only reaches the top few by priority even with more groups enabled.</p>
+  <div class="toolbar">
+    <div class="field"><label for="lim-matches">Max matches per listing</label><input id="lim-matches" type="number" min="0"></div>
+    <div class="field"><label for="lim-matches-paying">Max matches per listing (paying)</label><input id="lim-matches-paying" type="number" min="0"></div>
+    <div class="field"><label for="lim-push-groups">Max push groups per listing</label><input id="lim-push-groups" type="number" min="0"></div>
+  </div>
+  <div class="toolbar">
+    <button onclick="limSave()">Save limits</button>
+  </div>
+  <pre id="lim-error" class="error"></pre>
+</section>
+
 <section class="card" id="pg-form-card">
   <h2 id="pg-form-title">Add push group</h2>
   <p class="muted">Groups Fi actively posts a confirmed FS/WTB listing into (with the photo, when the listing has one) — separate from Monitoring Groups, which only listen. The chat ID is platform-specific: a WhatsApp group's digits, or a Telegram group/supergroup's numeric chat id (negative, e.g. -1001234567890).</p>
@@ -358,6 +372,34 @@ export function renderPushGroupsPage(): string {
     table.querySelector('tbody').innerHTML=rows.map(r=>'<tr>'+cols.slice(0,-1).map(k=>'<td>'+esc(r[k])+'</td>').join('')+'<td><button class="btn-outline" onclick="pgEdit('+JSON.stringify(r.group_id)+')">Edit</button> <button class="btn-danger btn-outline" onclick="pgDelete('+JSON.stringify(r.group_id)+')">Delete</button></td></tr>').join('');
   }
   load().catch(e=>document.querySelector('#pg-empty').textContent=e.message);
+  async function loadLimits(){
+    await ensureCsrf();
+    const res=await fetch('/admin/api/listing-settings');
+    if(res.status===403){location.href='/admin';return}
+    const {limits}=await res.json();
+    document.querySelector('#lim-matches').value=limits.maxMatchesPerListing;
+    document.querySelector('#lim-matches-paying').value=limits.maxMatchesPerListingPaying;
+    document.querySelector('#lim-push-groups').value=limits.maxPushGroupsPerListing;
+  }
+  loadLimits().catch(e=>document.querySelector('#lim-error').textContent=e.message);
+  async function limSave(){
+    document.querySelector('#lim-error').textContent='';
+    const body={
+      maxMatchesPerListing:Number(document.querySelector('#lim-matches').value),
+      maxMatchesPerListingPaying:Number(document.querySelector('#lim-matches-paying').value),
+      maxPushGroupsPerListing:Number(document.querySelector('#lim-push-groups').value),
+    };
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/listing-settings/limits',{method:'PUT',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify(body)});
+      if(res.status===403){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#lim-error').textContent=data.error||'Save failed';return}
+      document.querySelector('#lim-matches').value=data.maxMatchesPerListing;
+      document.querySelector('#lim-matches-paying').value=data.maxMatchesPerListingPaying;
+      document.querySelector('#lim-push-groups').value=data.maxPushGroupsPerListing;
+    }catch(e){document.querySelector('#lim-error').textContent=e.message}
+  }
   document.getElementById('pg-csv-upload').addEventListener('click',async function(){
     var input=document.getElementById('pg-csv-file');
     var result=document.getElementById('pg-csv-result');

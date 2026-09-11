@@ -380,3 +380,53 @@ test("a single amount is unaffected by range handling", async () => {
   await handleIncomingMessage(phone, "WTB Rolex 116500LN, max $35,000");
   assert.equal(getState(phone).pendingBuyIntake?.budget, 35000);
 });
+
+/**
+ * Real reported bug: Fi's own capabilities menu ("1. Find a buyer / 2. Find a seller") invites a
+ * reply of exactly that literal text -- but a bare "find a buyer"/"find a seller" (nothing else)
+ * used to fall through to the generic "I'm not sure I understood that", reading as Fi not
+ * understanding the very option it had just offered. Now starts the matching intake and asks for
+ * the item instead of a dead end -- "find a buyer" means they have something to SELL; "find a
+ * seller" means they want to BUY.
+ */
+test('required regression: a bare "find a buyer" (Fi\'s own menu option 1, replied literally) starts a SELL intake and asks for the item, instead of the confused generic fallback', async () => {
+  const phone = freshPhone();
+  await handleIncomingMessage(phone, "hi"); // move past first-contact onboarding first
+  const result = await handleIncomingMessage(phone, "find a buyer");
+  assert.ok(getState(phone).pendingSellIntake, "a sell draft must now be open");
+  assert.doesNotMatch(result.messages.join("\n"), /not sure I understood/i);
+  assert.match(result.messages.join("\n"), /what you're selling/i);
+});
+
+test('required regression: a bare "find a seller" (Fi\'s own menu option 2) starts a BUY intake and asks for the item', async () => {
+  const phone = freshPhone();
+  await handleIncomingMessage(phone, "hi");
+  const result = await handleIncomingMessage(phone, "find a seller");
+  assert.ok(getState(phone).pendingBuyIntake, "a buy draft must now be open");
+  assert.doesNotMatch(result.messages.join("\n"), /not sure I understood/i);
+  assert.match(result.messages.join("\n"), /what would you like to buy/i);
+});
+
+test('required regression: "find buyers"/"find me a seller" variants (and trailing punctuation) are recognized the same bare way', async () => {
+  for (const [text, expectField] of [
+    ["find buyers", "pendingSellIntake"],
+    ["find me a buyer", "pendingSellIntake"],
+    ["find a buyer?", "pendingSellIntake"],
+    ["find sellers", "pendingBuyIntake"],
+    ["find me a seller", "pendingBuyIntake"],
+  ] as const) {
+    const phone = freshPhone();
+    await handleIncomingMessage(phone, "hi");
+    await handleIncomingMessage(phone, text);
+    assert.ok((getState(phone) as any)[expectField], `"${text}" must open ${expectField}`);
+  }
+});
+
+test('a "find a buyer"/"find a seller" WITH an actual item attached still resolves as a normal request, unaffected by the bare-phrase special case', async () => {
+  const phone = freshPhone();
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "find a buyer for my patek 5711");
+  const sell = getState(phone).pendingSellIntake;
+  assert.ok(sell);
+  assert.match(sell!.description, /patek/i);
+});

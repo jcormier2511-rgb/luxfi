@@ -61,6 +61,16 @@ function isOptOut(text: string): boolean {
 const BUY_KEYWORDS = /\b(buy|buying|wtb|looking for|want|need|iso|find me|in search of|find\s+(?:a\s+|me\s+)?sellers?)\b/i;
 const SELL_KEYWORDS = /\b(sell|selling|fs|for sale|i have|wts|find\s+(?:a\s+|me\s+)?buyers?)\b/i;
 
+// Real reported bug: Fi's own capabilities menu ("1. Find a buyer / 2. Find a seller") invites a
+// reply of exactly that literal text, but LEADING_PHRASES below strips "find a buyer"/"find a
+// seller" as a lead-in phrase expecting an item to follow it -- a BARE reply naming only the role,
+// with nothing left after stripping, correctly fails classify()'s "no product named" check and
+// fell through to the generic "I'm not sure I understood that", reading as Fi not understanding
+// the very option it had just offered. Matched and handled separately, before classify() ever
+// runs on it: "find a buyer" means the person HAS something to sell (direction: sell); "find a
+// seller" means they want to BUY (direction: buy) -- see the parsed.length===0 handling below.
+const BARE_FIND_BUYER_OR_SELLER = /^find\s+(?:a\s+|me\s+)?(buyers?|sellers?)\s*[?.!]*$/i;
+
 // Live-reported-adjacent gap (found while auditing natural phrasings of the same "find a buyer"/
 // "find a seller" report): a message asking whether a seller/listing EXISTS reads as a BUY
 // request even though it contains SELL-sounding words -- "anyone selling a Daytona" and "who has
@@ -2723,8 +2733,19 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     state.pendingSellIntake = undefined;
     state.pendingBuyIntake = undefined;
     state.pendingReplacementRequest = undefined;
+    const startMessages = [config.fiFlow.introMessage];
+    // Same name-collection gap this closes for an organic first contact (state.stage === "new"
+    // below) -- a website "Message Fi" click sends this exact "start" command, so without this
+    // it would skip straight past asking for a name whenever the visitor's WhatsApp/Telegram
+    // profile has none set. Never re-asks someone whose name Fi already has, whether from the
+    // channel itself or a previous pendingNameRequest reply -- "start" is a repeatable reset,
+    // not just a one-time greeting.
+    if (!contact?.name?.trim() && !state.providedName?.trim()) {
+      startMessages.push("By the way, may I have your name?");
+      state.pendingNameRequest = true;
+    }
     saveState(state);
-    return { state, messages: [config.fiFlow.introMessage] };
+    return { state, messages: startMessages };
   }
 
   if (isOptOut(text)) {
@@ -2774,6 +2795,14 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
       const session = await createCheckoutSession(state.phone, requestedPlan);
       const planDef = MEMBERSHIP_PLANS[requestedPlan];
       state.hired = true;
+      // Real reported bug: a stray content-less companion webhook (see server.ts's
+      // isSuspectedPhantomCompanion -- still not fully root-caused, only partially caught) slipping
+      // through right after this reply fell all the way through to the generic "I'm not sure I
+      // understood that" fallback, reading as Fi being confused about the payment link it had just
+      // sent rather than an unrelated blip. Same justCompletedTask softening already applied to a
+      // market pulse / confirmed listing / approve-pass decision -- this is a completed, no-reply-
+      // expected action too.
+      state.lastReplyWasTaskCompletion = true;
       saveState(state);
       return {
         state,
@@ -2802,6 +2831,7 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     // an admin to review; only POST /admin/entitlement/plan actually assigns a plan in that case.
     await recordBillingRequested(state.phone);
     state.hired = true; // informational only now — reflects "has asked to join", not entitlement
+    state.lastReplyWasTaskCompletion = true; // same reasoning as the live-payment-link branch above
     saveState(state);
     return {
       state,
@@ -3265,6 +3295,16 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   }
 
   if (parsed.length === 0) {
+    const bareRoleMatch = BARE_FIND_BUYER_OR_SELLER.exec(text.trim());
+    if (bareRoleMatch) {
+      // "find a buyer" -> they have something to sell and want Fi to find them a buyer for it.
+      // "find a seller" -> the reverse: they want to buy, and need Fi to find them a seller.
+      const wantsBuyerFound = /^buyers?$/i.test(bareRoleMatch[1]);
+      if (wantsBuyerFound) await startSellIntake(state, { action: "sell", query: "" }, messages, "");
+      else await startBuyIntake(state, { action: "buy", query: "" }, messages, "");
+      saveState(state);
+      return { state, messages };
+    }
     if (decision) {
       messages.push("I don't have any open matches to decide on right now — search for an item first.");
     } else {

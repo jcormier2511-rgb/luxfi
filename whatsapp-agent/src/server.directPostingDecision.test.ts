@@ -21,7 +21,7 @@ const { config } = require("./config") as typeof import("./config");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require("./postings/db") as typeof import("./postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const whapiClient = require("./whapi/client") as typeof import("./whapi/client");
+const whapiClient = require("./channels/greenApi") as typeof import("./channels/greenApi");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const postingsStore = require("./postings/postingsStore") as typeof import("./postings/postingsStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires

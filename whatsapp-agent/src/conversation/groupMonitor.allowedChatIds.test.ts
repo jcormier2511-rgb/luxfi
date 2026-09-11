@@ -19,7 +19,7 @@ const { config, isV4ChatEnabled } = require("../config") as typeof import("../co
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const db = require("../postings/db") as typeof import("../postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const whapiClient = require("../whapi/client") as typeof import("../whapi/client");
+const whapiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleGroupMessage } = require("./groupMonitor") as typeof import("./groupMonitor");
 

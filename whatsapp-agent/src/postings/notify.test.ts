@@ -30,7 +30,7 @@ const matching = require("./matching") as typeof import("./matching");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const notify = require("./notify") as typeof import("./notify");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const whapiClient = require("../whapi/client") as typeof import("../whapi/client");
+const whapiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const telegramClient = require("../channels/telegram") as typeof import("../channels/telegram");
 // eslint-disable-next-line @typescript-eslint/no-var-requires

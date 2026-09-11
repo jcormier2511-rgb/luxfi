@@ -15,7 +15,7 @@ process.env.WEBHOOK_TOKEN = "test";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { config } = require("../config") as typeof import("../config");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const whapiClient = require("../whapi/client") as typeof import("../whapi/client");
+const whapiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleGroupMessage } = require("./groupMonitor") as typeof import("./groupMonitor");
 

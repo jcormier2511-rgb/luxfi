@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { config, isConciergeAdminPhone, isAiMatchingEnabledForPhone } from "./config";
 import { extractIncomingMessages, IncomingWebhook } from "./whapi/client";
+import { extractIncomingMessages as extractGreenApiMessages, GreenApiWebhook } from "./channels/greenApi";
 import { sendText, sendBannerImage, NormalizedIncomingMessage } from "./channels";
 import { platformForIdentity } from "./channels/identity";
 import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
@@ -698,6 +699,22 @@ export function createServer() {
     res.status(200).json({ ok: true });
 
     await handleWebhookPayload(req.body as IncomingWebhook);
+  });
+
+  // Green API webhook receiver — the live WhatsApp provider (channels/greenApi.ts, both 1:1 and
+  // group messages). Configure this SAME URL as the "webhook URL" on every connected Green API
+  // instance, including monitoring-only numbers that have no credentials configured in this app
+  // at all: each instance's own console setting is all that's needed to point it here, and every
+  // instance's messages flow into the same shared pipeline (dedup, V4_ALLOWED_CHAT_IDS, etc.)
+  // regardless of which number actually received them. Token-gated the same way the WHAPI /webhook
+  // route above is (a query-string ?token=, not a signed payload) — Green API supports any plain
+  // webhook URL, with no signature scheme of its own to verify against.
+  app.post("/webhook/greenapi", async (req, res) => {
+    if (!isValidAdminToken(String(req.query.token ?? ""))) {
+      return res.status(401).json({ error: "invalid token" });
+    }
+    res.status(200).json({ ok: true });
+    await processIncomingMessages(extractGreenApiMessages(req.body as GreenApiWebhook));
   });
 
   app.get("/webhook/whatsapp", (req, res) => {

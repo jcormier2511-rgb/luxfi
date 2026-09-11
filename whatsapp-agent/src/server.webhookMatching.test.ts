@@ -16,7 +16,7 @@ process.env.AI_MATCHING_TEST_PHONE = PHONE;
 const inventoryDb = require("./watchfacts/inventoryDb") as typeof import("./watchfacts/inventoryDb");
 const client = require("./ai/client") as typeof import("./ai/client");
 const rerank = require("./ai/rerank") as typeof import("./ai/rerank");
-const whapi = require("./whapi/client") as typeof import("./whapi/client");
+const whapi = require("./channels/greenApi") as typeof import("./channels/greenApi");
 const { handleWebhookPayload } = require("./server") as typeof import("./server");
 
 after(async () => {

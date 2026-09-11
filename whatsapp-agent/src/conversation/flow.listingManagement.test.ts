@@ -665,7 +665,7 @@ test("required regression: index-less location/price/dial edit shortcuts also to
  */
 test("required regression: an edit's own re-match notification never overtakes the 'Updated:' confirmation for that same edit", async (t) => {
   const server = require("../server") as typeof import("../server");
-  const whapi = require("../whapi/client") as typeof import("../whapi/client");
+  const whapi = require("../channels/greenApi") as typeof import("../channels/greenApi");
 
   const sellerPhone = freshPhone().replace(/[^\d]/g, "");
   const buyerPhone = freshPhone().replace(/[^\d]/g, "");

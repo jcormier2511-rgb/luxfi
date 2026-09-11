@@ -26,7 +26,7 @@ const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../wa
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const postingsDb = require("../postings/db") as typeof import("../postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const whapiClient = require("../whapi/client") as typeof import("../whapi/client");
+const whapiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires

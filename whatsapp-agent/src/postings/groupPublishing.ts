@@ -1,4 +1,5 @@
 import { sendText, sendBannerImage } from "../channels";
+import { sendGroupText as greenApiSendGroupText, sendGroupBannerImage as greenApiSendGroupBannerImage } from "../channels/greenApi";
 import { PostingRow, getPrimaryImageUrl } from "./postingsStore";
 import { claimPublication, eligiblePushGroups, finishPublication } from "./listingConfig";
 
@@ -20,8 +21,19 @@ export async function publishConfirmedListing(p:PostingRow):Promise<void>{
     if(!await claimPublication(p.id,group.group_id))continue;
     try{
       const text=formatGroupPosting(p);
-      if(imageUrl && text.length<=MAX_CAPTION_LENGTH) await sendBannerImage(group.group_id,imageUrl,text);
-      else await sendText(group.group_id,text);
+      const useImage = Boolean(imageUrl) && text.length<=MAX_CAPTION_LENGTH;
+      // A WhatsApp GROUP send needs the "@g.us" chatId form Green API's group-specific
+      // sendGroupText/sendGroupBannerImage build (see channels/greenApi.ts) -- channels/index.ts's
+      // generic dispatch always builds the INDIVIDUAL "@c.us" form instead, since every other
+      // caller only ever sends to a real 1:1 contact. A Telegram group keeps going through the
+      // existing channels/index.ts dispatch, unchanged -- Telegram has no such split.
+      if (group.platform === "whatsapp") {
+        if (useImage) await greenApiSendGroupBannerImage(group.group_id, imageUrl!, text);
+        else await greenApiSendGroupText(group.group_id, text);
+      } else {
+        if (useImage) await sendBannerImage(group.group_id, imageUrl!, text);
+        else await sendText(group.group_id, text);
+      }
       await finishPublication(p.id,group.group_id,"posted");
     }catch(e){await finishPublication(p.id,group.group_id,"failed",(e as Error).message);}
   }

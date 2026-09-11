@@ -1,4 +1,4 @@
-import { sendText as whapiSendText, sendBannerImage as whapiSendBannerImage } from "../whapi/client";
+import { sendText as greenApiSendText, sendBannerImage as greenApiSendBannerImage } from "./greenApi";
 import * as telegram from "./telegram";
 import * as sms from "./sms";
 import { platformForIdentity } from "./identity";
@@ -39,7 +39,10 @@ export async function sendText(identity: string, message: string): Promise<void>
     case "sms":
       return sms.sendText(target.identity, target.message);
     default:
-      return whapiSendText(target.identity, target.message);
+      // A bare (unprefixed) identity is always a real 1:1 WhatsApp contact here — a WhatsApp
+      // GROUP send never reaches this function at all; postings/groupPublishing.ts calls Green
+      // API's own sendGroupText/sendGroupBannerImage directly for those instead.
+      return greenApiSendText(target.identity, target.message);
   }
 }
 
@@ -53,6 +56,6 @@ export async function sendBannerImage(identity: string, imageUrl: string, captio
     case "sms":
       return sms.sendBannerImage(target.identity, imageUrl, targetCaption);
     default:
-      return whapiSendBannerImage(target.identity, imageUrl, targetCaption);
+      return greenApiSendBannerImage(target.identity, imageUrl, targetCaption);
   }
 }

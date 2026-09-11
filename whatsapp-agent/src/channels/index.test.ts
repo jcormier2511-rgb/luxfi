@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 process.env.WHAPI_TOKEN = "test-whapi-token";
+process.env.GREEN_API_INSTANCE_ID = "1234567890";
+process.env.GREEN_API_API_TOKEN = "test-green-api-token";
 process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 process.env.TWILIO_ACCOUNT_SID = "AC_test";
 process.env.TWILIO_AUTH_TOKEN = "test-auth-token";
@@ -13,7 +15,11 @@ const channels = require("./index") as typeof import("./index");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { isSuspectedPhantomCompanion, _resetPhantomCompanionForTests } = require("../conversation/stateStore") as typeof import("../conversation/stateStore");
 
-test("sendText routes a plain (unprefixed) identity to Whapi", async (t) => {
+// A plain (unprefixed) identity is always a real 1:1 WhatsApp contact -- routed to Green API
+// (channels/greenApi.ts), the live WhatsApp provider. A WhatsApp GROUP send never goes through
+// this generic identity-based dispatch at all (see postings/groupPublishing.ts, which calls
+// Green API's own group-specific sendGroupText/sendGroupBannerImage directly for that case).
+test("sendText routes a plain (unprefixed) identity to Green API", async (t) => {
   const calls: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: string) => {
     calls.push(url);
@@ -21,7 +27,7 @@ test("sendText routes a plain (unprefixed) identity to Whapi", async (t) => {
   });
   await channels.sendText("15551234567", "hi");
   assert.equal(calls.length, 1);
-  assert.match(calls[0], /gate\.whapi\.cloud/);
+  assert.match(calls[0], /api\.green-api\.com/);
 });
 
 test("sendText routes a telegram: identity to the Telegram Bot API", async (t) => {

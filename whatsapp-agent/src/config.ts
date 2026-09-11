@@ -31,6 +31,21 @@ export const config = {
   // until its own credentials are set — see channels/telegram.ts / channels/sms.ts's "skip the
   // live call, log instead" fallback, same posture as an unset WHAPI_TOKEN.
   channels: {
+    // Green API (green-api.com) — the actual live WhatsApp provider (channels/index.ts's default
+    // dispatch, and postings/groupPublishing.ts's WhatsApp-group branch: unlike the official
+    // Cloud API, Green API CAN post into groups, so one provider covers both 1:1 and group
+    // sends, no split needed). Only ONE number's credentials go here -- the one Fi actually sends
+    // FROM (1:1 replies, and posting into the push-group list, which requires this number to be a
+    // member of each of those groups). One or two additional numbers used purely to widen
+    // monitoring coverage need no credentials here at all: create their own Green API instance,
+    // point ITS webhook at this same deployment's /webhook/greenapi?token=<WEBHOOK_TOKEN>, and
+    // Fi ingests from them automatically through the same shared pipeline every other channel
+    // already uses (dedup, V4_ALLOWED_CHAT_IDS, etc.) — see channels/greenApi.ts.
+    greenApi: {
+      instanceId: process.env.GREEN_API_INSTANCE_ID ?? "",
+      apiToken: process.env.GREEN_API_API_TOKEN ?? "",
+      baseUrl: process.env.GREEN_API_BASE_URL ?? "https://api.green-api.com",
+    },
     telegram: {
       botToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
       // Chosen by whoever registers the webhook (Bot API's setWebhook secret_token param), not

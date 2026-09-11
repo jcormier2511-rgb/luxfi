@@ -16,6 +16,12 @@ const { createDirectPosting, setPostingImages } = require("./postingsStore") as 
 const { publishConfirmedListing } = require("./groupPublishing") as typeof import("./groupPublishing");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const channels = require("../channels") as typeof import("../channels");
+// A WhatsApp group push bypasses channels/index.ts's generic dispatch (which always builds the
+// individual "@c.us" chatId form) and goes straight to Green API's own group-specific
+// sendGroupText/sendGroupBannerImage (see groupPublishing.ts's own comment). Only a Telegram
+// group push still goes through channels/index.ts's generic dispatch.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const greenApiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
 
 beforeEach(async () => {
   await db._resetDbForTests(); // drops listing_push_groups/listing_settings/listing_group_publications too
@@ -33,8 +39,8 @@ after(async () => {
 test("a listing with no photo pushes as plain text", async (t) => {
   await savePushGroup({ group_id: "wa-group-1", group_name: "Miami Dealers", platform: "whatsapp", enabled: true, allow_fs: true, allow_wtb: true, priority: 100 });
   const sent: { identity: string; text?: string; imageUrl?: string; caption?: string }[] = [];
-  t.mock.method(channels, "sendText", async (identity: string, text: string) => { sent.push({ identity, text }); });
-  t.mock.method(channels, "sendBannerImage", async (identity: string, imageUrl: string, caption?: string) => { sent.push({ identity, imageUrl, caption }); });
+  t.mock.method(greenApiClient, "sendGroupText", async (identity: string, text: string) => { sent.push({ identity, text }); });
+  t.mock.method(greenApiClient, "sendGroupBannerImage", async (identity: string, imageUrl: string, caption?: string) => { sent.push({ identity, imageUrl, caption }); });
 
   const posting = await createDirectPosting({ phone: "15550009001", type: "FS", description: "Rolex Daytona 116500LN", brand: "Rolex", reference: "116500LN", price: 28500 });
   await publishConfirmedListing(posting);
@@ -65,8 +71,8 @@ test("a listing WITH a photo pushes via sendBannerImage, using the formatted lis
 test("an oversized caption falls back to plain text even when a photo is present", async (t) => {
   await savePushGroup({ group_id: "wa-group-2", group_name: "Overflow Group", platform: "whatsapp", enabled: true, allow_fs: true, allow_wtb: true, priority: 100 });
   const sent: { identity: string; text?: string; imageUrl?: string }[] = [];
-  t.mock.method(channels, "sendText", async (identity: string, text: string) => { sent.push({ identity, text }); });
-  t.mock.method(channels, "sendBannerImage", async (identity: string, imageUrl: string) => { sent.push({ identity, imageUrl }); });
+  t.mock.method(greenApiClient, "sendGroupText", async (identity: string, text: string) => { sent.push({ identity, text }); });
+  t.mock.method(greenApiClient, "sendGroupBannerImage", async (identity: string, imageUrl: string) => { sent.push({ identity, imageUrl }); });
 
   const posting = await createDirectPosting({ phone: "15550009003", type: "FS", description: "x".repeat(1200), brand: "Rolex", reference: "116500LN", price: 28500, notes: "x".repeat(1200) });
   await setPostingImages(posting.id, ["https://cdn.example/daytona.jpg"]);

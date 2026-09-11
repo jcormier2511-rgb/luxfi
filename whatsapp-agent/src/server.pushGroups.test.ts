@@ -19,7 +19,7 @@ const { createServer } = require("./server") as typeof import("./server");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const postingsDb = require("./postings/db") as typeof import("./postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { getListingLimits } = require("./postings/listingConfig") as typeof import("./postings/listingConfig");
+const { getListingLimits, setListingLimits, DEFAULT_MAX_PUSH_GROUPS_PER_LISTING } = require("./postings/listingConfig") as typeof import("./postings/listingConfig");
 
 const database = new Pool({ connectionString: process.env.DATABASE_URL });
 const app = createServer();
@@ -79,9 +79,50 @@ test("GET /admin/push-groups requires a signed-in session, then renders and link
   assert.equal(res.status, 200);
   const html = await res.text();
   assert.match(html, /Add push group/);
+  assert.match(html, /Listing limits/, "the push-group cap (and the other listing limits) must be editable from this page, not API-only");
 
   const dashboard = await fetch(`${baseUrl}/admin`, { headers: { Cookie: cookieFor(ownerId) } });
   assert.match(await dashboard.text(), /href="\/admin\/push-groups"/, "the dashboard nav must link to the new Push Groups page");
+});
+
+test("GET /admin/api/listing-settings returns the current limits alongside the push-group list", async () => {
+  const ownerId = await seedAdmin("owner");
+  const res = await fetch(`${baseUrl}/admin/api/listing-settings`, { headers: { Cookie: cookieFor(ownerId) } });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { limits: { maxMatchesPerListing: number; maxMatchesPerListingPaying: number; maxPushGroupsPerListing: number }; pushGroups: unknown[] };
+  assert.equal(typeof body.limits.maxPushGroupsPerListing, "number");
+  assert.ok(Array.isArray(body.pushGroups));
+});
+
+test("PUT /admin/api/listing-settings/limits round-trips a raised push-group cap, blocked for read_only", async () => {
+  const readOnlyId = await seedAdmin("read_only");
+  const readOnlyCookie = cookieFor(readOnlyId);
+  const readOnlyCsrf = await csrfFor(readOnlyCookie);
+  const blocked = await fetch(`${baseUrl}/admin/api/listing-settings/limits`, {
+    method: "PUT",
+    headers: { Cookie: readOnlyCookie, "Content-Type": "application/json", "X-CSRF-Token": readOnlyCsrf },
+    body: JSON.stringify({ maxPushGroupsPerListing: 6 }),
+  });
+  assert.equal(blocked.status, 403, "read_only is blocked from changing listing limits");
+
+  const ownerId = await seedAdmin("owner");
+  const ownerCookie = cookieFor(ownerId);
+  const ownerCsrf = await csrfFor(ownerCookie);
+  const saved = await fetch(`${baseUrl}/admin/api/listing-settings/limits`, {
+    method: "PUT",
+    headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf },
+    body: JSON.stringify({ maxPushGroupsPerListing: 6 }),
+  });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).maxPushGroupsPerListing, 6);
+
+  const refetched = await fetch(`${baseUrl}/admin/api/listing-settings`, { headers: { Cookie: ownerCookie } });
+  assert.equal((await refetched.json()).limits.maxPushGroupsPerListing, 6);
+
+  // listing_settings isn't reset by this file's own beforeEach (only approved_groups is) --
+  // restore the default so a later test file that doesn't call _resetDbForTests itself never
+  // inherits this test's raised cap.
+  await setListingLimits({ maxPushGroupsPerListing: DEFAULT_MAX_PUSH_GROUPS_PER_LISTING });
 });
 
 test("PUT then GET /admin/api/push-groups round-trips a saved push group, blocked for read_only", async () => {

@@ -32,7 +32,7 @@ const { getActivePostingsForUser, createDirectPosting } = require("../postings/p
 const { getOrCreateCanonicalUser } = require("../postings/identity") as typeof import("../postings/identity");
 const { platformForIdentity } = require("../channels/identity") as typeof import("../channels/identity");
 const server = require("../server") as typeof import("../server");
-const whapi = require("../whapi/client") as typeof import("../whapi/client");
+const whapi = require("../channels/greenApi") as typeof import("../channels/greenApi");
 const telegram = require("../channels/telegram") as typeof import("../channels/telegram");
 
 before(async () => { await db._resetDbForTests(); await inventory._resetDbForTests(); });
