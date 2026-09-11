@@ -361,6 +361,7 @@ export const config = {
     // Comma-separated, same convention as WATCHFACTS_ADMIN_PHONES below — lets more than one
     // phone pilot AI matching without widening it to the whole population. Empty by default:
     // no phone is a test phone until explicitly configured, rather than defaulting to "on."
+    // A literal "*" entry is the deliberate full-rollout switch (see isAiMatchingEnabledForPhone).
     testPhones: (process.env.AI_MATCHING_TEST_PHONE ?? "")
       .split(",")
       .map((s) => s.trim())
@@ -411,9 +412,13 @@ export const config = {
  * turning the flag on alone can never light this up for real users. No test phones configured
  * means the feature is inert for everyone, even with the flag on, rather than silently
  * defaulting to "enabled for all."
+ *
+ * `AI_MATCHING_TEST_PHONE=*` is the explicit, deliberate full-rollout switch — same wildcard
+ * convention isChatIdAllowed already uses for allowedChatIds. It has to be typed in on purpose;
+ * an empty/unset list still means inert for everyone, never "enabled by default."
  */
 export function isAiMatchingEnabledForPhone(phone: string): boolean {
-  return isAiChatEnabled() && config.aiMatching.testPhones.includes(phone);
+  return isAiChatEnabled() && (config.aiMatching.testPhones.includes("*") || config.aiMatching.testPhones.includes(phone));
 }
 
 /**
