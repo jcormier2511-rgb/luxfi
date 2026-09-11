@@ -104,7 +104,7 @@ export interface PendingNaturalFollowUp {
   missing: string[];
 }
 
-export type SellIntakeStep = "details" | "price" | "condition" | "location" | "dial" | "photo" | "confirm";
+export type SellIntakeStep = "details" | "price" | "condition" | "location" | "dial" | "photo" | "notes" | "confirm";
 
 /**
  * A "sell" request doesn't search anything live yet (there's no automatic buyer-matching for a
@@ -130,6 +130,7 @@ export interface PendingSellIntake {
   dialColor?: string;
   imageUrl?: string;
   photoSkipped?: boolean;
+  notesSkipped?: boolean;
 }
 
 export interface PendingBuyIntake {

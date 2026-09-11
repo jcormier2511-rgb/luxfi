@@ -714,6 +714,7 @@ const SELL_INTAKE_STEP_LABELS: Record<PendingSellIntake["step"], string> = {
   location: "your location",
   dial: "dial color",
   photo: "a photo (or say \"skip\")",
+  notes: "anything else buyers should know (or say \"skip\")",
   confirm: "your confirmation to list it",
 };
 
@@ -815,6 +816,7 @@ function formatStructuredPosting(p: import("../postings/postingsStore").PostingR
     p.condition,
     p.price ? `${p.type === "FS" ? "Asking" : "Budget"}: ${formatAmount(p.price, p.currency || "USD")}` : "",
     p.location,
+    p.notes ? `Notes: ${p.notes}` : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -1904,6 +1906,13 @@ const BUY_LOCATION_QUESTION = "Any location preference? (country, or say any)";
 const BUY_BUDGET_QUESTION = "What's your maximum budget?";
 const DIAL_INTAKE_QUESTION = "Do you prefer the black dial, white dial, or either?";
 const SELL_PHOTO_QUESTION = 'Would you like to attach a photo? Send it now, or reply "skip" or "no photo".';
+// Real reported ask: buyers act on details a listing's own price/dial/condition fields never
+// capture -- box, papers, bracelet links, warranty card, an extra strap, etc. -- and the seller
+// otherwise only ever volunteers them if they happen to mention it unprompted in their very
+// first message. Asked last, after the photo, as an open-ended catch-all rather than a new
+// structured field: whatever the seller says is stored verbatim in `notes` and shown on the
+// listing as-is, same principle as the free-text description itself.
+const SELL_NOTES_QUESTION = 'Anything else buyers should know — box, papers, bracelet links, extra straps, etc.? Reply with details, or say "skip".';
 /** "any"/"all"/"skip"/etc name no model at all -- used both at the dedicated model-intake step
  *  and for a "model any"/"model none" correction at confirm time, so the two paths treat the
  *  same words the same way rather than one clearing the model and the other literally storing
@@ -2432,6 +2441,7 @@ async function nextSell(p: PendingSellIntake): Promise<string | null> {
   if (!p.condition) p.condition = "pre-owned";
   if (!p.location) { p.step="location"; return SELL_LOCATION_QUESTION; }
   if (!p.imageUrl && !p.photoSkipped) { p.step="photo"; return SELL_PHOTO_QUESTION; }
+  if (!p.notes && !p.notesSkipped) { p.step="notes"; return SELL_NOTES_QUESTION; }
   p.step="confirm"; return null;
 }
 function nextBuy(p: PendingBuyIntake): string | null {
@@ -2504,6 +2514,7 @@ const reviewLines=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number
     p.boxPapers&&`Box/Papers: ${p.boxPapers}`,
     p.year&&`Year: ${p.year}`,
     `Photo: ${"imageUrl" in p&&p.imageUrl?"attached":"none"}`,
+    "notes" in p&&p.notes&&`Notes: ${p.notes}`,
   ].filter((line): line is string => typeof line === "string");
 };
 const review=(type:string,p:PendingSellIntake|PendingBuyIntake,price:number)=>
@@ -2665,16 +2676,23 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
+  // The notes step is a free-text catch-all (box/papers/links/anything else), stored verbatim --
+  // unlike every other step, its reply must never be re-parsed by applySellSlots below (which
+  // would try to read it as item identity/price/dial and could corrupt fields already settled).
+  const skippedNotes = p.step === "notes" && /^(?:skip|no|none|n\/a|nothing)\s*[.!]*$/i.test(text.trim());
+  if (skippedNotes) p.notesSkipped = true;
+  const suppliedNotes = p.step === "notes" && !skippedNotes && Boolean(text.trim());
+  if (suppliedNotes) p.notes = text.trim();
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your listing draft open."); messages.push((await nextSell(p))??await sellSummaryWithMarketGuide(p)); return; }
   // The scoped answer runs FIRST, and free-text location is only the fallback for what it did
   // not claim. Computing them independently meant a message the scoped answer had already
   // handled was ALSO stored as the location: "change my price to 32000", sent while the draft
   // was waiting on a location, correctly repriced the draft and then set its location to the
   // whole sentence.
-  const scopedChange=applyScopedSellAnswer(p,text);
+  const scopedChange=p.step==="notes"?false:applyScopedSellAnswer(p,text);
   const freeLocation=!scopedChange&&p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text);
   if(freeLocation)p.location=text.trim();
-  const changed=scopedChange || suppliedPhoto || skippedPhoto || skippedReference || freeLocation;
+  const changed=scopedChange || suppliedPhoto || skippedPhoto || skippedReference || skippedNotes || suppliedNotes || freeLocation;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if (changed) state.intakeFallbackCount = 0;
   if(!changed) {

@@ -49,7 +49,8 @@ test("required regression: a completed sell-intake is persisted as a live FS lis
   await handleIncomingMessage(SELLER_PHONE, "hi");
   const photoPrompt = await handleIncomingMessage(SELLER_PHONE, "FS Rolex Daytona 116500LN persistence-findable-listing black dial pre-owned in USA for 28500");
   assert.match(photoPrompt.messages.join("\n"), /attach a photo/i);
-  const summary = await handleIncomingMessage(SELLER_PHONE, "photo attached", undefined, "https://example.com/daytona.jpg");
+  await handleIncomingMessage(SELLER_PHONE, "photo attached", undefined, "https://example.com/daytona.jpg");
+  const summary = await handleIncomingMessage(SELLER_PHONE, "skip"); // notes
   assert.match(summary.messages.join("\n"), /Photo: attached[\s\S]*Should I start monitoring\?/);
   assert.equal((await inventoryDb.getActiveListings("FS")).length, 0, "draft and photo are not saved before confirmation");
   const finished = await handleIncomingMessage(SELLER_PHONE, "yes");
@@ -78,7 +79,8 @@ test("a sell-intake finished with no photo is still persisted (whatever was coll
   await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "hi");
   const photoPrompt = await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "FS Omega Speedmaster 311.30.42.30.01.005 no-photo-listing pre-owned in USA for $12000");
   assert.match(photoPrompt.messages.join("\n"), /attach a photo/i);
-  const summary = await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "no photo");
+  await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "no photo");
+  const summary = await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "skip"); // notes
   assert.match(summary.messages.join("\n"), /Photo: none[\s\S]*Should I start monitoring\?/);
   await handleIncomingMessage(SELLER_PHONE_NO_PHOTO, "yes");
 

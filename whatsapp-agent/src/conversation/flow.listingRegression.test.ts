@@ -162,7 +162,8 @@ test("FS confirmation boundary persists and activates every parsed field exactly
 
   const photoPrompt = await handleIncomingMessage(phone, "FS Rolex 116500LN black dial unworn in Canada for 28500");
   assert.match(photoPrompt.messages.at(-1)!, /attach a photo/i);
-  const summary = await handleIncomingMessage(phone, "skip");
+  await handleIncomingMessage(phone, "skip"); // photo
+  const summary = await handleIncomingMessage(phone, "skip"); // notes
   assert.match(summary.messages.at(-1)!, /Photo: none[\s\S]*Should I start monitoring\?/);
   assert.equal(inventoryWrites.length, 0, "summary must not persist inventory");
   assert.equal(activations.length, 0, "summary must not activate or match the listing");
@@ -196,15 +197,16 @@ test("an original-message FS photo stays in the draft and appears in the confirm
   t.mock.method(inventory, "upsertListings", async () => { inventoryWrites++; });
   t.mock.method(ingest, "ingestDirectSellPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => { activations++; return { matchesFound: 0, posting: persistedRow(input, "FS") }; });
 
-  const summary = await handleIncomingMessage(
+  const notesPrompt = await handleIncomingMessage(
     phone,
     "FS Rolex 116500LN white dial pre-owned in USA for EUR 25,000",
     undefined,
     "https://cdn.example/original.jpg"
   );
+  assert.equal(notesPrompt.state.pendingSellIntake?.imageUrl, "https://cdn.example/original.jpg");
+  assert.equal(notesPrompt.state.pendingSellIntake?.currency, "EUR");
+  const summary = await handleIncomingMessage(phone, "skip"); // notes
   assert.match(summary.messages.at(-1)!, /Photo: attached[\s\S]*Should I start monitoring\?/);
-  assert.equal(summary.state.pendingSellIntake?.imageUrl, "https://cdn.example/original.jpg");
-  assert.equal(summary.state.pendingSellIntake?.currency, "EUR");
   assert.equal(inventoryWrites, 0);
   assert.equal(activations, 0);
 
@@ -216,6 +218,7 @@ test("an original-message FS photo stays in the draft and appears in the confirm
 test("reference and price remain independent through price and reference corrections", async () => {
   const phone = "15550002008"; resetState(phone);
   await handleIncomingMessage(phone, "FS Rolex Daytona 126500LN white dial for 38000, pre-owned in USA", undefined, "https://example.test/watch.jpg");
+  await handleIncomingMessage(phone, "skip"); // notes
   const priceEdit = await handleIncomingMessage(phone, "change price to 36500");
   assert.equal(priceEdit.state.pendingSellIntake?.reference, "126500LN");
   assert.equal(priceEdit.state.pendingSellIntake?.price, 36500);
@@ -257,6 +260,7 @@ test("a common six-digit numeric manufacturer reference remains valid", async ()
 test("confirmation-time brand and model corrections preserve price and reference", async () => {
   const phone = "15550002014"; resetState(phone);
   await handleIncomingMessage(phone, "FS Rolex Daytona 126500LN white dial for 38000, pre-owned in USA", undefined, "https://example.test/watch.jpg");
+  await handleIncomingMessage(phone, "skip"); // notes
   const brand = await handleIncomingMessage(phone, "change brand to Omega");
   assert.equal(brand.state.pendingSellIntake?.brand, "omega");
   assert.equal(brand.state.pendingSellIntake?.reference, "126500LN");

@@ -215,7 +215,8 @@ test('required regression: a natural-language restatement of the SAME watch at t
   const phone = "19992220007"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests();
   await handleIncomingMessage(phone, "hi");
   await handleIncomingMessage(phone, "FS Rolex GMT-Master II 126710BLRO black dial $65,000 pre-owned in USA");
-  const beforeCorrection = await handleIncomingMessage(phone, "skip");
+  await handleIncomingMessage(phone, "skip"); // photo
+  const beforeCorrection = await handleIncomingMessage(phone, "skip"); // notes
   assert.equal(beforeCorrection.state.pendingSellIntake?.step, "confirm", "precondition: the draft must be at the confirm step");
 
   const result = await handleIncomingMessage(phone, "i want to sell 126710BLRO with papers $12,500");
@@ -231,7 +232,8 @@ test('required regression: a fresh request for a genuinely DIFFERENT watch at th
   const phone = "19992220008"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests();
   await handleIncomingMessage(phone, "hi");
   await handleIncomingMessage(phone, "FS Rolex GMT-Master II 126710BLRO black dial $65,000 pre-owned in USA");
-  const beforeCorrection = await handleIncomingMessage(phone, "skip");
+  await handleIncomingMessage(phone, "skip"); // photo
+  const beforeCorrection = await handleIncomingMessage(phone, "skip"); // notes
   assert.equal(beforeCorrection.state.pendingSellIntake?.step, "confirm", "precondition: the draft must be at the confirm step");
 
   const result = await handleIncomingMessage(phone, "I want to sell a Patek Philippe Nautilus 5711/1A for $85,000");
@@ -290,7 +292,9 @@ test("required: seller details are collected, summarized, and only saved after c
   // asked immediately after price now.
   const photoPrompt = await handleIncomingMessage(phone, "USA");
   assert.match(photoPrompt.messages.join("\n"), /attach a photo/i);
-  const summary = await handleIncomingMessage(phone, "skip");
+  const notesPrompt = await handleIncomingMessage(phone, "skip"); // photo
+  assert.match(notesPrompt.messages.join("\n"), /buyers should know/i);
+  const summary = await handleIncomingMessage(phone, "skip"); // notes
   assert.match(summary.messages.join("\n"), /Photo: none[\s\S]*Should I start monitoring\?/);
   assert.ok(summary.state.pendingSellIntake, "summary is still an unsaved draft");
   const confirmed = await handleIncomingMessage(phone, "yes");
@@ -304,8 +308,10 @@ test("photo remains optional and can be attached before confirmation", async (t)
   await handleIncomingMessage(phone, "hi");
   await handleIncomingMessage(phone, "FS Patek 5711/1A $85,000 pre-owned in USA");
   const withPhoto = await handleIncomingMessage(phone, "here it is", undefined, "https://cdn.example/patek.jpg");
-  assert.match(withPhoto.messages.at(-1)!, /Photo: attached[\s\S]*Should I start monitoring\?/);
+  assert.match(withPhoto.messages.at(-1)!, /buyers should know/i);
   assert.equal(withPhoto.state.pendingSellIntake?.imageUrl, "https://cdn.example/patek.jpg");
+  const summary = await handleIncomingMessage(phone, "skip"); // notes
+  assert.match(summary.messages.at(-1)!, /Photo: attached[\s\S]*Should I start monitoring\?/);
 });
 
 test("required regression: once a photo is attached, the review reads as that photo's caption instead of a separate text message", async (t) => {
@@ -313,7 +319,9 @@ test("required regression: once a photo is attached, the review reads as that ph
   await handleIncomingMessage(phone, "hi");
   await handleIncomingMessage(phone, "FS Patek 5711/1A $85,000 pre-owned in USA");
   const withPhoto = await handleIncomingMessage(phone, "here it is", undefined, "https://cdn.example/patek.jpg");
-  assert.deepEqual(withPhoto.photoReply, { imageUrl: "https://cdn.example/patek.jpg", caption: withPhoto.messages.at(-1) });
+  assert.equal(withPhoto.photoReply, undefined, "the notes question isn't the review yet -- nothing to caption");
+  const review = await handleIncomingMessage(phone, "skip"); // notes
+  assert.deepEqual(review.photoReply, { imageUrl: "https://cdn.example/patek.jpg", caption: review.messages.at(-1) });
 
   // Once confirmed, the acknowledgment is a fresh plain-text message, not the photo's caption again.
   const confirmed = await handleIncomingMessage(phone, "confirm");
@@ -324,7 +332,8 @@ test("required regression: no photo attached means no photoReply at all — the 
   const phone = "19992220025"; resetState(phone); await inventoryDb._resetDbForTests(); await postingsDb._resetDbForTests(); mockSends(t);
   await handleIncomingMessage(phone, "hi");
   await handleIncomingMessage(phone, "FS Patek 5711/1A $85,000 pre-owned in USA");
-  const noPhoto = await handleIncomingMessage(phone, "no photo");
+  await handleIncomingMessage(phone, "no photo");
+  const noPhoto = await handleIncomingMessage(phone, "skip"); // notes
   assert.match(noPhoto.messages.at(-1)!, /Photo: none/);
   assert.equal(noPhoto.photoReply, undefined);
 });
@@ -337,7 +346,8 @@ test("required: confirmation creates a direct FS posting and immediately matches
   await handleIncomingMessage(phone, "hi");
   const photoPrompt = await handleIncomingMessage(phone, "FS Rolex Submariner 116610LV pre-owned in USA for $14,500");
   assert.match(photoPrompt.messages.at(-1)!, /attach a photo/i);
-  const summary = await handleIncomingMessage(phone, "no photo");
+  await handleIncomingMessage(phone, "no photo");
+  const summary = await handleIncomingMessage(phone, "skip"); // notes
   assert.match(summary.messages.at(-1)!, /Photo: none[\s\S]*Should I start monitoring\?/);
   assert.equal(sent.length, 0, "no match notification before confirmation");
   const confirmed = await handleIncomingMessage(phone, "yes");
@@ -365,6 +375,7 @@ test("required regression: FS confirmation also shows current matching WTB listi
   await handleIncomingMessage(phone, "FS Rolex Daytona 116500LN pre-owned in USA for $25,000");
   await handleIncomingMessage(phone, "any"); // dial
   await handleIncomingMessage(phone, "no photo");
+  await handleIncomingMessage(phone, "skip"); // notes
   const result = await handleIncomingMessage(phone, "confirm");
   const text = result.messages.join("\n");
   assert.match(text, /current WatchFacts listing/i, "a seller must also see what's already on WatchFacts for their exact item, same as a buyer does");
@@ -429,7 +440,8 @@ test("required regression: Market Guide appears at the review step (not activati
 
   await handleIncomingMessage(phone, "hi");
   await handleIncomingMessage(phone, "Sell my 2022 Rolex Daytona 116500LN black dial, pre-owned, full set for $24,500, Miami");
-  const review = await handleIncomingMessage(phone, "skip");
+  await handleIncomingMessage(phone, "skip"); // photo
+  const review = await handleIncomingMessage(phone, "skip"); // notes
   const reviewText = review.messages.join("\n");
   assert.match(reviewText, /CURRENT MARKET FOR "Rolex Daytona 116500LN"/);
   assert.match(reviewText, /Current sellers: 5/);
@@ -473,8 +485,10 @@ test("required regression: Telegram and WhatsApp show equivalent Market Guide in
   await handleIncomingMessage(telegram, "hi");
   await handleIncomingMessage(whatsapp, text);
   await handleIncomingMessage(telegram, text);
-  const viaWhatsApp = (await handleIncomingMessage(whatsapp, "skip")).messages.join("\n");
-  const viaTelegram = (await handleIncomingMessage(telegram, "skip")).messages.join("\n");
+  await handleIncomingMessage(whatsapp, "skip"); // photo
+  await handleIncomingMessage(telegram, "skip"); // photo
+  const viaWhatsApp = (await handleIncomingMessage(whatsapp, "skip")).messages.join("\n"); // notes
+  const viaTelegram = (await handleIncomingMessage(telegram, "skip")).messages.join("\n"); // notes
 
   // Anchored on the first data line, not the "CURRENT MARKET FOR ..." heading itself -- the
   // heading now names the specific watch, which is exactly what's being asserted identical here.
@@ -522,14 +536,15 @@ test("required: equivalent natural-language phrasings that state the same refere
     await handleIncomingMessage(phone, "hi");
     let reply = await handleIncomingMessage(phone, phrasing);
     // Each phrasing states a different subset of slots; answer whichever ones are still missing
-    // (dial/condition/location/photo) so every phrasing reaches the same review step regardless
-    // of which details it happened to state up front.
-    for (let guard = 0; guard < 5 && !/Current sellers:/.test(reply.messages.join("\n")); guard++) {
+    // (dial/condition/location/photo/notes) so every phrasing reaches the same review step
+    // regardless of which details it happened to state up front.
+    for (let guard = 0; guard < 6 && !/Current sellers:/.test(reply.messages.join("\n")); guard++) {
       const last = reply.messages.join("\n");
       if (/black dial, white dial/i.test(last)) reply = await handleIncomingMessage(phone, "black");
       else if (/What condition/i.test(last)) reply = await handleIncomingMessage(phone, "pre-owned");
       else if (/Where is the watch located/i.test(last)) reply = await handleIncomingMessage(phone, "Miami");
       else if (/attach a photo/i.test(last)) reply = await handleIncomingMessage(phone, "skip");
+      else if (/buyers should know/i.test(last)) reply = await handleIncomingMessage(phone, "skip");
       else break;
     }
     const combined = reply.messages.join("\n");

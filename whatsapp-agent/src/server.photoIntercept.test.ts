@@ -91,7 +91,7 @@ test("required regression: a photo answering an OPEN sell-intake photo step is n
 
   const state = getState(sellerPhone);
   assert.equal(state.pendingSellIntake?.imageUrl, "https://cdn.example/my-submariner.jpg", "the photo must be attached to the seller's OWN open draft");
-  assert.equal(state.pendingSellIntake?.step, "confirm", "the draft must advance past its own photo step");
+  assert.equal(state.pendingSellIntake?.step, "notes", "the draft must advance past its own photo step");
 
   // The seller must see SOMETHING back -- never total silence.
   const toSeller = calls.filter((c) => c.body?.to === sellerPhone);
@@ -121,7 +121,8 @@ test("required regression: a photo sent at the CONFIRM step (not just the photo 
 
   await server.processIncomingMessages([{ id: "c1", phone: sellerPhone, text: "hi", isGroup: false }]);
   await server.processIncomingMessages([{ id: "c2", phone: sellerPhone, text: "FS Rolex Submariner 116610LN black dial $12,000 pre-owned in USA", isGroup: false }]);
-  await server.processIncomingMessages([{ id: "c3", phone: sellerPhone, text: "skip", isGroup: false }]);
+  await server.processIncomingMessages([{ id: "c3", phone: sellerPhone, text: "skip", isGroup: false }]); // photo
+  await server.processIncomingMessages([{ id: "c3b", phone: sellerPhone, text: "skip", isGroup: false }]); // notes
   assert.equal(getState(sellerPhone).pendingSellIntake?.step, "confirm", "precondition: the draft must be at the confirm step, not the photo step");
 
   calls.length = 0;

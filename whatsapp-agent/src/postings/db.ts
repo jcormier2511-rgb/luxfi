@@ -278,6 +278,9 @@ async function ensureSchema(): Promise<void> {
         -- to actually reach a database that already has an older version of these tables.
         ALTER TABLE postings ADD COLUMN IF NOT EXISTS reminder_sent_for_expires_at TIMESTAMPTZ;
         ALTER TABLE postings ADD COLUMN IF NOT EXISTS renewed_at TIMESTAMPTZ;
+        -- A seller's own free-text answer to "anything else buyers should know?" (box, papers,
+        -- bracelet links, extra straps, etc.) -- see conversation/flow.ts's SELL_NOTES_QUESTION.
+        ALTER TABLE postings ADD COLUMN IF NOT EXISTS notes TEXT;
         ${CAP_ACTIVE_POSTING_EXPIRATIONS_SQL}
         ALTER TABLE matches ADD COLUMN IF NOT EXISTS connected_at TIMESTAMPTZ;
         ALTER TABLE match_recipients ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
