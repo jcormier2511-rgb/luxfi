@@ -270,12 +270,21 @@ export const config = {
       "https://watchfacts.com/profile-listings?profileId={id}&profileAccessType=id",
     email: process.env.WATCHFACTS_EMAIL ?? "",
     password: process.env.WATCHFACTS_PASSWORD ?? "",
-    // WTB's auction_type value isn't confirmed against the real API yet (the toggle button
-    // that would reveal it isn't reliably clickable, and guessing candidate values is
-    // explicitly out — see syncInventory.ts). Off by default: FS syncs and saves on its own,
-    // WTB is reported as "disabled" rather than as a recurring error, until a real captured
-    // value is available to hardcode.
-    enableWtbSync: (process.env.ENABLE_WTB_SYNC ?? "false").toLowerCase() === "true",
+    // WTB's auction_type value was originally unconfirmed against the real (browser-gated) API,
+    // so this defaulted hard off. That's since been resolved a different way — syncWtbFromDb
+    // reads auctions.type='search' directly from WatchFacts' own Postgres, confirmed against
+    // production (10,550 real open rows at the time), the same reliable DB-direct path FS
+    // already uses instead of the browser. So the flag's original justification (an unreliable,
+    // unconfirmed browser path) only still applies when there's no source DB to read from at
+    // all — with one configured, WTB is exactly as safe to sync as FS already is, and requiring
+    // a second manual opt-in on top of WATCHFACTS_DB_URL just meant it silently stayed off in
+    // production (real reported symptom: a live WatchFacts WTB listing never appeared in Market
+    // Pulse at all, not just filtered out — nothing had ever been synced). An explicit
+    // ENABLE_WTB_SYNC always wins either way, on or off.
+    enableWtbSync:
+      process.env.ENABLE_WTB_SYNC !== undefined
+        ? process.env.ENABLE_WTB_SYNC.toLowerCase() === "true"
+        : !!(process.env.WATCHFACTS_DB_URL ?? "").trim(),
     // Only surface inventory Fi first saw within this many days. Trading-floor stock goes
     // stale fast: a listing Fi has been carrying for weeks is usually sold or repriced, and
     // quoting it back at a buyer costs more trust than the extra coverage is worth. Applied
