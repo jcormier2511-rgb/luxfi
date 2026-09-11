@@ -37,6 +37,7 @@ import { ingestDirectSellPosting, ingestDirectBuyPosting } from "../postings/ing
 import { MORE_COMMAND, formatMoreResults } from "../postings/moreContext";
 import { formatMarketPulse, getScopedMarketPulse, getNetworkMarketSnapshot, formatNetworkMarketSnapshot } from "../postings/marketPulse";
 import { getMarketGuide, formatMarketGuide } from "../postings/marketGuide";
+import { sendText } from "../channels";
 
 // "cancel" used to be an opt-out word here — it's now its OWN deterministic command (clears the
 // current pending match/interview without unsubscribing, see handleCancelCommand below), per
@@ -1495,6 +1496,31 @@ async function handleMarketCommand(phone: string, briefing: boolean): Promise<st
   return formatMarketPulse(await getScopedMarketPulse({ brand: p.brand, model: p.model, reference: p.reference }));
 }
 
+// Real reported ask: "if the system takes more than 2 seconds to respond while searching, show
+// a typing/loading indicator so the user knows the search is still in progress and doesn't think
+// the system stopped working." The webhook handler (server.ts) only ever sends the `messages`
+// array it gets back AFTER handleIncomingMessage fully resolves, so there's no way to get an
+// interim reply out through the normal return path — this fires it as its own proactive send
+// (see postings/notify.ts for the same pattern used elsewhere) the moment `work` has been
+// pending for SEARCH_INDICATOR_DELAY_MS, and never at all for anything that resolves faster.
+const SEARCH_INDICATOR_DELAY_MS = 2000;
+const SEARCH_INDICATOR_MESSAGE = "Still searching and loading — one moment…";
+
+async function withSearchIndicator<T>(phone: string, work: () => Promise<T>): Promise<T> {
+  let settled = false;
+  const timer = setTimeout(() => {
+    if (!settled) {
+      sendText(phone, SEARCH_INDICATOR_MESSAGE).catch((err) => console.error("[flow] search indicator send failed:", err));
+    }
+  }, SEARCH_INDICATOR_DELAY_MS);
+  try {
+    return await work();
+  } finally {
+    settled = true;
+    clearTimeout(timer);
+  }
+}
+
 /** Runs a fresh search for `request`, showing Match Cards and arming them for approve/pass. */
 async function startSearch(state: ConversationState, request: ItemRequest, messages: string[]): Promise<void> {
   await logSearchRequest(state.phone, request.action, request.query); // best-effort (catches its own errors internally)
@@ -1502,7 +1528,9 @@ async function startSearch(state: ConversationState, request: ItemRequest, messa
   // findMatchesHybrid only ever activates AI-assisted matching for the configured test phone
   // (see config.isAiMatchingEnabledForPhone) — every other contact gets exactly the plain
   // deterministic engine, unchanged.
-  const results = await findMatchesHybrid(state.phone, request, config.trial.maxOptionsPerItem, state.preferences);
+  const results = await withSearchIndicator(state.phone, () =>
+    findMatchesHybrid(state.phone, request, config.trial.maxOptionsPerItem, state.preferences)
+  );
   if (results.length === 0) {
     // Required routing fix: "never delete a pending match merely because another search
     // starts" — an empty new search used to unconditionally clear state.pendingMatches, wiping
@@ -3033,14 +3061,14 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     await recordMarketPulseLookup(usage.canonicalUserId, gate.isComplimentary);
     const usageNote = formatMarketPulseUsageNote(usage, gate);
     if (effectiveMarketReference) {
-      messages.push(formatMarketPulse(await getScopedMarketPulse(
+      messages.push(formatMarketPulse(await withSearchIndicator(state.phone, () => getScopedMarketPulse(
         { brand: displayBrand(effectiveMarketReference.brand) || undefined, reference: effectiveMarketReference.reference },
         { location: effectiveMarketReference.location, dial: effectiveMarketReference.dial, condition: effectiveMarketReference.condition }
-      )) + usageNote);
+      ))) + usageNote);
     } else if (isMarketOverview) {
-      messages.push(formatNetworkMarketSnapshot(await getNetworkMarketSnapshot()) + usageNote);
+      messages.push(formatNetworkMarketSnapshot(await withSearchIndicator(state.phone, () => getNetworkMarketSnapshot())) + usageNote);
     } else {
-      messages.push((await handleMarketCommand(state.phone, MARKET_BRIEFING_COMMAND.test(commandText))) + usageNote);
+      messages.push((await withSearchIndicator(state.phone, () => handleMarketCommand(state.phone, MARKET_BRIEFING_COMMAND.test(commandText)))) + usageNote);
     }
     // Read-only, and deliberately not persisted: saveState round-trips through JSON, which
     // drops explicitly-undefined intake fields — a market lookup must not rewrite an open draft.
