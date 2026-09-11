@@ -10,6 +10,8 @@ import { parsePriceRange, parseFreeformPreference } from "./preferences";
 import { recordBillingRequested, getEntitlement, createCheckoutSession, findLatestCheckoutAttempt } from "../billing/entitlementStore";
 import { MEMBERSHIP_PLANS, PlanKey } from "../billing/plans";
 import { isAuthorizeNetConfigured } from "../billing/authorizeNet";
+import { cancelOwnMembership } from "../billing/membershipCancellation";
+import { pauseMorningBriefing, resumeMorningBriefing, getMorningBriefingPauseStatus, MorningBriefingPauseDuration } from "../lifecycle";
 import { getApprovalUsage, evaluateApprovalGate, recordApprovalEventForPhone, getApprovedMatchesSummary } from "../postings/approvalUsage";
 import { getMarketPulseUsage, evaluateMarketPulseGate, recordMarketPulseLookup, formatMarketPulseUsageNote } from "../postings/marketPulseUsage";
 import { formatPhoneForDisplay } from "../postings/notify";
@@ -329,6 +331,12 @@ function parsePhotoRequestCommand(text: string): number | null {
 // while help must always return the complete deterministic menu without consuming onboarding.
 const MENU_COMMAND = /^(?:help|menu)\b/i;
 const CANCEL_COMMAND = /^cancel\b/i;
+// "cancel my membership"/"cancel my plan" would otherwise be swallowed by the bare CANCEL_COMMAND
+// above (which clears a pending draft, not billing) -- this is checked first, and specific enough
+// ("membership"/"plan"/"subscription"/"billing", or the standalone "fire Fi") that it never
+// intercepts a genuine "cancel [my draft/listing]".
+const MEMBERSHIP_CANCEL_TRIGGER = /^(?:fire\s+fi|cancel\s+(?:my\s+)?(?:fi\s+)?(?:membership|plan|subscription|billing))\s*[?.!]*$/i;
+const MEMBERSHIP_CANCEL_CONFIRM = /^(?:confirm|yes|yep|yeah|confirm\s+cancel|cancel\s+it|do\s+it)\b/i;
 // Real reported gap: a customer stuck in a confusing state (the pendingReplacementRequest
 // "replace or add another" prompt was the reported case, but any one-shot pending branch below
 // can trap someone the same way) had no way out except knowing to type the undocumented "cancel"
@@ -427,6 +435,64 @@ function handleCurrencyPreferenceCommand(state: ConversationState, code: string,
   }
   state.preferredDisplayCurrency = code;
   messages.push(`Got it — I'll show prices in ${code} from now on.`);
+}
+
+type UpdatesPauseCommand = { action: "pause"; duration: MorningBriefingPauseDuration } | { action: "resume" } | { action: "status" };
+
+// Checked before the "pause"/"resume" alternatives below since it's the most specific -- a bare
+// "pause updates"/"resume updates" is otherwise ambiguous with nothing to disambiguate a status
+// question from an action, so the status phrasing has to win on its own distinct wording.
+const UPDATES_PAUSE_STATUS_COMMAND = /^(?:are\s+my\s+)?(?:morning\s+)?(?:updates?|briefings?)\s+paused\s*[?.!]*$/i;
+const RESUME_UPDATES_COMMAND = /^(?:please\s+)?(?:resume|unpause|restart|turn\s+(?:back\s+)?on)\s+(?:my\s+)?(?:morning\s+)?(?:updates?|briefings?)\s*[?.!]*$/i;
+// "for a/1/one day/week/month" sets a finite pause; no duration at all, or an explicit
+// "indefinitely"/"forever"/"permanently", both mean indefinite -- a bare "pause updates" most
+// naturally reads as "until I say otherwise", not "for some unstated default length".
+const PAUSE_UPDATES_COMMAND =
+  /^(?:please\s+)?pause\s+(?:my\s+)?(?:morning\s+)?(?:updates?|briefings?)\b(?:\s+for\s+(?:a|1|one)\s+(day|week|month))?\s*(indefinitely|forever|permanently)?\s*[?.!]*$/i;
+
+function parsePauseUpdatesCommand(text: string): UpdatesPauseCommand | null {
+  const t = text.trim().replace(/[?.!]+$/, "");
+  if (!t) return null;
+  if (UPDATES_PAUSE_STATUS_COMMAND.test(t)) return { action: "status" };
+  if (RESUME_UPDATES_COMMAND.test(t)) return { action: "resume" };
+  const m = t.match(PAUSE_UPDATES_COMMAND);
+  if (!m) return null;
+  const unit = m[1]?.toLowerCase();
+  if (!unit) return { action: "pause", duration: "indefinite" };
+  const duration: MorningBriefingPauseDuration = unit === "day" ? "1day" : unit === "week" ? "1week" : "1month";
+  return { action: "pause", duration };
+}
+
+function formatPauseUntilDate(d: Date): string {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(d);
+}
+
+/** "pause my morning updates (for a day/week/month/indefinitely)" / "resume updates" / "are my
+ *  updates paused?" — a per-account lifecycle setting (lifecycle.ts), never conversation state,
+ *  so this only ever reads/writes user_lifecycle and never touches an open buy/sell draft. */
+async function handlePauseUpdatesCommand(state: ConversationState, cmd: UpdatesPauseCommand, messages: string[]): Promise<void> {
+  if (cmd.action === "resume") {
+    await resumeMorningBriefing(state.phone);
+    messages.push('Your morning updates are back on — I\'ll include you in tomorrow\'s, and every one after, as usual.');
+    return;
+  }
+  if (cmd.action === "status") {
+    const status = await getMorningBriefingPauseStatus(state.phone);
+    messages.push(
+      status === null
+        ? "Your morning updates are on — nothing paused."
+        : status === "indefinite"
+          ? 'Your morning updates are paused indefinitely. Reply "resume updates" anytime to turn them back on.'
+          : `Your morning updates are paused until ${formatPauseUntilDate(status)}. Reply "resume updates" to turn them back on sooner.`
+    );
+    return;
+  }
+  const until = await pauseMorningBriefing(state.phone, cmd.duration);
+  messages.push(
+    until === "indefinite"
+      ? 'Done — your morning updates are paused indefinitely. Reply "resume updates" anytime to turn them back on.'
+      : `Done — your morning updates are paused until ${formatPauseUntilDate(until)}. Reply "resume updates" to turn them back on sooner.`
+  );
 }
 
 type NotificationChannelIntent = { kind: "set"; channel: ChannelPlatform } | { kind: "status" };
@@ -1010,6 +1076,7 @@ function clearAllPendingState(state: ConversationState): boolean {
   state.pendingReplacementRequest = undefined;
   state.pendingEscrowOffer = false;
   state.pendingListingsMenu = false;
+  state.pendingMembershipCancellation = false;
   state.pendingChannelLink = undefined;
   state.intakeFallbackCount = 0;
   return hadSomethingToCancel;
@@ -1022,6 +1089,26 @@ function handleCancelCommand(state: ConversationState, messages: string[]): void
       ? "Okay, I've cleared your current matches. Send a new buy/sell request anytime."
       : "There's nothing pending to cancel right now."
   );
+}
+
+/**
+ * "fire Fi"/"cancel my membership" — real money is on the line, so this only ever ASKS; the
+ * actual cancellation (billing/membershipCancellation.ts's cancelOwnMembership) runs only after
+ * an explicit "confirm" on the very next reply (see the pendingMembershipCancellation handling
+ * further down). A phone with no active plan has nothing to cancel, so it's answered immediately
+ * with no confirmation step at all.
+ */
+async function handleMembershipCancelTrigger(state: ConversationState, messages: string[]): Promise<void> {
+  const entitlement = await getEntitlement(state.phone);
+  if (entitlement.plan === null) {
+    messages.push("You're not currently a paying Fi member — there's no membership to cancel.");
+    return;
+  }
+  const planLabel = MEMBERSHIP_PLANS[entitlement.plan].label;
+  messages.push(
+    `Cancelling your ${planLabel} membership stops future charges right away, and you'll drop back to the free trial's limits — I'll still flag matches and answer requests for you, just fewer approvals and Market Pulse look-ups. Reply "confirm" to go through with it, or anything else to keep your membership as-is.`
+  );
+  state.pendingMembershipCancellation = true;
 }
 
 // Same reset as "cancel", but for someone who never knew "cancel" was the word to use -- the
@@ -2642,8 +2729,24 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
 
   if (isOptOut(text)) {
     state.stage = "opted_out";
+    // STOP is the compliance-grade "make it all stop" keyword, not just a messaging opt-out --
+    // it has to end any recurring billing too. Without this, a paying member who typed STOP
+    // would keep being charged every month while Fi stayed silent, a real billing bug rather
+    // than a mere inconvenience. A non-member's cancelOwnMembership call is a no-op (no plan,
+    // no Authorize.net subscription id to cancel), so this never changes the reply for them.
+    const cancellation = await cancelOwnMembership(state.phone);
     saveState(state);
-    return { state, messages: [...messages, "You're unsubscribed — you won't hear from Fi again. Reply START anytime to opt back in."] };
+    return {
+      state,
+      messages: [
+        ...messages,
+        cancellation.hadActivePlan
+          ? cancellation.arbCancelFailed
+            ? "You're unsubscribed and your Fi membership is cancelled. I ran into an issue stopping the recurring charge on my end — our team will follow up to make sure you're not billed again. Reply START anytime to opt back in."
+            : "You're unsubscribed and your Fi membership is cancelled — no more charges. Reply START anytime to opt back in."
+          : "You're unsubscribed — you won't hear from Fi again. Reply START anytime to opt back in.",
+      ],
+    };
   }
 
   if (state.stage === "opted_out") {
@@ -2715,6 +2818,16 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   // the Fi menu, not force approve/pass").
   if (MENU_COMMAND.test(commandText)) {
     messages.push(FI_MENU);
+    saveState(state);
+    return { state, messages };
+  }
+  // Checked before parseAccountIntent below (see MEMBERSHIP_CANCEL_TRIGGER's own comment) --
+  // "cancel my membership" otherwise contains both parseAccountIntent's "membership" topic word
+  // and its "my" asking word, so it would be read as a STATUS question ("membership: active")
+  // instead of the cancellation it actually is. Also checked before CANCEL_COMMAND further down,
+  // so it is never misread as "cancel my current draft" either.
+  if (MEMBERSHIP_CANCEL_TRIGGER.test(text.trim())) {
+    await handleMembershipCancelTrigger(state, messages);
     saveState(state);
     return { state, messages };
   }
@@ -2870,6 +2983,12 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     saveState(state);
     return { state, messages };
   }
+  const pauseUpdatesIntent = parsePauseUpdatesCommand(text);
+  if (pauseUpdatesIntent) {
+    await handlePauseUpdatesCommand(state, pauseUpdatesIntent, messages);
+    saveState(state);
+    return { state, messages };
+  }
   const decision = parseDecisionCommand(text);
   if (decision && state.pendingMatches) {
     await handleDecision(state, decision, messages, firstName);
@@ -2934,6 +3053,27 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
       return { state, messages };
     }
     // Not 1/2/3/4 — fall through so this message is still handled normally.
+  }
+
+  // One-shot: only the reply immediately after "fire Fi"/"cancel my membership" is checked for
+  // an explicit confirmation. Cleared regardless of what they said, same pattern as
+  // pendingEscrowOffer/pendingListingsMenu above — real billing action only ever runs on an
+  // actual "confirm", never on a fall-through.
+  if (state.pendingMembershipCancellation) {
+    state.pendingMembershipCancellation = false;
+    if (MEMBERSHIP_CANCEL_CONFIRM.test(text.trim())) {
+      const result = await cancelOwnMembership(state.phone);
+      messages.push(
+        result.arbCancelFailed
+          ? "Your Fi membership is cancelled and your access has been downgraded. I ran into an issue stopping the recurring charge on my end — our team will follow up to make sure you're not billed again."
+          : "Your Fi membership is cancelled — no more charges. I'll still flag matches and answer requests for you, just back on the free trial's limits. Say \"join\" anytime to become a member again."
+      );
+      saveState(state);
+      return { state, messages };
+    }
+    messages.push("No changes made — your membership is still active.");
+    saveState(state);
+    return { state, messages };
   }
 
   // Fi asked a direct question ("what's the best number to reach you at on SMS?") and this

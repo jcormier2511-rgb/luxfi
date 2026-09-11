@@ -45,6 +45,76 @@ export async function recordInboundActivity(identity:string, firstName?:string, 
     last_direct_inbound_at=CASE WHEN $6::boolean THEN GREATEST(COALESCE(user_lifecycle.last_direct_inbound_at,excluded.last_inbound_at),excluded.last_inbound_at) ELSE user_lifecycle.last_direct_inbound_at END,updated_at=now()`,[userId,channel,identity,firstName?.trim().split(/\s+/)[0]||null,at,direct,at]));
 }
 
+/** "pause my morning updates for a day/week/month" (1day/1week/1month) or indefinitely. */
+export type MorningBriefingPauseDuration = "1day" | "1week" | "1month" | "indefinite";
+
+const PAUSE_DURATION_MS: Record<Exclude<MorningBriefingPauseDuration, "indefinite">, number> = {
+  "1day": 24 * 60 * 60 * 1000,
+  "1week": 7 * 24 * 60 * 60 * 1000,
+  // A calendar month varies 28-31 days; 30 is a simple, predictable approximation rather than
+  // real calendar-month arithmetic -- close enough for "leave me alone for about a month" and
+  // never off by more than a day either way.
+  "1month": 30 * 24 * 60 * 60 * 1000,
+};
+
+/** What getMorningBriefingPauseStatus/pauseMorningBriefing/resumeMorningBriefing operate on --
+ *  an upsert so this also works before the user's first recordInboundActivity call (e.g. a
+ *  direct unit test), though in real traffic that row already exists by the time any command
+ *  reaches conversation/flow.ts (server.ts calls recordInboundActivity first on every message). */
+async function upsertPauseColumns(identity: string, pausedUntil: Date | null, pausedIndefinitely: boolean): Promise<void> {
+  const channel = platformForIdentity(identity);
+  const userId = await getOrCreateCanonicalUser(channel, identity);
+  await withSchema((db) =>
+    db.query(
+      `INSERT INTO user_lifecycle(canonical_user_id,channel,identity,last_inbound_at,morning_briefing_paused_until,morning_briefing_paused_indefinitely,updated_at)
+       VALUES($1,$2,$3,now(),$4,$5,now())
+       ON CONFLICT(canonical_user_id) DO UPDATE SET morning_briefing_paused_until=excluded.morning_briefing_paused_until,
+         morning_briefing_paused_indefinitely=excluded.morning_briefing_paused_indefinitely,updated_at=now()`,
+      [userId, channel, identity, pausedUntil, pausedIndefinitely]
+    )
+  );
+}
+
+/** Returns when the pause actually ends -- a concrete Date for a finite duration, or the literal
+ *  string "indefinite" for indefinitely -- so the caller's confirmation message can state it. */
+export async function pauseMorningBriefing(identity: string, duration: MorningBriefingPauseDuration, now = new Date()): Promise<Date | "indefinite"> {
+  if (duration === "indefinite") {
+    await upsertPauseColumns(identity, null, true);
+    return "indefinite";
+  }
+  const until = new Date(now.getTime() + PAUSE_DURATION_MS[duration]);
+  await upsertPauseColumns(identity, until, false);
+  return until;
+}
+
+export async function resumeMorningBriefing(identity: string): Promise<void> {
+  await upsertPauseColumns(identity, null, false);
+}
+
+/** null = not paused, "indefinite" = paused with no end date, a Date = paused until then (even
+ *  one already in the past -- the caller decides what "expired" means; runMorningBriefings below
+ *  treats it as no longer paused, same as this function's own callers should). */
+export async function getMorningBriefingPauseStatus(identity: string): Promise<Date | "indefinite" | null> {
+  const channel = platformForIdentity(identity);
+  const userId = await getOrCreateCanonicalUser(channel, identity);
+  const row = (
+    await withSchema((db) =>
+      db.query("SELECT morning_briefing_paused_until,morning_briefing_paused_indefinitely FROM user_lifecycle WHERE canonical_user_id=$1", [userId])
+    )
+  ).rows[0];
+  if (!row) return null;
+  if (row.morning_briefing_paused_indefinitely) return "indefinite";
+  return row.morning_briefing_paused_until ? new Date(row.morning_briefing_paused_until) : null;
+}
+
+/** True when this user_lifecycle ROW (already SELECTed -- l.* -- by the two callers below) is
+ *  currently paused. A pause with a past paused_until is no longer active, same rule
+ *  getMorningBriefingPauseStatus's own callers apply. */
+function isMorningBriefingPaused(user: { morning_briefing_paused_indefinitely: boolean; morning_briefing_paused_until: string | Date | null }, now: Date): boolean {
+  if (user.morning_briefing_paused_indefinitely) return true;
+  return Boolean(user.morning_briefing_paused_until && new Date(user.morning_briefing_paused_until) > now);
+}
+
 async function claim(userId:number,kind:"morning_briefing"|"dormant",date:string):Promise<boolean>{
   return withSchema(async db=>(await db.query(`INSERT INTO lifecycle_deliveries(canonical_user_id,kind,local_date,status) VALUES($1,$2,$3,'sending')
     ON CONFLICT(canonical_user_id,kind,local_date) DO UPDATE SET status='sending',claimed_at=now(),error=NULL
@@ -163,6 +233,7 @@ export async function runMorningBriefings(now=new Date()):Promise<{sent:number;s
   const s=await getLifecycleSettings(); if(!s.morningEnabled)return{sent:0,skipped:0}; let sent=0,skipped=0;
   const users=await withSchema(db=>db.query(`SELECT l.*,COALESCE(l.timezone,$1) effective_timezone FROM user_lifecycle l WHERE l.channel IN ('whatsapp','telegram')`,[s.defaultTimezone]));
   for(const user of users.rows){ let clock; try{clock=localClock(now,user.effective_timezone);}catch{clock=localClock(now,s.defaultTimezone);} if(clock.hour!==s.morningHour){skipped++;continue;}
+    if(isMorningBriefingPaused(user,now)){skipped++;continue;}
     const postings=await withSchema(db=>db.query<PostingRow>("SELECT * FROM postings WHERE canonical_user_id=$1 AND status='active' AND expires_at>$2 ORDER BY created_at LIMIT $3",[user.canonical_user_id,now,s.maxPostings+1]));
     if(!postings.rowCount){skipped++;continue;} if(!await claim(user.canonical_user_id,"morning_briefing",clock.date)){skipped++;continue;}
     try{
@@ -192,6 +263,10 @@ export async function resendMorningBriefingToAll(now=new Date(), opts:{dryRun?:b
   ));
   let sent=0,skipped=0; const recipients:string[]=[];
   for(const user of users.rows){
+    // A forced resend is an operator rolling out a format change to everyone right now, but it
+    // must still respect a user's own explicit "pause my updates" -- that choice means stop
+    // sending morning updates, not "stop sending them except when an operator overrides it".
+    if(isMorningBriefingPaused(user,now)){skipped++;continue;}
     const postings=await withSchema(db=>db.query<PostingRow>("SELECT * FROM postings WHERE canonical_user_id=$1 AND status='active' AND expires_at>$2 ORDER BY created_at LIMIT $3",[user.canonical_user_id,now,s.maxPostings+1]));
     if(!postings.rowCount){skipped++;continue;}
     try{

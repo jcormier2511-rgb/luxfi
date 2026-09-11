@@ -405,6 +405,12 @@ async function ensureSchema(): Promise<void> {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
         ALTER TABLE user_lifecycle ADD COLUMN IF NOT EXISTS last_direct_inbound_at TIMESTAMPTZ;
+        -- "pause my morning updates for a day/week/month/indefinitely" (see lifecycle.ts's
+        -- pauseMorningBriefing) -- a finite pause sets paused_until to when it expires;
+        -- indefinite uses a separate boolean rather than a sentinel timestamp, so there is never
+        -- an ambiguous "how far in the future counts as indefinite" value to reason about.
+        ALTER TABLE user_lifecycle ADD COLUMN IF NOT EXISTS morning_briefing_paused_until TIMESTAMPTZ;
+        ALTER TABLE user_lifecycle ADD COLUMN IF NOT EXISTS morning_briefing_paused_indefinitely BOOLEAN NOT NULL DEFAULT false;
         CREATE TABLE IF NOT EXISTS fi_returning_promotions (
           canonical_user_id INTEGER PRIMARY KEY REFERENCES canonical_users(id) ON DELETE CASCADE,
           tasks_granted INTEGER NOT NULL DEFAULT 3 CHECK(tasks_granted=3),

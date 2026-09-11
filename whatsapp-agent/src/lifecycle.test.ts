@@ -1,10 +1,11 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 process.env.NODE_ENV="test"; process.env.WEBHOOK_TOKEN="test";
-import { formatBriefing, formatDormant, localClock, runMorningBriefings, resendMorningBriefingToAll, setLifecycleSettings, BriefingTrend } from "./lifecycle";
+import { formatBriefing, formatDormant, localClock, runMorningBriefings, resendMorningBriefingToAll, setLifecycleSettings, BriefingTrend, pauseMorningBriefing, resumeMorningBriefing, getMorningBriefingPauseStatus } from "./lifecycle";
 import { PostingRow } from "./postings/postingsStore";
 import { _resetDbForTests, withSchema, _closePoolForTests } from "./postings/db";
 import { initAdminSchema } from "./admin/store";
+import { getOrCreateCanonicalUser } from "./postings/identity";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const channels = require("./channels") as typeof import("./channels");
 
@@ -212,4 +213,95 @@ test("required: resendMorningBriefingToAll's testRecipient narrows to exactly th
   const result = await resendMorningBriefingToAll(new Date("2026-09-01T12:00:00Z"), { testRecipient: "15551110003" });
   assert.equal(result.sent, 1);
   assert.deepEqual(sent, ["15551110003"]);
+});
+
+// --- pause/resume ("pause my morning updates for a day/week/month/indefinitely") ---
+
+test("pauseMorningBriefing returns the correct end date for each finite duration", async () => {
+  await _resetDbForTests();
+  const now = new Date("2026-09-01T08:00:00Z");
+  assert.equal((await pauseMorningBriefing("15559990001", "1day", now) as Date).toISOString(), "2026-09-02T08:00:00.000Z");
+  assert.equal((await pauseMorningBriefing("15559990002", "1week", now) as Date).toISOString(), "2026-09-08T08:00:00.000Z");
+  assert.equal((await pauseMorningBriefing("15559990003", "1month", now) as Date).toISOString(), "2026-10-01T08:00:00.000Z");
+});
+
+test("pauseMorningBriefing/getMorningBriefingPauseStatus/resumeMorningBriefing round-trip, both finite and indefinite", async () => {
+  await _resetDbForTests();
+  const phone = "15559990004";
+  assert.equal(await getMorningBriefingPauseStatus(phone), null, "nothing paused yet");
+
+  const until = await pauseMorningBriefing(phone, "1week", new Date("2026-09-01T08:00:00Z"));
+  assert.deepEqual(await getMorningBriefingPauseStatus(phone), until);
+
+  assert.equal(await pauseMorningBriefing(phone, "indefinite"), "indefinite");
+  assert.equal(await getMorningBriefingPauseStatus(phone), "indefinite", "a later pause call replaces the earlier finite one");
+
+  await resumeMorningBriefing(phone);
+  assert.equal(await getMorningBriefingPauseStatus(phone), null);
+});
+
+// Goes through getOrCreateCanonicalUser (registers linked_identities), same as
+// pauseMorningBriefing/resumeMorningBriefing do internally -- creating the canonical_users row
+// directly (as the older setup blocks above do) leaves no linked_identities row, so a LATER call
+// to pauseMorningBriefing for the same phone would resolve to a second, disconnected canonical
+// user instead of the one these postings are actually attached to.
+async function makeLifecycleUserWithActivePosting(phone: string): Promise<void> {
+  const id = await getOrCreateCanonicalUser("whatsapp", phone);
+  await withSchema(async (db) => {
+    await db.query(`INSERT INTO user_lifecycle(canonical_user_id,channel,identity,first_name,last_inbound_at,last_direct_inbound_at) VALUES($1,'whatsapp',$2,'X',now(),now())`, [id, phone]);
+    await db.query(
+      `INSERT INTO postings(source_platform,source_type,canonical_user_id,type,original_text,brand,reference,price,currency,status,expires_at)
+       VALUES('whatsapp','direct',$1,'WTB','WTB Rolex 116500LN','Rolex','116500LN',30000,'USD','active',now()+interval '1 day')`,
+      [id]
+    );
+  });
+}
+
+test("required: runMorningBriefings skips an indefinitely-paused account but still sends to everyone else", async (t) => {
+  await _resetDbForTests();
+  await initAdminSchema();
+  await setLifecycleSettings({ MORNING_BRIEFING_ENABLED: "true", MORNING_BRIEFING_LOCAL_HOUR: "8", MORNING_BRIEFING_DEFAULT_TIMEZONE: "UTC", MORNING_BRIEFING_MAX_POSTINGS: "5" });
+  const sent: string[] = [];
+  t.mock.method(channels, "sendText", async (identity: string) => { sent.push(identity); });
+
+  await makeLifecycleUserWithActivePosting("15559990010");
+  await makeLifecycleUserWithActivePosting("15559990011");
+  await pauseMorningBriefing("15559990010", "indefinite");
+
+  const result = await runMorningBriefings(new Date("2026-09-01T08:00:00Z"));
+  assert.equal(result.sent, 1);
+  assert.deepEqual(sent, ["15559990011"]);
+});
+
+test("required: a finite pause that has not yet expired is still honored, but one that already expired no longer blocks the briefing", async (t) => {
+  await _resetDbForTests();
+  await initAdminSchema();
+  await setLifecycleSettings({ MORNING_BRIEFING_ENABLED: "true", MORNING_BRIEFING_LOCAL_HOUR: "8", MORNING_BRIEFING_DEFAULT_TIMEZONE: "UTC", MORNING_BRIEFING_MAX_POSTINGS: "5" });
+  const sent: string[] = [];
+  t.mock.method(channels, "sendText", async (identity: string) => { sent.push(identity); });
+
+  await makeLifecycleUserWithActivePosting("15559990020"); // pause still in effect
+  await makeLifecycleUserWithActivePosting("15559990021"); // pause already expired
+  await pauseMorningBriefing("15559990020", "1week", new Date("2026-09-01T08:00:00Z"));
+  await pauseMorningBriefing("15559990021", "1day", new Date("2026-08-01T08:00:00Z"));
+
+  const result = await runMorningBriefings(new Date("2026-09-01T08:00:00Z"));
+  assert.equal(result.sent, 1);
+  assert.deepEqual(sent, ["15559990021"], "the expired pause must not keep blocking the briefing once its own end date has passed");
+});
+
+test("required: resendMorningBriefingToAll (the admin-forced broadcast) also respects an explicit pause", async (t) => {
+  await _resetDbForTests();
+  await initAdminSchema();
+  await setLifecycleSettings({ MORNING_BRIEFING_ENABLED: "true", MORNING_BRIEFING_LOCAL_HOUR: "8", MORNING_BRIEFING_DEFAULT_TIMEZONE: "UTC", MORNING_BRIEFING_MAX_POSTINGS: "5" });
+  const sent: string[] = [];
+  t.mock.method(channels, "sendText", async (identity: string) => { sent.push(identity); });
+
+  await makeLifecycleUserWithActivePosting("15559990030");
+  await makeLifecycleUserWithActivePosting("15559990031");
+  await pauseMorningBriefing("15559990030", "indefinite");
+
+  const result = await resendMorningBriefingToAll(new Date("2026-09-01T12:00:00Z"));
+  assert.equal(result.sent, 1);
+  assert.deepEqual(sent, ["15559990031"], "a forced admin resend must not override a user's own explicit pause");
 });

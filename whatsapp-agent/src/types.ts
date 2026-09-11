@@ -181,6 +181,11 @@ export interface ConversationState {
   // matching flow's own reveal points in server.ts/postings/notify.ts). Cleared after that one
   // reply regardless of what it was — never nags on a later, unrelated message.
   pendingEscrowOffer?: boolean;
+  // One-shot: set right after "fire Fi"/"cancel my membership" is recognized, but before
+  // anything is actually cancelled — real money is on the line, so the very next reply must
+  // explicitly confirm before billing.cancelOwnMembership runs. Cleared after that one reply
+  // regardless of what it was, same pattern as pendingEscrowOffer/pendingListingsMenu.
+  pendingMembershipCancellation?: boolean;
   // One-shot: set right after Fi finishes a task this same turn (a confirmed buy/sell listing,
   // an approve/pass decision) so the very next reply, if it turns out to be a stray/unparseable
   // message (see conversation/flow.ts's justCompletedTask), reads as "anything else?" rather than
