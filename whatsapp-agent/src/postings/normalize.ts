@@ -114,6 +114,10 @@ export const INTENT_TOKENS: ReadonlySet<string> = new Set([
   "want", "wanna", "wants", "wanting", "wanted", "need", "needs", "needed",
   "looking", "look", "seeking", "seek", "searching", "search", "hunting", "find", "get",
   "buy", "buys", "buying", "purchase", "sell", "sells", "selling", "have",
+  // "find a buyer"/"find a seller" name the COUNTERPARTY, not the watch -- a live-reported
+  // request phrased this way ("find a buyer for my rolex 126500LN") left "buyer" stuck as a
+  // leading word neither this stripping nor SELL_KEYWORDS/BUY_KEYWORDS (flow.ts) recognized.
+  "buyer", "buyers", "seller", "sellers",
   "to", "ot", "for", "fo", "a", "an", "the", "me", "my",
   "wtb", "wts", "fs", "iso", "lf", "ntq",
 ]);

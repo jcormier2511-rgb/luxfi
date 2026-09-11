@@ -69,6 +69,66 @@ test('required keyword recognized: "selling: Hermes Birkin"', () => {
   assert.equal(item.query, "Hermes Birkin");
 });
 
+// Live-reported: "Find a buyer for my rolex 126500LN 2024" and "Find a seller for a rolex
+// 126710BLRO" got the generic "I'm not sure I understood that" fallback -- neither BUY_KEYWORDS
+// nor SELL_KEYWORDS matched at all, because \bbuy\b/\bsell\b never match inside "buyer"/"seller".
+// "Find a buyer" (I HAVE the watch, want it sold) is a sell request; "find a seller" (I want to
+// buy FROM one) is a buy request -- the reverse of which keyword you'd naively guess from "find".
+test('required regression: "Find a buyer for my rolex 126500LN 2024" is a SELL request, not unrecognized', () => {
+  const [item] = parseItemRequests("Find a buyer for my rolex 126500LN 2024");
+  assert.ok(item, 'must be classified as an item request');
+  assert.equal(item.action, "sell");
+  assert.equal(item.query, "rolex 126500LN 2024");
+});
+
+test('required regression: "Find a seller for a rolex 126710BLRO" is a BUY request', () => {
+  const [item] = parseItemRequests("Find a seller for a rolex 126710BLRO");
+  assert.ok(item, 'must be classified as an item request');
+  assert.equal(item.action, "buy");
+  assert.equal(item.query, "rolex 126710BLRO");
+});
+
+test('required regression: "find buyers for my patek 5711" and "find me a seller for a Daytona" are recognized the same way', () => {
+  const [sell] = parseItemRequests("find buyers for my patek 5711");
+  assert.equal(sell.action, "sell");
+  assert.equal(sell.query, "patek 5711");
+  const [buy] = parseItemRequests("find me a seller for a Daytona");
+  assert.equal(buy.action, "buy");
+  assert.equal(buy.query, "Daytona");
+});
+
+// Found while auditing more natural phrasings of the same "find a buyer"/"find a seller" report:
+// a message asking whether a seller/listing EXISTS ("anyone selling X", "who has X for sale") was
+// misread as a SELL request by the plain keyword scan (it contains "selling"/"for sale"), which
+// would have opened a for-sale draft -- and could eventually publish a false FS listing -- for
+// someone who was actually asking to BUY. The mirror image, "who wants to buy my X" / "any buyers
+// for my X", was misread as a BUY request the same way. Both are worse than "unrecognized": a
+// silently wrong direction, not just a missed one.
+test('required regression: "anyone selling a Rolex Daytona" is a BUY request, not sell', () => {
+  const [item] = parseItemRequests("anyone selling a Rolex Daytona");
+  assert.equal(item.action, "buy");
+});
+
+test('required regression: "who has a Rolex Submariner for sale" is a BUY request, not sell', () => {
+  const [item] = parseItemRequests("who has a Rolex Submariner for sale");
+  assert.equal(item.action, "buy");
+});
+
+test('required regression: "Who wants to buy my Rolex Daytona" is a SELL request, not buy', () => {
+  const [item] = parseItemRequests("Who wants to buy my Rolex Daytona");
+  assert.equal(item.action, "sell");
+});
+
+test('required regression: "Any buyers for my Rolex 116500LN?" is a SELL request', () => {
+  const [item] = parseItemRequests("Any buyers for my Rolex 116500LN?");
+  assert.equal(item.action, "sell");
+});
+
+test('required regression: a genuine sell statement that happens to start with "Any" is never swept in by the reversed-question check -- the sale word must land in the SAME clause as the question word', () => {
+  const [item] = parseItemRequests("Any interested buyers, I am selling my Rolex Daytona");
+  assert.equal(item.action, "sell");
+});
+
 test('required regression: "Hi, I want to join LuxFi network" is never classified as a buy request -- real reported bug: a bare "want" with no explicit command and no product named started an empty WTB draft', () => {
   assert.deepEqual(parseItemRequests("Hi, I want to join LuxFi network"), []);
 });

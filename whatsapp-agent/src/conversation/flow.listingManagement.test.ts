@@ -463,6 +463,42 @@ test("required: dial and condition both narrow the pulse, together with location
   assert.match(text, /filtered to black dial, pre-owned, USA/i);
 });
 
+// Live-reported: "hows the market for a 126234 black diamond diall" (a very common Rolex Datejust
+// diamond-marker dial) got the generic "I'm not sure I understood that" fallback instead of a real
+// answer. Root cause: "black diamond dial" is a standard trade term where "diamond" sits between
+// the color and "dial" -- neither extractDial's explicit-phrase check nor its reference-adjacency
+// fallback (the reference is already stripped out of the leftover text by this point) recognized
+// it, so the narrowed pulse had no dial/location/condition at all and parseMarketReferenceCommand
+// returned null, falling through to the unrelated general-chat fallback.
+test("required: a diamond-marker dial phrase (\"black diamond dial\") narrows the pulse same as a plain color", async () => {
+  const phone = freshPhone();
+  await makeListing(phone, "FS", "126234", 9000, { dialColor: "black", location: "USA" });
+  await makeListing("telegram:5559000012", "FS", "126234", 11000, { dialColor: "white", location: "USA" });
+
+  const reply = await handleIncomingMessage(phone, "hows the market for a 126234 black diamond diall");
+  const text = reply.messages.join("\n");
+  assert.doesNotMatch(text, /not sure I understood/i);
+  assert.match(text, /Market Pulse — 126234/);
+  assert.match(text, /FS: 1 active listing\b/);
+  assert.match(text, /Average FS ask: \$9,000/);
+});
+
+// Live-reported: "Check market demand for 126500LN white dial" got the generic fallback --
+// MARKET_REFERENCE_COMMAND only ever recognized "market"/"pulse" (optionally after "what's/how's
+// the"), never a message that puts "check" BEFORE "market" instead.
+test("required regression: \"Check market demand for X\" is recognized the same as \"market pulse X\"", async () => {
+  const phone = freshPhone();
+  await makeListing(phone, "FS", "126500LN", 30000, { dialColor: "white" });
+  await makeListing("telegram:5559000013", "FS", "126500LN", 40000, { dialColor: "black" });
+
+  const reply = await handleIncomingMessage(phone, "Check market demand for 126500LN white dial");
+  const text = reply.messages.join("\n");
+  assert.doesNotMatch(text, /not sure I understood/i);
+  assert.match(text, /Market Pulse — 126500LN/);
+  assert.match(text, /FS: 1 active listing\b/);
+  assert.match(text, /Average FS ask: \$30,000/);
+});
+
 test("a reference with no location/dial/condition match reports zero, not an error, and never falls into pending intake", async () => {
   const phone = freshPhone();
   await makeListing(phone, "FS", "116500LN", 30000, { location: "North America" });

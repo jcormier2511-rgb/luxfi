@@ -180,7 +180,7 @@ export const config = {
   fiFlow: {
     introMessage:
       process.env.FI_INTRO_MESSAGE ??
-      "Hi, I'm Fi — your personal luxury concierge.\nI'm here to help you:\n1. Find a buyer\n2. Find a seller\n3. Check pricing and market trends\n4. Check dealer reputation / references\n\nI'll automatically work on your first 3 matches so you can see what I can do.",
+      "Hi, I'm Fi — your personal luxury concierge.\nI'm here to help you:\n1. Find a buyer\n2. Find a seller\n3. Check pricing and market trends\n\nI'll automatically work on your first 3 matches so you can see what I can do.",
     // Real reported ask: split the intro into a short greeting first, then (only once a name is
     // either known or asked for) the capabilities list — so a brand-new contact with no
     // channel-supplied name meets Fi, gets asked their name, and only then sees what Fi can do,
@@ -189,14 +189,14 @@ export const config = {
     // a fresh introduction) and anywhere else the two are wanted back-to-back as one message.
     greeting: (name?: string) => `Hi${name ? ` ${name}` : ""}, I'm Fi — your personal luxury concierge.`,
     capabilitiesMessage:
-      "I'm here to help you:\n1. Find a buyer\n2. Find a seller\n3. Check pricing and market trends\n4. Check dealer reputation / references\n\nI'll automatically work on your first 3 matches so you can see what I can do.",
+      "I'm here to help you:\n1. Find a buyer\n2. Find a seller\n3. Check pricing and market trends\n\nI'll automatically work on your first 3 matches so you can see what I can do.",
     // Flat-fee, weekly-capped tiers (billing/plans.ts) — no per-approval charge. Fired exactly
     // once, on the 3rd complimentary approval.
     conversionPitch: (firstName: string) =>
       `Hi ${firstName}, I hope you've enjoyed having me work for you.\nI can keep monitoring the market and working on your behalf automatically.\n\n` +
       `Fi Membership — flat ${MEMBERSHIP_PLANS.tier1.priceLabel}\n- ${MEMBERSHIP_PLANS.tier1.weeklyLimit} WTB/FS introductions per week, no per-match fees\n\n` +
       `Need more room? Upgrade anytime — ${MEMBERSHIP_PLANS.tier2.weeklyLimit}/week for ${MEMBERSHIP_PLANS.tier2.priceLabel}, or unlimited for ${MEMBERSHIP_PLANS.tier3.priceLabel}.\n\n` +
-      `I'll continuously help you find buyers, find sellers, check pricing, and verify dealer reputation.\n\n` +
+      `I'll continuously help you find buyers, find sellers, and check pricing.\n\n` +
       `Reply "join" to keep Fi working for you.`,
     // Locked with no plan at all (never joined, or joined and was never assigned one). Real
     // reported ask: say plainly that the free trial is what ran out, not just "no problem" —

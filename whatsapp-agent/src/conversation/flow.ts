@@ -52,8 +52,29 @@ function isOptOut(text: string): boolean {
   return OPT_OUT_WORDS.some((w) => n === w || n.startsWith(`${w} `));
 }
 
-const BUY_KEYWORDS = /\b(buy|buying|wtb|looking for|want|need|iso|find me|in search of)\b/i;
-const SELL_KEYWORDS = /\b(sell|selling|fs|for sale|i have|wts)\b/i;
+// Live-reported gap: "find a buyer for my rolex 126500LN" (I HAVE the watch, want it sold) and
+// "find a seller" (I want to BUY from one) matched neither list at all -- "buy"/"buying" is
+// anchored to the word "buy" itself, which never appears inside "buyer", so the message fell
+// through to the generic fallback despite stating a real, unambiguous request.
+const BUY_KEYWORDS = /\b(buy|buying|wtb|looking for|want|need|iso|find me|in search of|find\s+(?:a\s+|me\s+)?sellers?)\b/i;
+const SELL_KEYWORDS = /\b(sell|selling|fs|for sale|i have|wts|find\s+(?:a\s+|me\s+)?buyers?)\b/i;
+
+// Live-reported-adjacent gap (found while auditing natural phrasings of the same "find a buyer"/
+// "find a seller" report): a message asking whether a seller/listing EXISTS reads as a BUY
+// request even though it contains SELL-sounding words -- "anyone selling a Daytona" and "who has
+// a Submariner for sale" are someone asking if the watch is AVAILABLE, never an offer of their
+// own. SELL_KEYWORDS alone misread both as sell, which would have opened a for-sale draft (and
+// could eventually publish a false FS listing) for a buyer. `[^,.!?]*` deliberately stops at the
+// first clause break so a genuine sell statement that happens to start with "any" ("Any interested
+// buyers, I'm selling my Daytona") is never swept in — the sale word has to land in the SAME
+// clause as the question word.
+const BUY_AVAILABILITY_QUESTION = /^\s*(?:is\s+there|any(?:one)?|who(?:'s|\s+has|\s+is)?|does\s+anyone(?:\s+have)?)\b[^,.!?]*\b(?:selling|for\s+sale)\b/i;
+
+// Mirror image: a question asking who WANTS to buy (or naming buyers) is the owner fishing for a
+// buyer for something they already have -- "who wants to buy my Daytona" and "any buyers for my
+// 116500LN" both read backwards as a buy request without this, which would have opened a WTB
+// draft (and risked matching the person against their OWN listing) for a seller.
+const SELL_BUYER_QUESTION = /\b(?:who\s+wants\s+to\s+buy|any\s*buyers?\s+for|looking\s+for\s+a\s+buyer\s+for)\b/i;
 
 /**
  * A message whose OPENING clause is unambiguously a fresh WTB request — including the natural
@@ -120,6 +141,12 @@ const LEADING_PHRASES = [
   "i am looking for",
   "in search of",
   "looking for",
+  "find me a buyer",
+  "find a buyer",
+  "find buyers",
+  "find me a seller",
+  "find a seller",
+  "find sellers",
   "i want to",
   "i want",
   "want to",
@@ -183,9 +210,13 @@ function classify(segment: string): ItemRequest | null {
   const text = segment.trim();
   if (!text) return null;
   // Require an explicit buy/sell signal — otherwise plain chatter ("hi", "ok", "thanks")
-  // would get misread as an item request.
+  // would get misread as an item request. The two reversed-direction checks run FIRST: both are
+  // narrow, specific phrasings that would otherwise be misread by the plain keyword scan below
+  // (which has no sense of who is asking) as exactly the wrong direction.
   let action: ItemRequest["action"];
-  if (SELL_KEYWORDS.test(text)) action = "sell";
+  if (SELL_BUYER_QUESTION.test(text)) action = "sell";
+  else if (BUY_AVAILABILITY_QUESTION.test(text)) action = "buy";
+  else if (SELL_KEYWORDS.test(text)) action = "sell";
   else if (BUY_KEYWORDS.test(text)) action = "buy";
   else return null;
   const query = stripLeadingIntent(text);
@@ -1044,8 +1075,13 @@ const MARKET_OVERVIEW_COMMAND = /^(?:market overview|overall market|whole market
 // alternation, not a separate optional word, whichever one matches first at this position wins
 // and the engine never backtracks once the rest of the pattern also succeeds -- bare "market"
 // would otherwise match first and leave "research patek 5711/1a" as the very same broken leftover.
+// Live-reported: "check market demand for 126500LN white dial" -- a request that puts "check" (a
+// word this pattern never consumed) BEFORE "market", not after "what's the"/"how's the" -- fell
+// through entirely. "market demand" is listed alongside the other keyword synonyms for the same
+// reason "market research" is: it must precede bare "market" in this alternation or the shorter
+// match wins first and leaves "demand for ..." dangling as an unrecognized leftover word.
 const MARKET_REFERENCE_COMMAND =
-  /^(?:(?:what'?s|what\s+is|how'?s|how\s+is)\s+the\s+)?(?:market\s+pulse|market\s+research|price\s+pulse|market\s+price|market\s+data|market\s+check|market|pulse)[\s:–—-]+(?:on\s+|for\s+)?(.+)$/i;
+  /^(?:(?:what'?s|what\s+is|how'?s|how\s+is)\s+the\s+|check\s+(?:the\s+)?)?(?:market\s+pulse|market\s+research|market\s+demand|price\s+pulse|market\s+price|market\s+data|market\s+check|market|pulse)[\s:–—-]+(?:on\s+|for\s+)?(.+)$/i;
 
 /**
  * "market pulse 116500LN", "market pulse Rolex 116500LN", "market 116500LN", "price pulse
@@ -1105,7 +1141,7 @@ function parseMarketReferenceCommand(text: string): MarketReferenceCommandResult
     // genuine bare place name, the same way the intake flow's own bare-location-answer fallback
     // already does for a location question's reply.
     let locationCandidate = leftoverRaw;
-    if (slots.dial) locationCandidate = locationCandidate.replace(new RegExp(`\\b${slots.dial}\\b\\s*(?:dial|colou?r)?`, "i"), " ");
+    if (slots.dial) locationCandidate = locationCandidate.replace(new RegExp(`\\b${slots.dial}\\b\\s*(?:${DIAL_WORD}|colou?r)?`, "i"), " ");
     if (slots.condition) locationCandidate = locationCandidate.replace(new RegExp(slots.condition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
     locationCandidate = locationCandidate.replace(/\s+/g, " ").trim();
     // Real reported bug: "market post 116500" (a stray, unrecognized word after "market" — not a
@@ -1728,6 +1764,15 @@ function extractListingAmount(text: string, reference: string | null, prefer: "m
 }
 
 const DIAL_COLORS = "black|white|blue|green|silver|champagne|grey|gray|salmon|panda";
+// Live-reported gap: "black diamond dial" (a standard trade term for a dial with diamond hour
+// markers -- not a color name of its own) sits between the color word and "dial", which none of
+// the DIAL_COLORS matches below used to bridge. "market pulse 126234 black diamond dial" fell
+// through every dial-phrase check, then had no location/condition either, so the whole command
+// was rejected as unrecognized instead of narrowing the pulse by dial color.
+const DIAL_DESCRIPTOR_INFIX = "(?:diamond\\s+)?";
+// Same live report also typed "diall" (a doubled trailing letter) instead of "dial" -- common
+// enough on a phone keyboard that every dial-phrase match below tolerates it the same way.
+const DIAL_WORD = "dial{1,2}";
 /** Words that can follow a locative preposition without naming a place: "in stock", "in good
  *  condition", "in a black dial", "from 2019". A place is a proper noun or a known region. */
 const NOT_A_PLACE = /^(?:stock|good|great|excellent|mint|new|used|full|box|papers|a|an|the|my|this|that|good|perfect|condition|\d)/i;
@@ -1774,7 +1819,7 @@ function extractLocation(text: string, consumed: { model?: string; brand?: strin
     .replace(/\b[\d][\d,.]*\s*k\b/gi, " ")
     .replace(/\b(?:USD|CAD|HKD|EUR|GBP|AED|SGD|AUD|JPY|CNY|RMB|CHF)\b/gi, " ")
     .replace(/\b(?:pre[- ]?owned|unworn|brand\s+new|bnib|used|new|mint|any\s+condition)\b/gi, " ")
-    .replace(new RegExp(`\\b(?:${DIAL_COLORS}|either|any)\\s*(?:dials?|colou?rs?)?\\b`, "gi"), " ")
+    .replace(new RegExp(`\\b(?:${DIAL_COLORS}|either|any)\\s*${DIAL_DESCRIPTOR_INFIX}(?:${DIAL_WORD}s?|colou?rs?)?\\b`, "gi"), " ")
     .replace(/\b(?:full\s+set|box(?:\s+and\s+|\s*&\s*|\/)?papers?|papers)\b/gi, " ")
     .replace(/\b(?:19|20)\d{2}\b/g, " ");
   for (const known of [extractReference(text), consumed.brand, consumed.model].filter((v): v is string => Boolean(v))) {
@@ -1792,9 +1837,9 @@ function extractLocation(text: string, consumed: { model?: string; brand?: strin
  * clause. A colour that is FOLLOWED by another word is left alone — "Black Bay" is a model.
  */
 function extractDial(text: string, reference: string | null): string | undefined {
-  const bare = text.match(new RegExp(`^\\s*(${DIAL_COLORS}|either|any)\\s*(?:dial|color)?\\s*$`, "i"))?.[1];
+  const bare = text.match(new RegExp(`^\\s*(${DIAL_COLORS}|either|any)\\s*${DIAL_DESCRIPTOR_INFIX}(?:${DIAL_WORD}|color)?\\s*$`, "i"))?.[1];
   if (bare) return bare.toLowerCase();
-  const explicit = text.match(new RegExp(`\\b(${DIAL_COLORS}|either|any)\\s*(?:dial|colou?r)\\b`, "i"))?.[1];
+  const explicit = text.match(new RegExp(`\\b(${DIAL_COLORS}|either|any)\\s*${DIAL_DESCRIPTOR_INFIX}(?:${DIAL_WORD}|colou?r)\\b`, "i"))?.[1];
   if (explicit) return explicit.toLowerCase();
   if (reference) {
     const ref = reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1847,7 +1892,7 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
     // was already being parsed correctly from the same message. Removing the whole phrase here,
     // before that cutoff runs, also stops the cutoff from eating a model that FOLLOWS one:
     // "black dial daytona" keeps daytona instead of collapsing to the color.
-    .replace(/\b(?:black|white|blue|green|silver|champagne|grey|gray|salmon|panda|either|any)\s*(?:dials?|colou?rs?)\b/gi, " ")
+    .replace(new RegExp(`\\b(?:${DIAL_COLORS}|either|any)\\s*${DIAL_DESCRIPTOR_INFIX}(?:${DIAL_WORD}s?|colou?rs?)\\b`, "gi"), " ")
     // A bare colour that ENDS the clause is the dial, not part of the model ("116500LN black").
     .replace(new RegExp(`\\s+(?:${DIAL_COLORS})\\s*$`, "i"), " ")
     .replace(/\bonly\b/gi, "")
