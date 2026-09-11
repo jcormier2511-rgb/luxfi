@@ -483,6 +483,25 @@ test("required: a diamond-marker dial phrase (\"black diamond dial\") narrows th
   assert.match(text, /Average FS ask: \$9,000/);
 });
 
+// Live-reported: "market pulse 126300 blue roman dial pre owned no box nor papers" silently
+// dropped the dial filter entirely -- the Scope line showed only "filtered to pre-owned", never
+// the blue dial that was also stated. Same shape as the diamond-marker gap above: "roman" (Roman-
+// numeral hour markers, not a color) sits between "blue" and "dial", which the infix bridge only
+// covered for "diamond" at the time.
+test('required: a marker-descriptor dial phrase ("blue roman dial") narrows the pulse same as a plain color', async () => {
+  const phone = freshPhone();
+  await makeListing(phone, "FS", "126300", 12000, { dialColor: "blue", location: "USA", condition: "pre-owned" });
+  await makeListing("telegram:5559000099", "FS", "126300", 15000, { dialColor: "white", location: "USA", condition: "pre-owned" });
+
+  const reply = await handleIncomingMessage(phone, "market pulse 126300 blue roman dial pre owned no box nor papers");
+  const text = reply.messages.join("\n");
+  assert.doesNotMatch(text, /not sure I understood/i);
+  assert.match(text, /Market Pulse — 126300/);
+  assert.match(text, /filtered to blue dial, pre-owned/i);
+  assert.match(text, /FS: 1 active listing\b/);
+  assert.match(text, /Average FS ask: \$12,000/);
+});
+
 // Live-reported: "Check market demand for 126500LN white dial" got the generic fallback --
 // MARKET_REFERENCE_COMMAND only ever recognized "market"/"pulse" (optionally after "what's/how's
 // the"), never a message that puts "check" BEFORE "market" instead.

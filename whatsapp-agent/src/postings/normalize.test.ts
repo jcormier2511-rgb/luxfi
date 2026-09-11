@@ -354,6 +354,19 @@ test("required regression: a year stated before the reference is not mistaken fo
   assert.equal(extractReference("Rolex 1016 for sale"), "1016");
 });
 
+test('required regression: a year stated as its own comma-separated attribute is not mistaken for the reference -- "Sell Rolex, Panda, 2023, $20000, USA, Good" stored "2023" as the reference', () => {
+  const { extractReference } = require("./normalize") as typeof import("./normalize");
+  assert.equal(
+    extractReference("Sell Rolex, Panda, 2023, $20000, USA, Good"),
+    null,
+    "2023 is flanked by commas on both sides, stated as a plain year attribute -- never how a real reference is written"
+  );
+  // A comma-flanked bare year must still lose to a REAL reference stated elsewhere in the message.
+  assert.equal(extractReference("Sell Rolex, Daytona 116500LN, 2023, $30000, USA, New"), "116500LN");
+  // Vintage references remain unaffected -- no comma directly before the number in that phrasing.
+  assert.equal(extractReference("Rolex 1016 for sale"), "1016");
+});
+
 test("regionsConflict: only a genuine, known-different continent counts as a conflict", () => {
   assert.equal(regionsConflict("USA", "Asia"), true);
   assert.equal(regionsConflict("USA", "Hong Kong"), true, "a specific country/city resolves to its own broad region too");

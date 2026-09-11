@@ -136,6 +136,28 @@ test('required regression: a price/condition mentioned mid-sentence ("... or 380
   assert.equal(result.state.pendingSellIntake?.condition, "pre-owned", "the condition itself must still be recognized correctly");
 });
 
+test('required regression: everyday grading words ("Good", "Fair", "Excellent", "Very Good", "Like New") are recognized as the condition -- "Sell Rolex, Panda, 2023, $20000, USA, Good" stored condition as the silently-guessed "pre-owned" and leaked "Good" onto the location instead ("USA Good")', async () => {
+  const phone = "19992220004"; resetState(phone); await inventoryDb._resetDbForTests();
+  await handleIncomingMessage(phone, "hi");
+  const result = await handleIncomingMessage(phone, "Sell Rolex, Panda, 2023, $20000, USA, Good");
+  const draft = result.state.pendingSellIntake;
+  assert.equal(draft?.condition, "Good", "the stated condition must be used, not silently guessed as pre-owned");
+  assert.equal(draft?.location, "USA", "the condition word must not leak into the location value");
+
+  for (const [word, expected] of [
+    ["Fair", "Fair"],
+    ["Excellent", "Excellent"],
+    ["Very Good", "Very Good"],
+    ["Like New", "Like New"],
+  ] as const) {
+    const p = `1999222000${word.replace(/\s/g, "")}`;
+    resetState(p);
+    await handleIncomingMessage(p, "hi");
+    const r = await handleIncomingMessage(p, `Sell Rolex, Panda, 2023, $20000, USA, ${word}`);
+    assert.equal(r.state.pendingSellIntake?.condition, expected, `"${word}" must be recognized as the condition`);
+  }
+});
+
 test('required regression: a reference typed in LOWERCASE must not survive inside the model field ("Daytona 116500ln" instead of a clean "Daytona")', async () => {
   // Real reported bug: the model field ended up stored as "Daytona 116500ln" -- the reference
   // fused right into it -- which then displayed the reference twice ("Daytona 116500ln

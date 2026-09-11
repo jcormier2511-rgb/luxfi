@@ -136,6 +136,34 @@ test("an incomplete follow-up remains pending and does not search with missing r
   assert.ok(!result.messages.some((m) => /Potential Match/.test(m)), "an incomplete request must not search");
 });
 
+/**
+ * Real reported bug: "Just one more thing — what's your condition?" kept re-asking the identical
+ * question after a bare, natural one-word reply ("New") -- the AI interpreter is tuned for full
+ * sentences stating a whole request, not a bare word with nothing else, and returned nothing
+ * usable for it. A deterministic fallback (the same slot extraction the sell/buy intake steps
+ * already use) now also tries the reply, so a bare answer to a single missing field still fills
+ * it in even when the AI call itself extracts nothing.
+ */
+test('required regression: a bare one-word follow-up answer ("New") is still recognized as the condition, even when the AI interpreter extracts nothing from it', async (t) => {
+  resetState(TEST_PHONE);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("a", { location: "North America", condition: "New" })], new Date().toISOString());
+  t.mock.method(queryInterpreterModule, "interpretQuery", async (text: string) => {
+    if (text.includes("looking for")) return interpreted({ maxPrice: 27000, location: "USA", dialColor: "black" }); // condition alone missing
+    return interpreted(); // the AI extracts nothing usable from the bare follow-up reply itself
+  });
+  mockAlwaysMatches(t);
+
+  await handleIncomingMessage(TEST_PHONE, "hi");
+  const asked = await handleIncomingMessage(TEST_PHONE, "looking for a rolex daytona 116500 under 27k, black dial, USA");
+  assert.match(asked.messages.join("\n"), /what's your condition\?/i, "precondition: condition is the only field left missing");
+
+  const result = await handleIncomingMessage(TEST_PHONE, "New");
+  assert.doesNotMatch(result.messages.join("\n"), /what's your condition\?/i, "must not ask the identical question again");
+  const matchCard = result.messages.find((m) => /Potential Match/.test(m));
+  assert.ok(matchCard, "the deterministic fallback filled the last missing field, so the search must run");
+});
+
 test("a fully-specified message never triggers a follow-up at all", async (t) => {
   resetState(TEST_PHONE);
   await inventoryDb._resetDbForTests();

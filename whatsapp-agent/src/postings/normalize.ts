@@ -441,7 +441,18 @@ export function extractReference(text: string): string | null {
   // all, and must not silently become one).
   const isYearBeforeProperNoun = (m: RegExpMatchArray): boolean =>
     BARE_YEAR.test(m[1]) && m.index !== undefined && /^\s+[A-Z]/.test(withoutPrices.slice(m.index + m[0].length));
-  const candidates = matches.filter((m) => !isYearBeforeProperNoun(m));
+  // Real reported bug: "Sell Rolex, Panda, 2023, $20000, USA, Good" stored "2023" as the
+  // reference. A bare year flanked by commas on BOTH sides is being stated as its own item in a
+  // comma-separated list of attributes (dial, year, price, ...) -- never how a real reference is
+  // written, which always sits directly against the brand/model with no comma before it ("Rolex
+  // 1016", not "Rolex, 1016"). Dropped from the candidate pool the same way isYearBeforeProperNoun
+  // is, for the same reason: it must not win by default just because nothing else is present.
+  const isYearAsListedAttribute = (m: RegExpMatchArray): boolean =>
+    BARE_YEAR.test(m[1]) &&
+    m.index !== undefined &&
+    /,\s*$/.test(withoutPrices.slice(0, m.index)) &&
+    /^\s*,/.test(withoutPrices.slice(m.index + m[0].length));
+  const candidates = matches.filter((m) => !isYearBeforeProperNoun(m) && !isYearAsListedAttribute(m));
   // Otherwise, a bare year-shaped token is treated as the reference only when nothing better is
   // present, since a vintage reference (e.g. Rolex 1016) can legitimately look exactly like one.
   const preferred = candidates.find((m) => !BARE_YEAR.test(m[1])) ?? candidates[0];

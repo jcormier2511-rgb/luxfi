@@ -69,7 +69,10 @@ const SELL_KEYWORDS = /\b(sell|selling|fs|for sale|i have|wts|find\s+(?:a\s+|me\
 // the very option it had just offered. Matched and handled separately, before classify() ever
 // runs on it: "find a buyer" means the person HAS something to sell (direction: sell); "find a
 // seller" means they want to BUY (direction: buy) -- see the parsed.length===0 handling below.
-const BARE_FIND_BUYER_OR_SELLER = /^find\s+(?:a\s+|me\s+)?(buyers?|sellers?)\s*[?.!]*$/i;
+// "me" and "a" can both appear together ("find me a buyer"), in that order -- the earlier
+// `(?:a\s+|me\s+)?` (only one or the other) left "find me a buyer" unmatched entirely, since
+// after consuming "me " the next required token had to be "buyer(s)" directly, not "a buyer".
+const BARE_FIND_BUYER_OR_SELLER = /^find\s+(?:me\s+)?(?:a\s+)?(buyers?|sellers?)\s*[?.!]*$/i;
 
 // Live-reported-adjacent gap (found while auditing natural phrasings of the same "find a buyer"/
 // "find a seller" report): a message asking whether a seller/listing EXISTS reads as a BUY
@@ -393,6 +396,13 @@ function looksLikeName(text: string): boolean {
   if (/'(?:s|t|re|m|ll|ve|d)\b/i.test(t)) return false;
   const words = t.toLowerCase().split(/\s+/);
   if (words.some((w) => NAME_EXCLUDED_WORDS.has(w))) return false;
+  // Real reported bug: "find buyers" (Fi's own capabilities menu option 1, replied to literally
+  // right after "may I have your name?") passed every check above -- two plain alphabetic words,
+  // nothing in NAME_EXCLUDED_WORDS or INTENT_TOKENS matched the whole phrase -- and got stored as
+  // the customer's name ("Nice to meet you, find!"), swallowing the bare-buyer/seller intake
+  // start (see BARE_FIND_BUYER_OR_SELLER) entirely. A reply that reads as a real buy/sell request
+  // is never a name, however short.
+  if (BUY_KEYWORDS.test(t) || SELL_KEYWORDS.test(t)) return false;
   return !INTENT_TOKENS.has(t.toLowerCase()) && !BARE_GREETING.test(t) && !MENU_COMMAND.test(t) && !CANCEL_COMMAND.test(t);
 }
 
@@ -1776,7 +1786,22 @@ async function handleNaturalFollowUpAnswer(state: ConversationState, text: strin
     return;
   }
   const interpreted = await interpretQuery(text);
-  const merged = interpreted ? mergeFollowUpPreferences(pending.partial, toSearchPreferences(interpreted)) : pending.partial;
+  const aiMerged = interpreted ? mergeFollowUpPreferences(pending.partial, toSearchPreferences(interpreted)) : pending.partial;
+  // Real reported bug: a bare one-word follow-up answer ("New", "USA") -- exactly what someone
+  // naturally sends back to "what's your condition?"/"what's your location?" -- kept getting
+  // missed by the AI interpreter (tuned for full sentences stating a whole request, not a bare
+  // word with no other context), so Fi re-asked the identical question forever. The same
+  // deterministic condition/location/dial extraction the sell/buy intake steps already use
+  // (intakeSlots) reliably catches exactly this bare-answer case -- tried in addition to the AI
+  // call, only ever filling a gap the AI left, never overwriting anything it (or the original
+  // message) already found.
+  const slots = intakeSlots(text, null);
+  const merged: SearchPreferences = {
+    ...aiMerged,
+    location: aiMerged.location ?? slots.location,
+    dialColor: aiMerged.dialColor ?? slots.dial,
+    condition: aiMerged.condition ?? slots.condition,
+  };
 
   const stillMissing = missingPreferenceFields(merged);
   if (stillMissing.length > 0) {
@@ -1860,13 +1885,27 @@ function extractListingAmount(text: string, reference: string | null, prefer: "m
   return normalizePriceShorthand(raw) ?? undefined;
 }
 
+// Real reported bug: a dealer's own everyday grading words ("Good", "Fair", "Excellent", "Very
+// Good", "Like New") were not recognized as a condition at all -- only pre-owned/used/unworn/
+// brand new/bnib/new/mint were. An unrecognized condition word doesn't just go missing: it isn't
+// stripped before location-extraction runs, so it lands stuck onto the location value instead
+// ("USA, Good" parsed as location "USA Good"), and the condition field then silently defaults to
+// "pre-owned" -- guessing wrong rather than leaving it for the customer to actually state. Longer
+// phrases ("very good", "like new") are listed before their shorter substrings ("good", "new") so
+// the fuller phrase is preferred where it appears.
+const CONDITION_WORDS = "pre[- ]?owned|unworn|brand\\s+new|bnib|very\\s+good|like\\s+new|excellent|fair|good|used|new|mint|any\\s+condition";
 const DIAL_COLORS = "black|white|blue|green|silver|champagne|grey|gray|salmon|panda";
 // Live-reported gap: "black diamond dial" (a standard trade term for a dial with diamond hour
 // markers -- not a color name of its own) sits between the color word and "dial", which none of
 // the DIAL_COLORS matches below used to bridge. "market pulse 126234 black diamond dial" fell
 // through every dial-phrase check, then had no location/condition either, so the whole command
 // was rejected as unrecognized instead of narrowing the pulse by dial color.
-const DIAL_DESCRIPTOR_INFIX = "(?:diamond\\s+)?";
+//
+// Live-reported gap, same shape: "market pulse 126300 blue roman dial pre owned no box nor
+// papers" -- "roman" (Roman-numeral hour markers, not a color) sits between "blue" and "dial" the
+// same way "diamond" does, and the dial filter was silently dropped from the pulse's scope
+// entirely (only "filtered to pre-owned" showed, never the dial color that was also stated).
+const DIAL_DESCRIPTOR_INFIX = "(?:(?:diamond|roman)\\s+)?";
 // Same live report also typed "diall" (a doubled trailing letter) instead of "dial" -- common
 // enough on a phone keyboard that every dial-phrase match below tolerates it the same way.
 const DIAL_WORD = "dial{1,2}";
@@ -1915,7 +1954,7 @@ function extractLocation(text: string, consumed: { model?: string; brand?: strin
     .replace(/\b(?:HK|US|C|S|A|CN)?[$€£¥]\s*[\d][\d,.]*\s*k?\b/gi, " ")
     .replace(/\b[\d][\d,.]*\s*k\b/gi, " ")
     .replace(/\b(?:USD|CAD|HKD|EUR|GBP|AED|SGD|AUD|JPY|CNY|RMB|CHF)\b/gi, " ")
-    .replace(/\b(?:pre[- ]?owned|unworn|brand\s+new|bnib|used|new|mint|any\s+condition)\b/gi, " ")
+    .replace(new RegExp(`\\b(?:${CONDITION_WORDS})\\b`, "gi"), " ")
     .replace(new RegExp(`\\b(?:${DIAL_COLORS}|either|any)\\s*${DIAL_DESCRIPTOR_INFIX}(?:${DIAL_WORD}s?|colou?rs?)?\\b`, "gi"), " ")
     .replace(/\b(?:full\s+set|box(?:\s+and\s+|\s*&\s*|\/)?papers?|papers)\b/gi, " ")
     .replace(/\b(?:19|20)\d{2}\b/g, " ");
@@ -1948,7 +1987,7 @@ function extractDial(text: string, reference: string | null): string | undefined
 
 function intakeSlots(text: string, reference: string | null, prefer: "max" | "min" = "max") {
   const price = extractListingAmount(text, reference, prefer);
-  const conditionRaw = text.match(/\b(pre[- ]?owned|used|unworn|brand new|bnib|new|mint|any condition)\b/i)?.[1];
+  const conditionRaw = text.match(new RegExp(`\\b(${CONDITION_WORDS})\\b`, "i"))?.[1];
   const condition = !conditionRaw ? conditionRaw
     : /^pre[- ]?owned$/i.test(conditionRaw) ? "pre-owned"
     : /^bnib$/i.test(conditionRaw) ? "New"
@@ -2006,7 +2045,7 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
     // watch's MODEL ("Rolex complete 116500LN") -- a dealer's "complete" means the same thing as
     // "full set" (box, papers, everything), but wasn't in this cutoff list, so it survived every
     // other scrub and was the only token left standing.
-    .replace(/\b(?:pre[- ]?owned|used|unworn|brand new|bnib|new|mint|in|from|located|based|dial|color|full set|complete(?:\s+set)?|box|papers|USD|AED|HKD|EUR|GBP)\b.*$/i, "")
+    .replace(new RegExp(`\\b(?:${CONDITION_WORDS}|in|from|located|based|dial|color|full set|complete(?:\\s+set)?|box|papers|USD|AED|HKD|EUR|GBP)\\b.*$`, "i"), "")
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
   // Belt and braces: whatever survives the scrubbing above is still rejected outright if it
   // identifies nothing — lead-in language, or a descriptor like a dial color that already has
