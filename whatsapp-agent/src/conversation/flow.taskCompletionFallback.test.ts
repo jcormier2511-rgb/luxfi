@@ -154,8 +154,50 @@ test("required regression: passing on a match, then an unparseable reply gets 'A
 
   const passed = await handleIncomingMessage(phone, "pass 1");
   assert.match(passed.messages.join("\n"), /Passing on #1/);
+  assert.match(
+    passed.messages.join("\n"),
+    /That was the last one.*passed on every match/i,
+    'required regression: passing on the only/last pending match must not leave the reply as a bare "Passing on #1" with no acknowledgment that the search is done — that read as Fi going silent rather than having finished'
+  );
 
   const phantom = await handleIncomingMessage(phone, UNPARSEABLE);
   assert.match(phantom.messages.join("\n"), ANYTHING_ELSE);
   assert.doesNotMatch(phantom.messages.join("\n"), CANNED_FALLBACK);
+});
+
+test('required regression: passing on all pending matches one at a time only announces "last one" once everything is actually resolved, not mid-way through', async (t) => {
+  await inventoryDb._resetDbForTests();
+  await postingsDb._resetDbForTests();
+  await inventoryDb.upsertListings(
+    [fsRow("pass-all-1"), fsRow("pass-all-2"), fsRow("pass-all-3")],
+    new Date().toISOString()
+  );
+  t.mock.method(whapiClient, "sendText", async () => {});
+
+  const phone = "19990003004";
+  resetState(phone);
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+  await handleIncomingMessage(phone, "any");
+
+  const firstPass = await handleIncomingMessage(phone, "pass 1");
+  assert.match(firstPass.messages.join("\n"), /Passing on #1/);
+  assert.doesNotMatch(
+    firstPass.messages.join("\n"),
+    /passed on every match/i,
+    "two matches are still pending — must not claim the search is done yet"
+  );
+
+  const secondPass = await handleIncomingMessage(phone, "pass 2");
+  assert.doesNotMatch(secondPass.messages.join("\n"), /passed on every match/i, "one match (#3) is still pending");
+
+  const thirdPass = await handleIncomingMessage(phone, "pass 3");
+  assert.match(
+    thirdPass.messages.join("\n"),
+    /That was the last one.*passed on every match/i,
+    "the third pass resolves the last one — the search-continuation reply must appear now"
+  );
 });

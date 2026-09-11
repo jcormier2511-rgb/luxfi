@@ -1611,6 +1611,14 @@ async function handleDecision(state: ConversationState, decision: DecisionComman
     pending.decisions[idx] = "passed";
     messages.push(`Passing on #${displayIndex}.`);
     state.lastReplyWasTaskCompletion = true;
+    // Real reported bug: passing on the LAST still-pending match left the reply as a bare
+    // "Passing on #N." with nothing else -- read as Fi going silent/stuck rather than having
+    // finished and moved on. Mirrors the exact reassurance a fresh search already gives when it
+    // finds nothing (see startSearch) -- there's still an open request, it just has no more
+    // current candidates to show.
+    if (findLatestPendingIndex(pending) === null) {
+      messages.push(`That was the last one — you've passed on every match for "${pending.request.query}". I'll keep watching the network. Search again anytime, or tell me a new item to look for.`);
+    }
     return;
   }
 
