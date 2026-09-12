@@ -158,3 +158,43 @@ test("extractIncomingMessages produces nothing for a non-message webhook type (e
 test("extractIncomingMessages produces nothing for a webhook with no typeWebhook at all", () => {
   assert.deepEqual(client.extractIncomingMessages({}), []);
 });
+
+test("listGreenApiGroups: gets getContacts and returns only the group entries, keyed by digits-only id", async (t) => {
+  t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+    assert.equal(url, "https://api.green-api.com/waInstance1234567890/getContacts/super-secret-green-api-token");
+    assert.equal(init?.method, "GET");
+    return new Response(
+      JSON.stringify([
+        { id: "15551234567@c.us", name: "Some Person" },
+        { id: "120363043968406745@g.us", name: "Dealer Group One" },
+        { id: "120363099999999999@g.us", name: "Dealer Group Two" },
+      ]),
+      { status: 200 }
+    );
+  });
+  const groups = await client.listGreenApiGroups();
+  assert.deepEqual(
+    groups.map((g) => ({ groupId: g.groupId, name: g.name })),
+    [
+      { groupId: "120363043968406745", name: "Dealer Group One" },
+      { groupId: "120363099999999999", name: "Dealer Group Two" },
+    ]
+  );
+});
+
+test("listGreenApiGroups: tolerates a {contacts:[...]} envelope instead of a bare array", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ contacts: [{ id: "120363011111111111@g.us", name: "Wrapped Group" }] }), { status: 200 }));
+  const groups = await client.listGreenApiGroups();
+  assert.deepEqual(groups.map((g) => g.groupId), ["120363011111111111"]);
+});
+
+test("listGreenApiGroups: skips a group-shaped entry with no recognizable id rather than throwing", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify([{ name: "No id at all" }, { id: "120363022222222222@g.us", name: "Good Group" }]), { status: 200 }));
+  const groups = await client.listGreenApiGroups();
+  assert.deepEqual(groups.map((g) => g.groupId), ["120363022222222222"]);
+});
+
+test("listGreenApiGroups: throws with the response status/body when the API rejects the call", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ message: "bad request" }), { status: 400 }));
+  await assert.rejects(() => client.listGreenApiGroups(), /Green API GET getContacts failed: 400/);
+});

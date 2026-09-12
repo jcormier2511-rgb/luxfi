@@ -46,3 +46,10 @@ test("checkGreenApiHealth reports not configured, without attempting a live call
   const result = await client.checkGreenApiHealth();
   assert.deepEqual(result, { configured: false, reachable: false, authorized: null, stateInstance: null, error: null });
 });
+
+test("listGreenApiGroups returns an empty list, without attempting a live call, when unconfigured", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("fetch must not be called while unconfigured");
+  });
+  assert.deepEqual(await client.listGreenApiGroups(), []);
+});

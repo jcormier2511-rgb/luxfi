@@ -151,6 +151,62 @@ export async function checkGreenApiHealth(): Promise<GreenApiHealthResult> {
  * captured payload once a live instance is sending here, the same way whapi/client.ts's own
  * `image.link` assumption turned out to need correcting against a real payload.
  */
+export interface GreenApiGroupSummary {
+  /** Digits of the group's chat id, e.g. from "120363...@g.us" -- the SAME extraction
+   *  convention extractIncomingMessages above already uses for groupId, so a discovered group's
+   *  id matches exactly what a real webhook's source_chat_id would be. */
+  groupId: string;
+  name: string;
+  /** The full, unmapped API entry -- kept for debugging against a real response and for any
+   *  field a future need might want that isn't extracted above yet. */
+  raw: unknown;
+}
+
+/**
+ * Green API's documented GET getContacts endpoint lists every contact the connected instance
+ * knows about, including groups (id ending "@g.us") alongside individuals ("@c.us") -- the
+ * group-discovery mechanism for the Group Registry sync (see admin/groupSync.ts's
+ * syncGroupsFromGreenApi), mirroring whapi/client.ts's listWhapiGroups for the Whapi-connected
+ * number. DOCUMENTED BUT NOT EMPIRICALLY CONFIRMED (same caveat checkGreenApiHealth above
+ * carries): this sandbox has no live Green API credentials to confirm the response shape
+ * against. Parsed defensively -- tolerates a bare array or a {contacts:[...]} envelope, either
+ * an `id` or `chatId` field, and skips (with a warning, never a throw) any entry with no
+ * recognizable id or that isn't a group, so one unexpected row can't drop the whole discovery
+ * run.
+ *
+ * Only ever covers the ONE Green API instance Fi holds instanceId/apiToken for (the "push"
+ * number -- see config.ts's own comment on config.channels.greenApi). An additional
+ * monitoring-only number (Fi holds no credentials for those at all, by design) can never be
+ * actively discovered this way -- only passively, from an actual incoming webhook message
+ * naming a groupId Fi doesn't already know.
+ */
+export async function listGreenApiGroups(): Promise<GreenApiGroupSummary[]> {
+  if (!config.channels.greenApi.instanceId || !config.channels.greenApi.apiToken) return [];
+  const res = await fetch(`${apiBase()}/getContacts/${config.channels.greenApi.apiToken}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(GREEN_API_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Green API GET getContacts failed: ${res.status} ${text}`);
+  }
+  const body = (await res.json().catch(() => null)) as { contacts?: unknown[] } | unknown[] | null;
+  const list: any[] = Array.isArray(body) ? body : Array.isArray((body as any)?.contacts) ? (body as any).contacts : [];
+  const groups: GreenApiGroupSummary[] = [];
+  for (const item of list) {
+    const rawId = String(item?.id ?? item?.chatId ?? "").trim();
+    if (!rawId.endsWith("@g.us")) continue; // an individual contact, not a group
+    const digits = digitsOnly(rawId);
+    if (!digits) {
+      console.warn("[greenApi] GET getContacts returned a group entry with no recognizable id, skipping:", item);
+      continue;
+    }
+    groups.push({ groupId: digits, name: String(item?.name ?? "").trim(), raw: item });
+  }
+  return groups;
+}
+
 export interface GreenApiWebhook {
   typeWebhook?: string;
   idMessage?: string;

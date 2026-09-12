@@ -72,7 +72,7 @@ import {
   parseCookies,
 } from "./admin/session";
 import { Administrator, authenticate, bulkUpdateGroups, deleteGroup, deleteUser, exportUsersCsv, getAdministrator, GroupBulkAction, importUsersCsv, initAdminSchema, listAdministrators, listGroups, listUsers, resetAdministratorPassword, saveAdministrator, saveGroup, saveUser, USER_CSV_SAMPLE } from "./admin/store";
-import { syncGroupsFromWhapi } from "./admin/groupSync";
+import { syncGroupsFromWhapi, syncGroupsFromGreenApi } from "./admin/groupSync";
 import { buildAdminDashboardData } from "./admin/dashboard";
 import { listAllIdentities } from "./admin/metrics";
 import { renderDashboard, renderLoginPage, renderManagementPage, renderPushGroupsPage, renderToolsPage } from "./admin/view";
@@ -590,6 +590,11 @@ export function createServer() {
   // Whapi-driven group discovery -- see admin/groupSync.ts. Never auto-enables monitoring/push;
   // never deletes a group that's since disappeared, only marks it inaccessible.
   app.post("/admin/api/groups/sync-whapi",api(async(_req,res)=>res.json(await syncGroupsFromWhapi()),true));
+  // Green API's own discovery sync -- the counterpart above only ever sees groups reachable
+  // through the Whapi-connected number, a separate WhatsApp connection from the Green API
+  // numbers actually doing live sends/monitoring today (see admin/groupSync.ts's
+  // syncGroupsFromGreenApi for the real reported gap this closes).
+  app.post("/admin/api/groups/sync-greenapi",api(async(_req,res)=>res.json(await syncGroupsFromGreenApi()),true));
   // Bulk admin actions (select-all + one of: enable/disable monitoring, enable push FS/WTB,
   // disable push, set priority, set category) -- see admin/store.ts's bulkUpdateGroups.
   app.post("/admin/api/groups/bulk",api(async(req,res,ctx)=>{

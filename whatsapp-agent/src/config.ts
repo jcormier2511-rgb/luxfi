@@ -45,6 +45,11 @@ export const config = {
       instanceId: process.env.GREEN_API_INSTANCE_ID ?? "",
       apiToken: process.env.GREEN_API_API_TOKEN ?? "",
       baseUrl: process.env.GREEN_API_BASE_URL ?? "https://api.green-api.com",
+      // Same role as whapi.accountLabel above -- identifies this instance as a distinct
+      // source_account in the Group Registry sync (admin/groupSync.ts's syncGroupsFromGreenApi),
+      // so a group also reachable via Whapi (or a future second Green API instance) tracks each
+      // account's own accessibility separately rather than one clobbering the other.
+      accountLabel: process.env.GREEN_API_ACCOUNT_LABEL ?? "green-api",
     },
     telegram: {
       botToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
