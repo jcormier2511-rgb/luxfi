@@ -9,7 +9,7 @@ import { sendText, sendBannerImage, NormalizedIncomingMessage } from "./channels
 import { platformForIdentity } from "./channels/identity";
 import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
 import { verifyTwilioSignature, extractIncomingMessage as extractSmsMessage } from "./channels/sms";
-import { alreadyProcessed, alreadyProcessedContent, isSuspectedPhantomCompanion, isSuspectedOutboundEcho, getState, resetState, markPendingEscrowOffer, listOpenDrafts } from "./conversation/stateStore";
+import { alreadyProcessed, alreadyProcessedContent, isSuspectedPhantomCompanion, isSuspectedOutboundEcho, getState, saveState, resetState, markPendingEscrowOffer, listOpenDrafts } from "./conversation/stateStore";
 import { handleIncomingMessage } from "./conversation/flow";
 import { handleGroupMessage } from "./conversation/groupMonitor";
 import { getTierABContacts, loadContacts } from "./data/contactsStore";
@@ -44,6 +44,7 @@ import { handleIncomingSellerPhoto } from "./matching/photoRequests";
 import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, formatPhoneForDisplay, notifyMatch, getPendingMatchesForRecipient, isRealDisplayName } from "./postings/notify";
 import { interpretPostingsDecision } from "./ai/decisionInterpreter";
 import { runCheckoutReconciliation, activateClaimedCheckout } from "./billing/checkoutReconciliation";
+import { cancelOwnMembership, SelfServiceCancellationResult } from "./billing/membershipCancellation";
 import { runReconciliation } from "./postings/matching";
 import { getOrCreateCanonicalUser } from "./postings/identity";
 import { getLinkedIdentities, resetNotificationPreference } from "./postings/notificationPreferences";
@@ -506,6 +507,49 @@ async function resetUserAccount(identity: string): Promise<{
   };
 }
 
+/**
+ * Admin-triggered version of the self-service STOP command (conversation/flow.ts) -- real
+ * reported ask: an admin-driven way to block a specific number from Fi entirely, the same
+ * effect as that number texting STOP itself, without requiring them to actually do so. Sets
+ * every one of the canonical user's linked identities (WhatsApp/Telegram both, if linked) to
+ * "opted_out" -- the same flag postings/notify.ts's notifyOneRecipient now checks before
+ * sending any automatic match notification, and conversation/flow.ts already checks before
+ * replying to an inbound message -- so this stops BOTH inbound replies and outbound pushes,
+ * across every linked channel, not just the one identity given. Billing is only ever cancelled
+ * for the exact identity given (matching STOP's own scope: it cancels the CURRENT conversation's
+ * membership, not every linked identity's).
+ */
+async function blockIdentity(identity: string): Promise<{
+  identity: string;
+  canonicalUserId: number;
+  identitiesBlocked: string[];
+  cancellation: SelfServiceCancellationResult;
+}> {
+  const userId = await getOrCreateCanonicalUser(platformForIdentity(identity), identity);
+  const linked = await getLinkedIdentities(userId);
+  for (const { identity: linkedIdentity } of linked) {
+    const state = getState(linkedIdentity);
+    state.stage = "opted_out";
+    saveState(state);
+  }
+  const cancellation = await cancelOwnMembership(identity);
+  return { identity, canonicalUserId: userId, identitiesBlocked: linked.map((l) => l.identity), cancellation };
+}
+
+/** Reverses blockIdentity -- the same effect as that number replying START itself. Billing is
+ *  never touched here (same as replying START doesn't restore a cancelled membership on its
+ *  own); they'd need to resubscribe separately if they want the paid plan back. */
+async function unblockIdentity(identity: string): Promise<{ identity: string; canonicalUserId: number; identitiesUnblocked: string[] }> {
+  const userId = await getOrCreateCanonicalUser(platformForIdentity(identity), identity);
+  const linked = await getLinkedIdentities(userId);
+  for (const { identity: linkedIdentity } of linked) {
+    const state = getState(linkedIdentity);
+    if (state.stage === "opted_out") state.stage = "new";
+    saveState(state);
+  }
+  return { identity, canonicalUserId: userId, identitiesUnblocked: linked.map((l) => l.identity) };
+}
+
 function verifyWhatsAppSignature(rawBody: Buffer, signature: string | undefined): boolean {
   if (!config.server.whatsappAppSecret || !signature?.startsWith("sha256=")) return false;
   const supplied = signature.slice("sha256=".length);
@@ -650,6 +694,21 @@ export function createServer() {
     const identity=typeof req.body?.identity==="string"?req.body.identity.trim():"";
     if(!identity)return res.status(400).json({error:"identity is required (e.g. telegram:5703391972 or 13053897000)"});
     res.json({ok:true,...(await resetUserAccount(identity))});
+  },true));
+  // Admin-triggered block/unblock -- same "opted_out" effect as that number texting STOP/START
+  // itself (see blockIdentity/unblockIdentity above). Held to the same read_only+support bar as
+  // the reset action above: this stops real notifications and cancels real billing.
+  app.post("/admin/api/tools/block-number",api(async(req,res,ctx)=>{
+    if(ctx.admin.role==='support')return res.status(403).json({error:"administrator or owner role required"});
+    const identity=typeof req.body?.identity==="string"?req.body.identity.trim():"";
+    if(!identity)return res.status(400).json({error:"identity is required (e.g. telegram:5703391972 or 13053897000)"});
+    res.json({ok:true,...(await blockIdentity(identity))});
+  },true));
+  app.post("/admin/api/tools/unblock-number",api(async(req,res,ctx)=>{
+    if(ctx.admin.role==='support')return res.status(403).json({error:"administrator or owner role required"});
+    const identity=typeof req.body?.identity==="string"?req.body.identity.trim():"";
+    if(!identity)return res.status(400).json({error:"identity is required (e.g. telegram:5703391972 or 13053897000)"});
+    res.json({ok:true,...(await unblockIdentity(identity))});
   },true));
 
   // One-time cleanup for direct (buy/sell intake) postings created before createDirectPosting

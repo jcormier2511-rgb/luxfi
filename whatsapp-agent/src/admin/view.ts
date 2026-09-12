@@ -479,6 +479,7 @@ export function renderToolsPage(): string {
   <a href="#mg-section">Market Guide debug</a>
   <a href="#inv-section">Inventory search</a>
   <a href="#reset-section">Full account reset</a>
+  <a href="#block-section">Block / unblock a number</a>
   <a href="#dup-section">Duplicate postings</a>
   <a href="#ent-section">Membership / entitlement</a>
   <a href="#id-section">All known identities</a>
@@ -509,6 +510,14 @@ export function renderToolsPage(): string {
   <div class="toolbar"><div class="field"><label for="reset-id">Identity</label><input id="reset-id" placeholder="e.g. telegram:5703391972 or 13053897000"></div><button class="btn-danger" onclick="resetAccount()">Reset account</button></div>
   <pre id="reset-result"></pre>
   <pre id="reset-error" class="error"></pre>
+</section>
+
+<section class="card" id="block-section">
+  <h2>Block / unblock a number</h2>
+  <p class="muted">Same effect as that number texting STOP (block) or START (unblock) itself — stops Fi from replying AND from sending any automatic match notification, across every identity linked to the given one. Block also cancels any active paid membership for the given identity. Requires administrator or owner role.</p>
+  <div class="toolbar"><div class="field"><label for="block-id">Identity</label><input id="block-id" placeholder="e.g. telegram:5703391972 or 13053897000"></div><button class="btn-danger" onclick="blockNumber()">Block</button><button class="btn-outline" onclick="unblockNumber()">Unblock</button></div>
+  <pre id="block-result"></pre>
+  <pre id="block-error" class="error"></pre>
 </section>
 
 <section class="card" id="dup-section">
@@ -609,6 +618,31 @@ export function renderToolsPage(): string {
       if(!res.ok){document.querySelector('#reset-error').textContent=data.error||'Reset failed';return}
       document.querySelector('#reset-result').textContent=JSON.stringify(data,null,2);
     }catch(e){document.querySelector('#reset-error').textContent=e.message}
+  }
+  async function blockNumber(){
+    document.querySelector('#block-error').textContent='';document.querySelector('#block-result').textContent='';
+    const identity=document.querySelector('#block-id').value.trim();if(!identity)return;
+    if(!confirm('Block '+identity+'? This stops Fi replying to and notifying every identity linked to it, and cancels any active paid membership.'))return;
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/tools/block-number',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify({identity})});
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#block-error').textContent=data.error||'Block failed';return}
+      document.querySelector('#block-result').textContent=JSON.stringify(data,null,2);
+    }catch(e){document.querySelector('#block-error').textContent=e.message}
+  }
+  async function unblockNumber(){
+    document.querySelector('#block-error').textContent='';document.querySelector('#block-result').textContent='';
+    const identity=document.querySelector('#block-id').value.trim();if(!identity)return;
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/tools/unblock-number',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':token},body:JSON.stringify({identity})});
+      if(res.status===401){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){document.querySelector('#block-error').textContent=data.error||'Unblock failed';return}
+      document.querySelector('#block-result').textContent=JSON.stringify(data,null,2);
+    }catch(e){document.querySelector('#block-error').textContent=e.message}
   }
   function entPhone(){return document.querySelector('#ent-phone').value.trim()}
   async function entLookup(){

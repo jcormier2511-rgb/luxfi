@@ -164,6 +164,59 @@ test("POST /admin/api/tools/user-reset requires CSRF and blocks read_only and su
   assert.equal(body.closedPostings.length, 1);
 });
 
+test("POST /admin/api/tools/block-number requires CSRF and blocks read_only and support roles, but allows administrator/owner", async () => {
+  const identity = "15550004003";
+  const administratorId = await seedAdmin("administrator");
+  const administratorCookie = cookieFor(administratorId);
+  const noCsrf = await fetch(`${baseUrl}/admin/api/tools/block-number`, { method: "POST", headers: { Cookie: administratorCookie, "Content-Type": "application/json" }, body: JSON.stringify({ identity }) });
+  assert.equal(noCsrf.status, 419, "modify actions require the CSRF header even before the role check runs");
+
+  const readOnlyId = await seedAdmin("read_only");
+  const readOnlyCookie = cookieFor(readOnlyId);
+  const readOnlyCsrf = await csrfFor(readOnlyCookie);
+  const readOnlyBlocked = await fetch(`${baseUrl}/admin/api/tools/block-number`, { method: "POST", headers: { Cookie: readOnlyCookie, "Content-Type": "application/json", "X-CSRF-Token": readOnlyCsrf }, body: JSON.stringify({ identity }) });
+  assert.equal(readOnlyBlocked.status, 403, "read_only is blocked by the shared modify-action gate");
+
+  const supportId = await seedAdmin("support");
+  const supportCookie = cookieFor(supportId);
+  const supportCsrf = await csrfFor(supportCookie);
+  const supportBlocked = await fetch(`${baseUrl}/admin/api/tools/block-number`, { method: "POST", headers: { Cookie: supportCookie, "Content-Type": "application/json", "X-CSRF-Token": supportCsrf }, body: JSON.stringify({ identity }) });
+  assert.equal(supportBlocked.status, 403, "the block action additionally blocks support, unlike ordinary modify actions");
+
+  const administratorCsrf = await csrfFor(administratorCookie);
+  const administratorOk = await fetch(`${baseUrl}/admin/api/tools/block-number`, { method: "POST", headers: { Cookie: administratorCookie, "Content-Type": "application/json", "X-CSRF-Token": administratorCsrf }, body: JSON.stringify({ identity }) });
+  assert.equal(administratorOk.status, 200, "administrator role is allowed, not just owner");
+  const body = (await administratorOk.json()) as { ok: boolean; identitiesBlocked: string[] };
+  assert.equal(body.ok, true);
+  assert.deepEqual(body.identitiesBlocked, [identity]);
+  assert.equal(stateStore.getState(identity).stage, "opted_out", "the identity's own conversation state is actually set opted_out");
+});
+
+test("required: blocking sets every identity linked to the given one opted_out, and unblocking restores them to new", async () => {
+  const primary = "15550004004";
+  const linked = "telegram:15550004004";
+  const identityModule = require("./postings/identity") as typeof import("./postings/identity");
+  const notificationPreferences = require("./postings/notificationPreferences") as typeof import("./postings/notificationPreferences");
+  const canonicalUserId = await identityModule.getOrCreateCanonicalUser("whatsapp", primary);
+  await notificationPreferences.linkIdentity(canonicalUserId, "telegram", linked);
+
+  const ownerId = await seedAdmin("owner");
+  const ownerCookie = cookieFor(ownerId);
+  const ownerCsrf = await csrfFor(ownerCookie);
+
+  const blocked = await fetch(`${baseUrl}/admin/api/tools/block-number`, { method: "POST", headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf }, body: JSON.stringify({ identity: primary }) });
+  assert.equal(blocked.status, 200);
+  const blockedBody = (await blocked.json()) as { identitiesBlocked: string[] };
+  assert.deepEqual(new Set(blockedBody.identitiesBlocked), new Set([primary, linked]));
+  assert.equal(stateStore.getState(primary).stage, "opted_out");
+  assert.equal(stateStore.getState(linked).stage, "opted_out", "the LINKED identity is opted out too, not just the one given");
+
+  const unblocked = await fetch(`${baseUrl}/admin/api/tools/unblock-number`, { method: "POST", headers: { Cookie: ownerCookie, "Content-Type": "application/json", "X-CSRF-Token": ownerCsrf }, body: JSON.stringify({ identity: primary }) });
+  assert.equal(unblocked.status, 200);
+  assert.equal(stateStore.getState(primary).stage, "new");
+  assert.equal(stateStore.getState(linked).stage, "new", "unblocking restores the linked identity too");
+});
+
 test("GET /admin/api/tools/duplicate-postings previews duplicate direct postings without closing anything", async () => {
   const readOnlyId = await seedAdmin("read_only");
   const store = require("./postings/postingsStore") as typeof import("./postings/postingsStore");

@@ -39,6 +39,8 @@ const identity = require("./identity") as typeof import("./identity");
 const notificationPreferences = require("./notificationPreferences") as typeof import("./notificationPreferences");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const adminStore = require("../admin/store") as typeof import("../admin/store");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const stateStore = require("../conversation/stateStore") as typeof import("../conversation/stateStore");
 
 const { ingestChatPosting, mirrorApiFsPosting, createDirectPosting } = store;
 const { runImmediateMatch } = matching;
@@ -100,6 +102,30 @@ test("approveMatch on an unknown match id is invalid", async () => {
   await resetAll();
   const outcome = await approveMatch(999999, "15550000000");
   assert.equal(outcome.status, "invalid");
+});
+
+test("required regression: a recipient who opted out (STOP) never receives an automatic match notification, even though a new match keeps getting created for them", async (t) => {
+  await resetAll();
+  const sent: { phone: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string) => sent.push({ phone }));
+  t.mock.method(whapiClient, "sendBannerImage", async (phone: string) => sent.push({ phone }));
+
+  const buyerPhone = "buyer-opted-out";
+  const state = stateStore.getState(buyerPhone);
+  state.stage = "opted_out";
+  stateStore.saveState(state);
+
+  const { matchId } = await createMatch(buyerPhone);
+  assert.ok(matchId, "the match itself is still created and recorded");
+  assert.equal(sent.find((s) => s.phone === buyerPhone), undefined, "the opted-out buyer must never be sent the match card");
+
+  // Retryable, not permanently skipped: once they reply START again (the same effect as
+  // conversation/flow.ts's own START handling), the SAME still-pending match reaches them on
+  // the next notification pass, without needing a brand-new match to be created.
+  state.stage = "new";
+  stateStore.saveState(state);
+  await notify.notifyMatch(matchId, 1);
+  assert.ok(sent.find((s) => s.phone === buyerPhone), "once un-opted-out, the same pending match reaches them");
 });
 
 test("presented match preserves every available decision field and remains approvable", async (t) => {

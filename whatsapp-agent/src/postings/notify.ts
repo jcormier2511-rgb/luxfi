@@ -14,6 +14,7 @@ import { getListingLimits } from "./listingConfig";
 import { saveMoreContext } from "./moreContext";
 import { getNotificationPreference, resolveNotifyIdentity, resolveFallbackIdentity } from "./notificationPreferences";
 import { consumeFirstContact } from "../lifecycle";
+import { getState } from "../conversation/stateStore";
 
 // Same cap groupPublishing.ts's own image+caption send already respects -- a caption over this
 // gets silently truncated or rejected depending on the channel, so a match card that runs long
@@ -397,6 +398,15 @@ async function notifyOneRecipient(
 
   const phone = await resolveNotifyIdentity(recipientCanonicalUserId);
   if (!phone) return; // e.g. the API-mirrored FS side has no linked identity to notify at all
+
+  // Real reported gap: STOP (conversation/flow.ts's opt-out handling) only ever stops Fi from
+  // REPLYING to that phone -- this async, match-triggered notification path never checked it at
+  // all, so someone who explicitly opted out could still receive automatic match pushes. Checked
+  // here, not earlier, so it still counts as "claimed" above (no duplicate later) but never
+  // marked delivered -- exactly the same retryable shape as the `!phone` case just above, so if
+  // they ever reply START again, the next notification pass finds this posting still active and
+  // delivers normally, rather than requiring a brand-new match to ever reach them again.
+  if (getState(phone).stage === "opted_out") return;
 
   // Best-effort only — a listing with no captured image (most chat posts today, since
   // downloading/durable-storing WhatsApp media is still out of scope, see db.ts) just sends the
