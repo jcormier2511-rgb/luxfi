@@ -53,3 +53,10 @@ test("listGreenApiGroups returns an empty list, without attempting a live call, 
   });
   assert.deepEqual(await client.listGreenApiGroups(), []);
 });
+
+test("joinGroupByInviteLink throws a clear configuration error, without attempting a live call, when unconfigured -- unlike every other function here, it must not silently no-op", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("fetch must not be called while unconfigured");
+  });
+  await assert.rejects(() => client.joinGroupByInviteLink("https://chat.whatsapp.com/AbCdEf123456"), /GREEN_API_INSTANCE_ID\/GREEN_API_API_TOKEN not set/);
+});

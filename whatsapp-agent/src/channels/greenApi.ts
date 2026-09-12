@@ -207,6 +207,38 @@ export async function listGreenApiGroups(): Promise<GreenApiGroupSummary[]> {
   return groups;
 }
 
+export interface GreenApiJoinResult {
+  groupId: string;
+}
+
+/**
+ * Green API's documented POST joinGroupInviteLink -- the connected instance joins a WhatsApp
+ * group directly from its invite link (https://chat.whatsapp.com/<code>), rather than needing
+ * that group's own admin to separately add this number as a participant. This is the practical
+ * fix for a monitoring-only number's groups (see listGreenApiGroups's own comment on the gap):
+ * once the ONE Green API instance Fi actually holds credentials for joins a group itself, that
+ * group shows up in this SAME instance's own getContacts on the very next discovery sync, and
+ * its messages arrive over the webhook Fi already has configured -- no second/third instance's
+ * credentials ever needed.
+ *
+ * Unlike every other function in this file, an unconfigured instance THROWS here rather than
+ * silently skipping-and-warning: joining a group is a deliberate, one-off admin action (see
+ * admin/view.ts's "Join via invite link"), not a routine background send where a silent no-op
+ * is the safe default -- an admin who clicks this needs to know immediately if it did nothing.
+ *
+ * DOCUMENTED BUT NOT EMPIRICALLY CONFIRMED (same caveat every other Green API call in this file
+ * carries): this sandbox has no live credentials to confirm the response shape against.
+ */
+export async function joinGroupByInviteLink(inviteLink: string): Promise<GreenApiJoinResult> {
+  if (!config.channels.greenApi.instanceId || !config.channels.greenApi.apiToken) {
+    throw new Error("GREEN_API_INSTANCE_ID/GREEN_API_API_TOKEN not set — cannot join a group.");
+  }
+  const body = await post("joinGroupInviteLink", { inviteLink });
+  const groupId = digitsOnly(String(body?.groupId ?? ""));
+  if (!groupId) throw new Error(`Green API joinGroupInviteLink returned no recognizable groupId: ${JSON.stringify(body)}`);
+  return { groupId };
+}
+
 export interface GreenApiWebhook {
   typeWebhook?: string;
   idMessage?: string;

@@ -218,7 +218,7 @@ const GROUP_FORM = `<section class="card" id="group-form-card">
 export function renderManagementPage(kind:"users"|"groups"|"administrators"|"coverage"):string {
   const title=kind==="users"?"Approved Users":kind==="groups"?"Group Management":kind==="coverage"?"WTB Coverage / Dealer Specialists":"Administrators";
   const empty=kind==="groups"?"No approved groups yet. Add one below.":`No ${title.toLowerCase()} found.`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><script>${NAV_ACTIVE_SCRIPT}</script><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Group Registry</h2><p class="muted">The single canonical list of every group Fi knows about — monitoring (inbound ingestion) and push (outbound listing distribution) settings both live here. See also <a href="/admin/push-groups">Push Groups</a> for a push-focused view of the same data.</p>':''}<div class="toolbar"><div class="field"><label for="q">Search</label><input id="q" placeholder="Search"></div><div class="field"><label for="status">Status</label><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select></div><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}${kind==='groups'?'<button onclick="groupSyncWhapi()" class="btn-outline">Sync from Whapi</button> <button onclick="groupSyncGreenApi()" class="btn-outline">Sync from Green API</button>':''}</div>${kind==='groups'?`<div class="toolbar">
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>LuxFi — ${title}</title><style>${PAGE_STYLES} main{display:block;max-width:1200px}pre{white-space:pre-wrap}</style></head><body><header><h1>${title}</h1><nav><a href="/admin#members">Members</a><a href="/admin/users">Users</a><a href="/admin/groups">Groups</a><a href="/admin/push-groups">Push Groups</a><a href="/admin/coverage">WTB Coverage</a><a href="/admin/administrators">Administrators</a><a href="/admin/tools">Tools</a><a href="/admin/logout">Sign out</a></nav></header><script>${NAV_ACTIVE_SCRIPT}</script><main>${kind==='groups'?GROUP_FORM:''}<section class="card">${kind==='groups'?'<h2>Group Registry</h2><p class="muted">The single canonical list of every group Fi knows about — monitoring (inbound ingestion) and push (outbound listing distribution) settings both live here. See also <a href="/admin/push-groups">Push Groups</a> for a push-focused view of the same data.</p>':''}<div class="toolbar"><div class="field"><label for="q">Search</label><input id="q" placeholder="Search"></div><div class="field"><label for="status">Status</label><select id="status"><option value="">All statuses</option><option>active</option><option>inactive</option>${kind==='users'?'<option>blocked</option>':''}</select></div><button onclick="load()">Search</button>${kind==='users'?'<a href="/admin/api/users/template.csv">CSV template</a> <a href="/admin/api/users/export.csv">Export CSV</a>':''}${kind==='groups'?'<button onclick="groupSyncWhapi()" class="btn-outline">Sync from Whapi</button> <button onclick="groupSyncGreenApi()" class="btn-outline">Sync from Green API</button> <input id="invite-link" placeholder="https://chat.whatsapp.com/..." style="width:220px"> <button onclick="joinGreenApiGroup()" class="btn-outline">Join via invite link</button>':''}</div>${kind==='groups'?`<div class="toolbar">
   <label class="inline"><input type="checkbox" id="grp-select-all" onchange="groupSelectAll(this.checked)"> Select all</label>
   <button class="btn-outline" onclick="groupBulkAction('enable_monitoring')">Enable Monitoring</button>
   <button class="btn-outline" onclick="groupBulkAction('disable_monitoring')">Disable Monitoring</button>
@@ -296,6 +296,22 @@ export function renderManagementPage(kind:"users"|"groups"|"administrators"|"cov
       const data=await res.json();
       if(!res.ok){result.textContent=data.error||'Sync failed';return}
       result.textContent='Discovered '+data.discovered+', created '+data.created+', updated '+data.updated+', marked inaccessible '+data.markedInaccessible+'.';
+      load();
+    }catch(e){result.textContent=e.message}
+  }
+  async function joinGreenApiGroup(){
+    const result=document.querySelector('#grp-bulk-result');
+    const inviteLink=document.querySelector('#invite-link').value.trim();
+    if(!inviteLink){result.textContent='Paste an invite link first.';return}
+    result.textContent='Joining…';
+    try{
+      const token=await ensureCsrf();
+      const res=await fetch('/admin/api/groups/join-invite',{method:'POST',headers:{'X-CSRF-Token':token,'Content-Type':'application/json'},body:JSON.stringify({inviteLink})});
+      if(res.status===403){location.href='/admin';return}
+      const data=await res.json();
+      if(!res.ok){result.textContent=data.error||'Join failed';return}
+      result.textContent='Joined group '+data.joined.groupId+'. Discovered '+data.sync.discovered+', created '+data.sync.created+', updated '+data.sync.updated+'.';
+      document.querySelector('#invite-link').value='';
       load();
     }catch(e){result.textContent=e.message}
   }

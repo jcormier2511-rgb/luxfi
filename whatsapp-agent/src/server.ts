@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import { config, isConciergeAdminPhone, isAiMatchingEnabledForPhone } from "./config";
 import { extractIncomingMessages, IncomingWebhook } from "./whapi/client";
-import { extractIncomingMessages as extractGreenApiMessages, GreenApiWebhook } from "./channels/greenApi";
+import { extractIncomingMessages as extractGreenApiMessages, GreenApiWebhook, joinGroupByInviteLink } from "./channels/greenApi";
 import { sendText, sendBannerImage, NormalizedIncomingMessage } from "./channels";
 import { platformForIdentity } from "./channels/identity";
 import { verifyTelegramSecret, extractIncomingMessages as extractTelegramMessages } from "./channels/telegram";
@@ -595,6 +595,18 @@ export function createServer() {
   // numbers actually doing live sends/monitoring today (see admin/groupSync.ts's
   // syncGroupsFromGreenApi for the real reported gap this closes).
   app.post("/admin/api/groups/sync-greenapi",api(async(_req,res)=>res.json(await syncGroupsFromGreenApi()),true));
+  // Joins the Green API-connected number directly into a group from its invite link (see
+  // channels/greenApi.ts's joinGroupByInviteLink) -- the practical alternative to holding
+  // credentials for a second/third number: once THIS instance is a member, the group shows up
+  // in its own getContacts, so the sync immediately following the join here (not a separate
+  // manual step) picks it up into the registry right away rather than requiring a second click.
+  app.post("/admin/api/groups/join-invite",api(async(req,res)=>{
+    const inviteLink=String(req.body?.inviteLink??"").trim();
+    if(!inviteLink)return res.status(400).json({error:"inviteLink is required"});
+    const joined=await joinGroupByInviteLink(inviteLink);
+    const sync=await syncGroupsFromGreenApi();
+    res.json({joined,sync});
+  },true));
   // Bulk admin actions (select-all + one of: enable/disable monitoring, enable push FS/WTB,
   // disable push, set priority, set category) -- see admin/store.ts's bulkUpdateGroups.
   app.post("/admin/api/groups/bulk",api(async(req,res,ctx)=>{

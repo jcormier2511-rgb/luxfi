@@ -198,3 +198,24 @@ test("listGreenApiGroups: throws with the response status/body when the API reje
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ message: "bad request" }), { status: 400 }));
   await assert.rejects(() => client.listGreenApiGroups(), /Green API GET getContacts failed: 400/);
 });
+
+test("joinGroupByInviteLink posts the invite link and returns the digits-only groupId", async (t) => {
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    assert.equal(url, "https://api.green-api.com/waInstance1234567890/joinGroupInviteLink/super-secret-green-api-token");
+    const body = JSON.parse(init.body as string);
+    assert.equal(body.inviteLink, "https://chat.whatsapp.com/AbCdEf123456");
+    return new Response(JSON.stringify({ groupId: "120363043968406745@g.us" }), { status: 200 });
+  });
+  const result = await client.joinGroupByInviteLink("https://chat.whatsapp.com/AbCdEf123456");
+  assert.deepEqual(result, { groupId: "120363043968406745" });
+});
+
+test("joinGroupByInviteLink throws when the API's response carries no recognizable groupId", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  await assert.rejects(() => client.joinGroupByInviteLink("https://chat.whatsapp.com/AbCdEf123456"), /no recognizable groupId/);
+});
+
+test("joinGroupByInviteLink throws with the response status/body when the API rejects the call (e.g. an expired/invalid invite link)", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ message: "invalid invite link" }), { status: 400 }));
+  await assert.rejects(() => client.joinGroupByInviteLink("https://chat.whatsapp.com/expired"), /Green API joinGroupInviteLink failed: 400/);
+});
