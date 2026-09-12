@@ -131,7 +131,13 @@ async function applyPostingsDecision(matchId: number, action: "approve" | "pass"
   }
   const result = await passMatch(matchId, phone);
   if (result === "invalid") return null;
-  return result === "passed" ? `Passing on match ${matchId}.` : `You already decided on match ${matchId}.`;
+  // Real reported ask: clearer at a glance for any reader, any age or attention span -- a plain
+  // "Passing on match 1311." read as a bare status log, not confirmation Fi understood and will
+  // act on it. Matches the ✅/📞 pattern the approve reply already uses: a short emoji-led
+  // confirmation plus, on a fresh decline, a reminder of what happens next.
+  return result === "passed"
+    ? `👍 Got it — skipping Match ${matchId}. I'll keep sending you other matches.`
+    : `You already decided on Match ${matchId} — nothing more to do there.`;
 }
 
 /**

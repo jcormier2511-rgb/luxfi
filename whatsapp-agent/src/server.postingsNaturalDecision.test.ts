@@ -119,12 +119,12 @@ test("required: natural language names a specific counterpart, resolving to THAT
 
   const spy = t.mock.method(decisionInterpreter, "interpretPostingsDecision", async () => ({ action: "pass", matchId: firstMatchId }));
   const reply = await tryHandleDirectPostingDecision(TEST_PHONE, "pass on the first one");
-  assert.equal(reply, `Passing on match ${firstMatchId}.`);
+  assert.equal(reply, `👍 Got it — skipping Match ${firstMatchId}. I'll keep sending you other matches.`);
   assert.equal(spy.mock.callCount(), 1);
 
   // The OTHER match must be completely untouched.
   const stillPending = await tryHandleDirectPostingDecision(TEST_PHONE, `pass ${secondMatchId}`);
-  assert.equal(stillPending, `Passing on match ${secondMatchId}.`, "the second match must still have been pending, not already decided");
+  assert.equal(stillPending, `👍 Got it — skipping Match ${secondMatchId}. I'll keep sending you other matches.`, "the second match must still have been pending, not already decided");
 });
 
 test("required (safety): natural-language decisions are inert for a phone NOT on the AI-matching test-phone allowlist, even with a real pending match", async (t) => {

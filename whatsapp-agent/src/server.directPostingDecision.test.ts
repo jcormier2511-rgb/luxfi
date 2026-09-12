@@ -113,7 +113,7 @@ test("required: the seller can pass on a direct-posting match via tryHandleDirec
   const { matchId } = await seedMatch(t, sellerPhone);
 
   const reply = await tryHandleDirectPostingDecision(sellerPhone, `pass ${matchId}`);
-  assert.equal(reply, `Passing on match ${matchId}.`);
+  assert.equal(reply, `👍 Got it — skipping Match ${matchId}. I'll keep sending you other matches.`);
 });
 
 /**
