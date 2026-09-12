@@ -188,17 +188,28 @@ export function isRealDisplayName(value: string): boolean {
   return /[a-zA-Z]/.test(withoutPlatformPrefix);
 }
 
+// Readability fix (real reported ask: the match card must be clear at a glance for readers of
+// any age or attention span, not just for someone parsing a chat/dealer feed by eye) — a chat-
+// sourced posting's brand/model are often stored exactly as typed ("rolex", "daytona"), which
+// reads as a typo/lowercase-shout in a card meant to look like a clean summary. Reference
+// numbers are deliberately left untouched by this — "116500LN" is a code, not a word, and
+// title-casing it would corrupt it (see the getWatchLabel-callers below, which never touch it).
+function titleCase(value: string): string {
+  return value.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+const capitalizeFirst = (value: string): string => value.charAt(0).toUpperCase() + value.slice(1);
+
 function presentationFor(posting: PostingRow, photoUrl?: string | null, activeGroupCount?: number): MatchPresentation {
   const rawIdentity = posting.contact_name || posting.source_identity || undefined;
   return {
     identity: rawIdentity && isRealDisplayName(rawIdentity) ? rawIdentity : undefined,
-    brand: posting.brand || undefined,
-    model: posting.model || undefined,
+    brand: posting.brand ? titleCase(posting.brand) : undefined,
+    model: posting.model ? titleCase(posting.model) : undefined,
     reference: posting.reference || undefined,
-    dial: posting.dial || undefined,
+    dial: posting.dial ? titleCase(posting.dial) : undefined,
     year: posting.year || undefined,
     boxPapers: posting.box_papers || undefined,
-    condition: posting.condition || undefined,
+    condition: posting.condition ? capitalizeFirst(posting.condition) : undefined,
     price: posting.price ?? undefined,
     currency: posting.currency || undefined,
     location: posting.location || undefined,
@@ -239,24 +250,30 @@ export function formatMatchPresentation(matchId: number, roleLabel: string, matc
   // indication of what it even was.
   if (watch) lines.push(`Watch: ${watch}`);
   if (match.dial) lines.push(`Dial/Color: ${match.dial}`);
-  const details = [match.year, match.boxPapers, match.condition].filter(Boolean);
-  if (details.length) lines.push(details.join(" • "));
+  // Real reported ask: readers of any age or attention span must get every field at a glance --
+  // a bullet-joined "New • Box/Papers • Pre-owned" line asked the reader to mentally re-attach a
+  // label to each part; one labeled line per field removes that step entirely.
+  if (match.year) lines.push(`Year: ${match.year}`);
+  if (match.boxPapers) lines.push(`Box/Papers: ${match.boxPapers}`);
+  if (match.condition) lines.push(`Condition: ${match.condition}`);
   if (match.price) {
     const numeric = Number(match.price);
     const amount = Number.isFinite(numeric) ? numeric.toLocaleString("en-US", { maximumFractionDigits: 2 }) : match.price;
-    lines.push((match.currency || "USD").toUpperCase() === "USD" ? `$${amount}` : `${match.currency} ${amount}`);
+    const formatted = (match.currency || "USD").toUpperCase() === "USD" ? `$${amount}` : `${match.currency} ${amount}`;
+    lines.push(`Price: ${formatted}`);
   }
-  if (match.location) lines.push(match.location);
+  if (match.location) lines.push(`Location: ${match.location}`);
   if (match.sourceUrl) lines.push(`Source: ${match.sourceUrl}`);
   // No separate "Photo: <url>" text line -- WhatsApp/Telegram already auto-generate a rich link
   // preview (image + title) from the Source: URL right above whenever one is present, so a
   // second, raw-filename mention of the same photo was pure redundant text, not new information.
   // Their own words, not just the parsed fields above -- extra context (firm on price, can
   // ship, etc.) never gets its own structured field. Trimmed to keep the card skimmable rather
-  // than reprinting a long raw message in full.
+  // than reprinting a long raw message in full. Quoted so it visually reads as someone else's
+  // sentence, not as more of Fi's own structured summary.
   if (match.description) {
     const trimmed = match.description.length > 140 ? `${match.description.slice(0, 140)}…` : match.description;
-    lines.push(`💬 In their words: ${trimmed}`);
+    lines.push(`💬 In their words: "${trimmed}"`);
   }
   return lines.join("\n");
 }

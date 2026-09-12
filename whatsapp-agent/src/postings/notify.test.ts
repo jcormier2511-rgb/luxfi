@@ -133,7 +133,7 @@ test("presented match preserves every available decision field and remains appro
 
   const card = sent.find((message) => message.phone === "buyer-rich-card")?.message;
   assert.ok(card);
-  for (const expected of ["Rolex Daytona 116500LN", "Dial/Color: Black", "2023 • Full set • New", "$28,500", "Miami, USA", "Source: https://example.com/listings/413"]) {
+  for (const expected of ["Rolex Daytona 116500LN", "Dial/Color: Black", "Year: 2023", "Box/Papers: Full set", "Condition: New", "Price: $28,500", "Location: Miami, USA", "Source: https://example.com/listings/413"]) {
     assert.match(card!, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `card should include ${expected}`);
   }
   assert.doesNotMatch(card!, /Photo: /, "no separate Photo: line -- WhatsApp/Telegram already auto-preview the image from the Source: link");
@@ -858,12 +858,12 @@ test("formatMatchPresentation leaves a model that does NOT already contain the r
 
 test("required: the counterpart's own free-text description shows as its own line, labeled and truncated", () => {
   const short = notify.formatMatchPresentation(1, "Seller", { brand: "Rolex", model: "Submariner", description: "Firm on price, can ship worldwide." });
-  assert.match(short, /💬 In their words: Firm on price, can ship worldwide\./);
+  assert.match(short, /💬 In their words: "Firm on price, can ship worldwide\."/);
 
   const long = notify.formatMatchPresentation(2, "Seller", { brand: "Rolex", description: "x".repeat(200) });
   const line = long.split("\n").find((l) => l.startsWith("💬"))!;
   assert.ok(line.length < 200, "a long description must be truncated, not reprinted in full");
-  assert.match(line, /…$/);
+  assert.match(line, /…"$/);
 });
 test("required: no description means no 💬 line at all", () => {
   const text = notify.formatMatchPresentation(1, "Seller", { brand: "Rolex", model: "Submariner" });

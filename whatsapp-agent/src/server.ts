@@ -99,7 +99,11 @@ export function formatApprovalOutcome(outcome: ApprovalOutcome, matchId: number)
       // it's an actual name, the same real/not-real distinction the very first match card
       // already applies (see notify.ts's isRealDisplayName).
       const label = isRealDisplayName(outcome.counterpart.name) ? `${outcome.counterpart.name}: ` : "";
-      return `${approved}\n\nYou're connected! ${label}${formatPhoneForDisplay(outcome.counterpart.phone)}\n\n${config.fiFlow.escrowSuggestion}`;
+      // Real reported ask: clearer at a glance for any reader, any age or attention span --
+      // a ✅/📞 pair reuses the same emoji-as-label pattern the match card above it already
+      // uses, so "connected" and "the phone number" are each their own short, scannable line
+      // instead of one run-on sentence.
+      return `${approved}\n\n✅ You're connected!\n📞 ${label}${formatPhoneForDisplay(outcome.counterpart.phone)}\n\n${config.fiFlow.escrowSuggestion}`;
     }
     case "pending_confirmation":
       return `${approved}\n\nI'll let you know as soon as the other side confirms too.`;

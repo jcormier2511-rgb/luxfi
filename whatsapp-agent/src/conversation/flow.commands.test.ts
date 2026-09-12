@@ -273,7 +273,7 @@ test('required (live-reported bug): after the only match is already approved, "h
   const approve = await handleIncomingMessage(phone, "approve 1");
   assert.match(approve.messages.join("\n"), /^Approved #1/);
   assert.ok(
-    approve.messages.some((m) => /escrow and inspection partners/i.test(m)),
+    approve.messages.some((m) => /ESCROW & INSPECTION partner/i.test(m)),
     "a real connection reveal must suggest escrow/inspection partners as a follow-up"
   );
 

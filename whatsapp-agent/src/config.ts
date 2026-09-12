@@ -249,9 +249,15 @@ export const config = {
     // router can recognize -- a reply like "connect me" (not "yes") fell straight through to
     // the generic fallback. Names the actual word to say ("escrow" -- see conversation/flow.ts's
     // ESCROW_COMMAND, which always works, not only as a same-turn reply to this message).
+    // Real reported ask: this needs to read clearly for anyone, any age, any attention span --
+    // two short sentences instead of one long comma-chained one, and ESCROW/INSPECTION in caps
+    // for emphasis since *bold* markdown isn't safe here (WhatsApp renders it, but
+    // channels/telegram.ts's sendText sets no parse_mode, so Telegram would show literal
+    // asterisks instead of formatting -- see formatMatchMessage's own comment on this same
+    // constraint). The actual command word stays lowercase in quotes, exactly as typed.
     escrowSuggestion:
       process.env.FI_ESCROW_SUGGESTION_MESSAGE ??
-      "If you don't already know this contact, I also have escrow and inspection partners — including Bennison — who can help verify the item and handle payment safely — just say \"escrow\" and I can connect you.",
+      "New to this contact? I can help keep the deal safe. Just say \"escrow\" and I'll connect you with a trusted ESCROW & INSPECTION partner (like Bennison) to verify the item and handle payment securely.",
     // Offered when either party replies "yes" to the escrow suggestion above (see
     // conversation/flow.ts's pendingEscrowOffer handling) — first service free, then a
     // recurring discount with membership. Not itself a live charge/discount system: redeeming
