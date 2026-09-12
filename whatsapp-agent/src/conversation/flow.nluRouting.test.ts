@@ -102,7 +102,14 @@ test("required: the AI intent extractor drives the search (buy) — no leftover 
   assert.ok(!result.messages.some((m) => /to buy a patek/i.test(m)), "the raw lead-in phrase must never leak into any reply");
 });
 
-test("required: the AI intent extractor drives the search (sell)", async (t) => {
+test("required: the AI intent extractor routes a sell request into the posting intake, never the ephemeral search", async (t) => {
+  // Real reported bug: resolveItemRequests populates aiPreferences from the AI extraction for a
+  // "sell" intent too (any message naming a price/location/dial/condition, which is nearly
+  // always) -- this used to route straight into the buy-side ephemeral-search path below,
+  // never reaching startSellIntake, so a real "FS ..." message from a live user was silently
+  // treated as a search with a buyer-style location/condition interview and no photo/notes
+  // question ever asked, no listing ever created. A sell intent must always open the posting
+  // draft instead, regardless of what the AI extraction happened to also fill in.
   const phone = TEST_PHONE;
   resetState(phone);
   await inventoryDb._resetDbForTests();
@@ -117,7 +124,8 @@ test("required: the AI intent extractor drives the search (sell)", async (t) => 
   await handleIncomingMessage(phone, "hi");
   const result = await handleIncomingMessage(phone, "I want to sell a Patek 5712");
 
-  assert.ok(result.messages.some((m) => /Potential Match/.test(m)));
+  assert.ok(result.state.pendingSellIntake, "a sell intent must open a posting draft");
+  assert.ok(!result.messages.some((m) => /Potential Match/.test(m)), "a sell request must never run the buyer-side ephemeral search");
   assert.ok(!result.messages.some((m) => /i want to sell/i.test(m)));
 });
 

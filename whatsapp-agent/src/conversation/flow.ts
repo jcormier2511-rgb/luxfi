@@ -3536,10 +3536,17 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     return { state, messages };
   }
 
-  // AI-matching test accounts retain the pre-existing ephemeral-search path. This is an
-  // operator-only compatibility surface used to evaluate reranking/decision behavior; normal
-  // WhatsApp/SMS WTB and FS requests continue into the confirmation-gated posting intake.
-  const aiSearchPreferences = resolved.aiPreferences ?? (await tryNaturalLanguagePreferences(phone, text));
+  // AI-matching test accounts retain the pre-existing ephemeral-search path — but only for
+  // "buy". This is an operator-only compatibility surface used to evaluate reranking/decision
+  // behavior for buy-side searches; normal WhatsApp/SMS WTB and FS requests continue into the
+  // confirmation-gated posting intake. Real reported bug: resolveItemRequests populates
+  // aiPreferences from the AI intent extraction for a "sell" message too (whenever it names a
+  // price/location/dial/condition, which is nearly always), so an FS message was taking this
+  // branch and running a buyer-style preference interview + ephemeral match search instead of
+  // ever reaching startSellIntake below -- no photo/notes question, no listing ever created.
+  // A sell action must always go to the posting intake, never this search path.
+  const aiSearchPreferences =
+    parsed[0].action === "buy" ? (resolved.aiPreferences ?? (await tryNaturalLanguagePreferences(phone, text))) : undefined;
   if (aiSearchPreferences) {
     const missing = missingPreferenceFields(aiSearchPreferences);
     if (missing.length > 0) {
