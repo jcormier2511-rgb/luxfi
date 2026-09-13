@@ -227,6 +227,32 @@ test('required regression: a bare word that already answers CONDITION must never
   );
 });
 
+test('required regression: a genuinely fresh new request sent while an old natural-language follow-up is still open starts a NEW search, never silently answers the stale one -- live-reported bug: replied about reference "5711" mid-conversation while an older "116500" follow-up was still open, and the search that ran was still for "116500"', async (t) => {
+  resetState(TEST_PHONE);
+  await inventoryDb._resetDbForTests();
+  // Deliberately only a Patek 5711 listing exists -- if the bug regresses and the search still
+  // silently runs against the STALE "116500" request instead of the fresh "5711" one, there is
+  // nothing for it to match, and it would report no live matches instead of a real card.
+  await inventoryDb.upsertListings(
+    [fsRow("new-request", { brand: "Patek Philippe", ref: "5711", item: "item-new-request", description: "Patek Philippe 5711" })],
+    new Date().toISOString()
+  );
+  t.mock.method(queryInterpreterModule, "interpretQuery", async (text: string) => {
+    if (text.includes("116500")) return interpreted({ maxPrice: 27000, dialColor: "black" }); // location AND condition still missing -- leaves a follow-up open
+    if (text.includes("5711")) return interpreted({ brand: "Patek Philippe", referenceFamily: "5711", maxPrice: 50000, location: "USA", dialColor: "blue", condition: "New" });
+    return interpreted();
+  });
+  mockAlwaysMatches(t);
+
+  await handleIncomingMessage(TEST_PHONE, "hi");
+  const opened = await handleIncomingMessage(TEST_PHONE, "looking for a rolex daytona 116500 under 27k, black dial");
+  assert.ok(opened.state.pendingNaturalFollowUp, "precondition: a follow-up is left open, still missing location/condition");
+
+  const result = await handleIncomingMessage(TEST_PHONE, "looking for a patek 5711 budget 50k blue dial new in the usa");
+  assert.equal(result.state.pendingNaturalFollowUp, undefined, "the stale follow-up must be abandoned, not carried forward");
+  assert.match(result.messages.join("\n"), /Potential Match/i, "the NEW request must actually run its own search, not silently answer the stale one");
+});
+
 test("a fully-specified message never triggers a follow-up at all", async (t) => {
   resetState(TEST_PHONE);
   await inventoryDb._resetDbForTests();

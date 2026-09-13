@@ -3395,9 +3395,27 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   }
 
   if (state.pendingNaturalFollowUp) {
-    await handleNaturalFollowUpAnswer(state, text, messages);
-    saveState(state);
-    return { state, messages };
+    // Live-reported bug: a genuinely fresh, well-formed new request sent while an old natural-
+    // language follow-up question was still open got silently absorbed as an ANSWER to the old
+    // one instead of starting a new search. Unlike pendingSellIntake/pendingBuyIntake just above
+    // -- which already guard against exactly this via isFreshSellRequest/isFreshBuyRequest and
+    // the "replace or add another?" detour -- pendingNaturalFollowUp had no escape hatch at all:
+    // every reply, however unrelated, kept answering the SAME old pending.request, so the
+    // eventual search silently ran against whatever the OLD request named, never the new one the
+    // customer actually just typed (reported repro: asked about reference "5711" mid-conversation
+    // while an older "116500" follow-up was still open, and the search that ran was still for
+    // "116500"). Mirrors the same BUY_KEYWORDS/SELL_KEYWORDS fresh-request signal the decision-
+    // interpretation gate below already uses -- a genuine follow-up reply ("USA", "200k") is
+    // free-form text with no such marker, so this never misfires on a real bare answer. Silently
+    // abandoned rather than the sell/buy drafts' "replace or add another?" prompt: an ephemeral
+    // one-round preference gather has nothing worth that extra confirmation step to protect.
+    if (BUY_KEYWORDS.test(text) || SELL_KEYWORDS.test(text)) {
+      state.pendingNaturalFollowUp = undefined;
+    } else {
+      await handleNaturalFollowUpAnswer(state, text, messages);
+      saveState(state);
+      return { state, messages };
+    }
   }
 
   // Fi Concierge Stage 3: people rarely type the literal "approve <n>"/"pass <n>" format they
