@@ -184,6 +184,26 @@ test('required regression: a bare one-word follow-up answer ("USA") is still rec
   assert.ok(matchCard, "the deterministic fallback filled the last missing field, so the search must run");
 });
 
+test('required regression: a bare numeric follow-up answer ("200k") is still recognized as the budget, even when the AI interpreter extracts nothing from it -- live-reported bug: Fi kept re-asking the identical "what\'s your budget, dial color and condition?" question forever, even after the customer answered budget, because the deterministic backstop covered location/dial/condition but never price', async (t) => {
+  resetState(TEST_PHONE);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("a", { location: "North America", condition: "New" })], new Date().toISOString());
+  t.mock.method(queryInterpreterModule, "interpretQuery", async (text: string) => {
+    if (text.includes("looking for")) return interpreted({ location: "USA", dialColor: "black", condition: "New" }); // budget alone missing
+    return interpreted(); // the AI extracts nothing usable from the bare follow-up reply itself
+  });
+  mockAlwaysMatches(t);
+
+  await handleIncomingMessage(TEST_PHONE, "hi");
+  const asked = await handleIncomingMessage(TEST_PHONE, "looking for a rolex daytona 116500, black dial, New, USA");
+  assert.match(asked.messages.join("\n"), /what's your budget\?/i, "precondition: budget is the only field left missing");
+
+  const result = await handleIncomingMessage(TEST_PHONE, "200k");
+  assert.doesNotMatch(result.messages.join("\n"), /what's your budget\?/i, "must not ask the identical question again");
+  const matchCard = result.messages.find((m) => /Potential Match/.test(m));
+  assert.ok(matchCard, "the deterministic fallback filled the last missing field, so the search must run");
+});
+
 test('required regression: a bare word that already answers CONDITION must never also be misread as the location, when both are still missing', async (t) => {
   resetState(TEST_PHONE);
   await inventoryDb._resetDbForTests();

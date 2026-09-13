@@ -1867,8 +1867,19 @@ async function handleNaturalFollowUpAnswer(state: ConversationState, text: strin
   // call, only ever filling a gap the AI left, never overwriting anything it (or the original
   // message) already found.
   const slots = intakeSlots(text, null);
+  // Live-reported bug: a bare numeric follow-up answer ("200k") to "what's your budget?" hit
+  // the exact same AI-interpreter gap the comment above already covers for location/dial/
+  // condition, but budget was never included in the deterministic backstop below -- so it kept
+  // re-asking the IDENTICAL "budget, dial color and condition?" question forever, even after the
+  // buyer answered it, with no way to ever get past it. intakeSlots(text, null) defaults its
+  // prefer arg to "max", so a bare number here is read the same way a bare budget answer already
+  // is everywhere else in this app: as a ceiling, not a floor. Only applied when the AI found
+  // NEITHER end of a price already -- never overwrites a real range/floor it did find.
+  const priceFromSlots = aiMerged.priceMin === undefined && aiMerged.priceMax === undefined && slots.price !== undefined;
   const merged: SearchPreferences = {
     ...aiMerged,
+    priceMax: priceFromSlots ? slots.price : aiMerged.priceMax,
+    priceCurrency: priceFromSlots ? slots.currency : aiMerged.priceCurrency,
     location: aiMerged.location ?? slots.location,
     dialColor: aiMerged.dialColor ?? slots.dial,
     condition: aiMerged.condition ?? slots.condition,
