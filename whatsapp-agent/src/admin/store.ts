@@ -17,7 +17,11 @@ const DUMMY_BCRYPT_HASH = "$2a$12$CwTycUXWue0Thq9StjUM0uJ8i8LnBW4rILz.OZ8i.wt.Q0
 
 let pool: Pool | null = null;
 let adminSchemaReady: Promise<void> | null = null;
-const db = () => pool ??= new Pool({ connectionString: config.database.url });
+// Same reasoning as postings/db.ts's own getPool (see its comment) — bounds an untimed stalled
+// admin-panel query to a failure instead of a silent hang.
+const DB_STATEMENT_TIMEOUT_MS = 20_000;
+const DB_CONNECTION_TIMEOUT_MS = 10_000;
+const db = () => pool ??= new Pool({ connectionString: config.database.url, statement_timeout: DB_STATEMENT_TIMEOUT_MS, connectionTimeoutMillis: DB_CONNECTION_TIMEOUT_MS });
 // pg returns BIGSERIAL values as strings. Sessions require an integer administrator ID, so
 // normalize it at the database boundary before signing it into the production session cookie.
 const publicAdmin = (r:any): Administrator => ({ id:Number(r.id), name:r.name, username:r.username, email:r.email, role:r.role, status:r.status, last_login_at:r.last_login_at?.toISOString?.() ?? r.last_login_at, created_at:r.created_at?.toISOString?.() ?? r.created_at, updated_at:r.updated_at?.toISOString?.() ?? r.updated_at });

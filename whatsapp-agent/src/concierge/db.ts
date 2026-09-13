@@ -13,9 +13,18 @@ import { config } from "../config";
 let pool: Pool | null = null;
 let schemaReady: Promise<void> | null = null;
 
+// Same reasoning as postings/db.ts's own getPool (see its comment) — an untimed stalled query
+// here would silently hang a customer's whole conversation rather than fail loudly.
+const DB_STATEMENT_TIMEOUT_MS = 20_000;
+const DB_CONNECTION_TIMEOUT_MS = 10_000;
+
 function getPool(): Pool {
   if (!pool) {
-    pool = new Pool({ connectionString: config.database.url });
+    pool = new Pool({
+      connectionString: config.database.url,
+      statement_timeout: DB_STATEMENT_TIMEOUT_MS,
+      connectionTimeoutMillis: DB_CONNECTION_TIMEOUT_MS,
+    });
   }
   return pool;
 }

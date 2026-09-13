@@ -39,9 +39,24 @@ const CAP_ACTIVE_POSTING_EXPIRATIONS_SQL = `
     AND expires_at > COALESCE(renewed_at, created_at) + INTERVAL '15 days';
 `;
 
+// Same reasoning as ai/providers/anthropic.ts's/openai.ts's own ANTHROPIC_TIMEOUT_MS/
+// OPENAI_TIMEOUT_MS (see their comments) — every inbound message for a given phone is processed
+// serially (conversation/flow.ts's withPhoneSerialized), so an untimed query here would block
+// every later message from that same phone indefinitely on a silent DB stall (a stuck lock, a
+// dropped connection that never resets), with `pg` enforcing no bound of its own by default.
+// statement_timeout is enforced Postgres-side (kills the query itself, guaranteed even if the
+// client-side socket never notices the stall); connectionTimeoutMillis bounds how long a query
+// can wait for a pool connection to become available in the first place.
+const DB_STATEMENT_TIMEOUT_MS = 20_000;
+const DB_CONNECTION_TIMEOUT_MS = 10_000;
+
 function getPool(): Pool {
   if (!pool) {
-    pool = new Pool({ connectionString: config.database.url });
+    pool = new Pool({
+      connectionString: config.database.url,
+      statement_timeout: DB_STATEMENT_TIMEOUT_MS,
+      connectionTimeoutMillis: DB_CONNECTION_TIMEOUT_MS,
+    });
   }
   return pool;
 }
