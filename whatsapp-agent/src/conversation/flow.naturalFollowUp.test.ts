@@ -117,6 +117,26 @@ test("required regression: answering the follow-up merges the missing fields and
   assert.ok(!result.messages.some((m) => /over-budget|63,?000/.test(m)), "the budget from the follow-up reply must still be enforced");
 });
 
+test('required regression: "skip" answers a still-missing field the same way a bare "any" does, instead of being re-asked forever -- live-reported bug: replying "skip" to "what\'s your dial color?" got the identical question back with no way to move on', async (t) => {
+  resetState(TEST_PHONE);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("a", { location: "North America" })], new Date().toISOString());
+  t.mock.method(queryInterpreterModule, "interpretQuery", async (text: string) => {
+    if (text.includes("looking for")) return interpreted({ maxPrice: 27000, location: "USA", condition: "pre-owned" }); // dial color still missing
+    return interpreted(); // "skip" itself answers nothing usable to the AI interpreter
+  });
+  mockAlwaysMatches(t);
+
+  await handleIncomingMessage(TEST_PHONE, "hi");
+  const asked = await handleIncomingMessage(TEST_PHONE, "looking for a rolex daytona 116500 under 27k in the USA, pre-owned");
+  assert.ok(asked.state.pendingNaturalFollowUp, "precondition: dial color is the one still-missing field");
+
+  const result = await handleIncomingMessage(TEST_PHONE, "skip");
+  assert.equal(result.state.pendingNaturalFollowUp, undefined, '"skip" must resolve the follow-up, not repeat the question');
+  assert.ok(result.messages.some((m) => /Potential Match/.test(m)), "the search must run once \"skip\" answers the last missing field");
+  assert.ok(!result.messages.some((m) => /dial color/i.test(m)), 'must never re-ask "what\'s your dial color?" after "skip"');
+});
+
 test("an incomplete follow-up remains pending and does not search with missing required fields", async (t) => {
   resetState(TEST_PHONE);
   await inventoryDb._resetDbForTests();

@@ -1824,7 +1824,11 @@ function mergeFollowUpPreferences(partial: SearchPreferences, fromReply: SearchP
  */
 async function handleNaturalFollowUpAnswer(state: ConversationState, text: string, messages: string[]): Promise<void> {
   const pending = state.pendingNaturalFollowUp!;
-  if (/^\s*(?:any|no preference)\s*[.!]?\s*$/i.test(text)) {
+  // Live-reported bug: "skip" (the exact word the structured buy/sell intake already accepts
+  // for "no preference" on an optional step, e.g. dial color) fell through to the AI/intakeSlots
+  // parsing below instead, which has no notion of "skip" meaning anything -- so it never filled
+  // the field, and Fi kept re-asking the identical question forever with no way to move on.
+  if (/^\s*(?:any|no preference|skip)\s*[.!]?\s*$/i.test(text)) {
     state.preferences = pending.partial;
     state.preferencesCollected = true;
     state.pendingNaturalFollowUp = undefined;
