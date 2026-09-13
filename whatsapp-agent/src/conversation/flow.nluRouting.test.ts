@@ -23,6 +23,8 @@ const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../wa
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const queryInterpreterModule = require("../ai/queryInterpreter") as typeof import("../ai/queryInterpreter");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { resetState } = require("./stateStore") as typeof import("./stateStore");
@@ -225,4 +227,102 @@ test("required: a reference-only message (5712G) never produces a $2 price on th
   const joined = result.messages.join("\n");
   assert.doesNotMatch(joined, /\$2\b/, "5712G must never surface as a $2 price anywhere in the reply");
   assert.match(joined, /\$105,000/, "the listing's real price must still display correctly, comma-formatted");
+});
+
+// Live-reported bug ("look at this flow, it's a mess"): when the AI intent extractor recognizes
+// a specific watch but can't tell buy vs. sell (intent "unknown"), Fi used to ask a free-form
+// clarifying question ("are you looking to buy X, or are you selling one?") with nothing
+// remembered anywhere -- a one-word "buy"/"sell" answer then had no request left to attach to
+// and silently reprocessed as its own unrelated, unparseable message. See
+// pendingActionClarification in flow.ts.
+test("required: an item Fi can't tell buy vs. sell for gets a clarifying question, remembered for the next reply", async (t) => {
+  const phone = TEST_PHONE;
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) =>
+    /5712\/1a/i.test(text)
+      ? extracted({ intent: "unknown", brand: "Patek Philippe", model: "Nautilus", reference: "5712/1A", searchText: "Patek Philippe Nautilus 5712/1A", confidence: 0 })
+      : NOT_A_REQUEST
+  );
+
+  await handleIncomingMessage(phone, "hi");
+  const result = await handleIncomingMessage(phone, "how about a 5712/1a");
+
+  assert.match(
+    result.messages.join("\n"),
+    /buy.*Patek Philippe Nautilus 5712\/1A.*selling one/i,
+    "Fi must ask which side of the trade this is, naming the recognized item"
+  );
+  assert.equal(
+    result.state.pendingActionClarification?.searchText,
+    "Patek Philippe Nautilus 5712/1A",
+    "the recognized item must be remembered so the next reply can complete the request"
+  );
+});
+
+test("required: a bare 'buy' answer to that clarifying question completes the SAME request, not a fresh unrelated one", async (t) => {
+  const phone = TEST_PHONE;
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) =>
+    /5712\/1a/i.test(text)
+      ? extracted({ intent: "unknown", brand: "Patek Philippe", model: "Nautilus", reference: "5712/1A", searchText: "Patek Philippe Nautilus 5712/1A", confidence: 0 })
+      : NOT_A_REQUEST
+  );
+  // The bare "buy" reply itself carries no price/location/dial/condition -- same as a real
+  // one-word answer would give the AI.
+  t.mock.method(queryInterpreterModule, "interpretQuery", async () => ({
+    action: "buy" as const,
+    brand: null,
+    referenceFamily: null,
+    maxPrice: null,
+    minPrice: null,
+    location: null,
+    dialColor: null,
+    condition: null,
+    hardRequirements: [],
+    preferences: [],
+  }));
+
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "how about a 5712/1a");
+  const result = await handleIncomingMessage(phone, "buy");
+
+  assert.equal(result.state.pendingActionClarification, undefined, "the clarification is consumed, not left open");
+  assert.equal(
+    result.state.pendingNaturalFollowUp?.request.query,
+    "Patek Philippe Nautilus 5712/1A",
+    'the "buy" answer must attach to the item Fi already recognized, not start over from the bare word "buy"'
+  );
+  assert.equal(result.state.pendingNaturalFollowUp?.request.action, "buy");
+  assert.match(result.messages.join("\n"), /budget/i, "must go on to ask for the still-missing preferences, same as any other search");
+});
+
+test("required: a genuinely new, different request sent in reply to the clarifying question is never swallowed by the old item", async (t) => {
+  const phone = TEST_PHONE;
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  await inventoryDb.upsertListings([fsRow("swap-1", { ref: "116500LN", brand: "Rolex", item: "item-swap-1" })], new Date().toISOString());
+
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) => {
+    if (/5712\/1a/i.test(text)) {
+      return extracted({ intent: "unknown", brand: "Patek Philippe", model: "Nautilus", reference: "5712/1A", searchText: "Patek Philippe Nautilus 5712/1A", confidence: 0 });
+    }
+    if (/daytona/i.test(text)) {
+      return extracted({ intent: "buy", brand: "Rolex", model: "Daytona", reference: "116500LN", searchText: "Rolex Daytona 116500LN" });
+    }
+    return NOT_A_REQUEST;
+  });
+
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "how about a 5712/1a");
+  const result = await handleIncomingMessage(phone, "actually, looking for a Rolex Daytona 116500LN instead");
+
+  assert.equal(result.state.pendingActionClarification, undefined, "the old, unanswered clarification is abandoned");
+  assert.ok(
+    result.messages.some((m) => /Potential Match/.test(m)),
+    "the new request must run on its own terms, not get silently attached to the old 5712/1A item"
+  );
 });

@@ -44,7 +44,7 @@ const decisionInterpreter = require("./ai/decisionInterpreter") as typeof import
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./conversation/flow") as typeof import("./conversation/flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { resetState, getState } = require("./conversation/stateStore") as typeof import("./conversation/stateStore");
+const { resetState, getState, saveState } = require("./conversation/stateStore") as typeof import("./conversation/stateStore");
 
 const { ingestChatPosting } = postingsStore;
 const { ingestDirectSellPosting } = ingestModule;
@@ -180,4 +180,63 @@ test("required regression: a plain reply is never routed to natural-language mat
   const reply = await tryHandleDirectPostingDecision(TEST_PHONE, "32000");
   assert.equal(reply, null, "must fall through to the ordinary flow rather than misinterpreting the price as a match decision");
   assert.equal(spy.mock.callCount(), 0, "the AI must never be asked to interpret a price reply as a decision on unrelated matches");
+});
+
+/**
+ * Live-reported bug (screenshot): the same "an open draft owns this reply" guard just above was
+ * added for pendingSellIntake/pendingBuyIntake only, but flow.ts's own natural-language
+ * preference interview (pendingNaturalFollowUp — "what's your budget, location, dial color and
+ * condition?") was never added to it. A live tester's bare follow-up answer ("120k") was, in
+ * principle, exposed to exactly the same interception this file already proves is fixed for a
+ * sell-intake price reply — this test proves the same fix now also covers that state.
+ */
+test("required regression: a bare natural-language follow-up answer is never routed to match-decision interpretation while an open follow-up question owns it", async (t) => {
+  await db._resetDbForTests();
+  const spy = t.mock.method(decisionInterpreter, "interpretPostingsDecision", async () => {
+    throw new Error("must never be called while an open natural-language follow-up owns this reply");
+  });
+
+  // The seller has a real pending match to decide on (same setup as every other test in this
+  // file)... AND, separately, their own open natural-language follow-up question awaiting an
+  // answer -- set directly, the same way this file's "stale pendingMatches" precedent does.
+  await seedMatch(t, TEST_PHONE);
+  resetState(TEST_PHONE);
+  const state = getState(TEST_PHONE);
+  state.pendingNaturalFollowUp = {
+    request: { action: "buy", query: "Patek Philippe Nautilus 5712/1A" },
+    partial: {},
+    missing: ["budget", "location", "dial color", "condition"],
+  };
+  saveState(state);
+
+  const reply = await tryHandleDirectPostingDecision(TEST_PHONE, "120k");
+  assert.equal(reply, null, "must fall through to the ordinary flow rather than misinterpreting the follow-up answer as a match decision");
+  assert.equal(spy.mock.callCount(), 0, "the AI must never be asked to interpret a follow-up answer as a decision on an unrelated match");
+});
+
+/**
+ * The live-reported bug this whole guard extension fixes: a tester replied "buy" to answer
+ * flow.ts's own "are you looking to buy X, or are you selling one?" clarifying question
+ * (pendingActionClarification — see conversation/flow.ts). With no guard for that state, "buy"
+ * reached this file's natural-language interpreter instead, which read it as approving a
+ * COMPLETELY UNRELATED real pending match and sent an unwanted "Approved Match... You're
+ * connected!" card — never the item the tester was actually answering about.
+ */
+test('required regression: a bare "buy"/"sell" answer is never routed to match-decision interpretation while flow.ts is mid-asking which side of the trade an item is (pendingActionClarification)', async (t) => {
+  await db._resetDbForTests();
+  const spy = t.mock.method(decisionInterpreter, "interpretPostingsDecision", async () => ({ action: "approve", matchId: null }));
+
+  const { matchId } = await seedMatch(t, TEST_PHONE);
+  resetState(TEST_PHONE);
+  const state = getState(TEST_PHONE);
+  state.pendingActionClarification = { searchText: "Patek Philippe Nautilus 5712/1A" };
+  saveState(state);
+
+  const reply = await tryHandleDirectPostingDecision(TEST_PHONE, "buy");
+  assert.equal(reply, null, "must fall through to flow.ts's own clarification handling rather than approving an unrelated match");
+  assert.equal(spy.mock.callCount(), 0, "the AI must never even be asked -- proves the guard skips it before any interpretation happens, not merely that it happened to disagree");
+
+  // Sanity: the real match is untouched and still approvable normally afterward.
+  const stillWorks = await tryHandleDirectPostingDecision(TEST_PHONE, `approve ${matchId}`);
+  assert.match(stillWorks!, /connected|as soon as the other side confirms/i);
 });

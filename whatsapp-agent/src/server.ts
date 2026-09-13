@@ -174,9 +174,18 @@ async function tryInterpretPostingsDecisionNaturally(
   // decide on, a plain reply sent while actively mid-draft must first go to that draft's own flow.
   // The deterministic "approve <id>"/"pass <id>" pattern match in each caller runs BEFORE this
   // function and is unaffected -- an explicit command still works regardless of an open draft.
+  // Live-reported bug (screenshot): a bare "buy" reply, meant to answer flow.ts's own "are you
+  // looking to buy X, or are you selling one?" clarifying question (pendingActionClarification)
+  // -- or, the same way, a bare follow-up answer like "120k" meant for an open natural-language
+  // preference interview (pendingNaturalFollowUp) -- was never added to this guard when those two
+  // pending states were introduced, so it reached the AI interpreter below, got read as an
+  // approval, and silently connected the sender to a COMPLETELY UNRELATED real posting match --
+  // never the item they were actually answering about. Same root cause and same fix shape as the
+  // sell/buy-intake guard just below: whatever open question flow.ts is mid-asking owns the very
+  // next reply, always, before this natural-language interpreter ever gets a turn at it.
   const draftState = getState(phone);
-  if (draftState.pendingSellIntake || draftState.pendingBuyIntake) {
-    console.log(`[postings-decision] natural-language decision skipped for ${phone}: an open sell/buy-intake draft owns this reply`);
+  if (draftState.pendingSellIntake || draftState.pendingBuyIntake || draftState.pendingNaturalFollowUp || draftState.pendingActionClarification) {
+    console.log(`[postings-decision] natural-language decision skipped for ${phone}: an open sell/buy-intake draft or natural-language follow-up owns this reply`);
     return null;
   }
   const options = await getPendingMatchesForRecipient(canonicalUserId, sourceType ? { sourceType } : undefined);

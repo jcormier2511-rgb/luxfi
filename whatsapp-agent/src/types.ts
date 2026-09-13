@@ -104,6 +104,14 @@ export interface PendingNaturalFollowUp {
   missing: string[];
 }
 
+/** Set when AI intent extraction recognized a specific watch (brand/model/reference) but
+ *  couldn't tell whether the sender wants to buy or sell it — see flow.ts's resolveItemRequests
+ *  and the pendingActionClarification handling right after pendingNaturalFollowUp. `searchText`
+ *  is the item to search/list once the sender answers "buy" or "sell". */
+export interface PendingActionClarification {
+  searchText: string;
+}
+
 export type SellIntakeStep = "details" | "price" | "condition" | "location" | "dial" | "photo" | "notes" | "confirm";
 
 /**
@@ -167,6 +175,7 @@ export interface ConversationState {
   preferences?: SearchPreferences;
   pendingPreferenceCollection?: PendingPreferenceCollection;
   pendingNaturalFollowUp?: PendingNaturalFollowUp;
+  pendingActionClarification?: PendingActionClarification;
   pendingSellIntake?: PendingSellIntake;
   pendingBuyIntake?: PendingBuyIntake;
   // Consecutive replies that failed to advance whichever draft above is open (the literal "I

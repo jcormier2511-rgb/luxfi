@@ -62,6 +62,14 @@ function isOptOut(text: string): boolean {
 const BUY_KEYWORDS = /\b(buy|buying|wtb|looking for|want|need|iso|find me|in search of|find\s+(?:a\s+|me\s+)?sellers?)\b/i;
 const SELL_KEYWORDS = /\b(sell|selling|fs|for sale|i have|wts|find\s+(?:a\s+|me\s+)?buyers?)\b/i;
 
+// A one-word answer to "are you looking to buy X, or are you selling one?" (see
+// pendingActionClarification below) — deliberately narrower than BUY_KEYWORDS/SELL_KEYWORDS
+// above, which also match inside a full new request ("wtb rolex daytona 116500"). Using the
+// broader pattern here would let a genuinely new, different request get misread as the answer
+// to the OLD clarification and silently attached to its stale item instead of its own.
+const BARE_BUY_ANSWER = /^\s*(?:i(?:'m| am)?\s+)?(?:buy(?:ing)?|wtb)\s*(?:it|one|this)?\s*[.!]?\s*$/i;
+const BARE_SELL_ANSWER = /^\s*(?:i(?:'m| am)?\s+)?(?:sell(?:ing)?|wts|fs)\s*(?:it|one|this)?\s*[.!]?\s*$/i;
+
 // Real reported bug: Fi's own capabilities menu ("1. Find a buyer / 2. Find a seller") invites a
 // reply of exactly that literal text, but LEADING_PHRASES below strips "find a buyer"/"find a
 // seller" as a lead-in phrase expecting an item to follow it -- a BARE reply naming only the role,
@@ -2754,6 +2762,13 @@ interface ResolvedItems {
    *  own unambiguous price pattern (see ai/intentExtractor.ts) — the caller shows "Price: Not
    *  reliably parsed" rather than silently searching with no budget filter and no explanation. */
   priceUnreliable?: boolean;
+  /** Set when AI intent extraction recognized a specific watch (brand/model/reference) but
+   *  couldn't tell buy vs. sell (intent "unknown") and the legacy parser also found nothing.
+   *  Real reported bug: this used to just fall through to `items: []`, which the caller answers
+   *  with a free-form AI chat reply ("are you looking to buy X, or selling one?") and remembers
+   *  NOTHING — a one-word "buy" answer then has no request left to attach to. The caller instead
+   *  asks the same question itself and stores this so the next reply can complete the request. */
+  ambiguousAction?: { searchText: string };
 }
 
 /**
@@ -2787,6 +2802,11 @@ async function resolveItemRequests(phone: string, text: string): Promise<Resolve
     }
     // AI unavailable/unconfident/not a buy-or-sell intent — legacy parser is the fallback, per
     // routing order item 3, same as every non-AI-enabled phone gets unconditionally.
+    const legacy = parseItemRequests(text);
+    if (legacy.length === 0 && extraction?.intent.intent === "unknown" && extraction.intent.searchText) {
+      return { items: [], ambiguousAction: { searchText: extraction.intent.searchText } };
+    }
+    return { items: legacy };
   }
   return { items: parseItemRequests(text) };
 }
@@ -3418,6 +3438,23 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     }
   }
 
+  // Live-reported bug: when Fi recognizes a specific watch (brand/model/reference) but can't
+  // tell buy vs. sell, it used to fall straight into the generic small-talk AI reply ("Are you
+  // looking to buy X, or are you selling one?") with nothing remembered anywhere — a one-word
+  // "buy" answer then had no request left to attach to and silently reprocessed as its own
+  // unrelated (and unparseable) message, going nowhere. Mirrors pendingNaturalFollowUp just
+  // above: a short buy/sell answer completes the SAME item Fi just asked about; anything longer
+  // or unrelated abandons the clarification rather than trapping a genuinely new message behind
+  // it (real risk otherwise: "wtb rolex daytona 116500" sent in reply would itself match
+  // BUY_KEYWORDS and get silently swapped for the OLD stale item).
+  let clarifiedRequest: ItemRequest | undefined;
+  if (state.pendingActionClarification) {
+    const pending = state.pendingActionClarification;
+    if (BARE_BUY_ANSWER.test(text)) clarifiedRequest = { action: "buy", query: pending.searchText };
+    else if (BARE_SELL_ANSWER.test(text)) clarifiedRequest = { action: "sell", query: pending.searchText };
+    state.pendingActionClarification = undefined;
+  }
+
   // Fi Concierge Stage 3: people rarely type the literal "approve <n>"/"pass <n>" format they
   // were shown — "I'll take the first one", "pass on that", "yeah let's do #2" all mean the
   // same thing. Only tried when the deterministic parser above found nothing AND there's
@@ -3442,7 +3479,7 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     }
   }
 
-  const resolved = await resolveItemRequests(phone, text);
+  const resolved: ResolvedItems = clarifiedRequest ? { items: [clarifiedRequest] } : await resolveItemRequests(phone, text);
   const parsed = resolved.items;
 
   // One-shot, checked BEFORE anything else once armed: only ever set right below, for a contact
@@ -3495,6 +3532,12 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   }
 
   if (parsed.length === 0) {
+    if (resolved.ambiguousAction) {
+      state.pendingActionClarification = { searchText: resolved.ambiguousAction.searchText };
+      messages.push(`Are you looking to buy a ${resolved.ambiguousAction.searchText}, or are you selling one?`);
+      saveState(state);
+      return { state, messages };
+    }
     const bareRoleMatch = BARE_FIND_BUYER_OR_SELLER.exec(text.trim());
     if (bareRoleMatch) {
       // "find a buyer" -> they have something to sell and want Fi to find them a buyer for it.
