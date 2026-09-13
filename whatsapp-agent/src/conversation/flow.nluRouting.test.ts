@@ -377,3 +377,34 @@ test('required regression: a reply that answers with extra detail instead of the
   );
   assert.match(result.messages.join("\n"), /budget/i, "still missing budget/location, so the follow-up question continues as normal");
 });
+
+// Real product ask, following the same live-reported bug above: a search that carries no
+// recognized brand or reference at all has nothing for the token-based ranking to go on, and
+// used to fall back to "show something anyway" (see matching/engine.ts's findMatches) so the
+// trial always demonstrated value -- which, with a genuinely unrelated listing sitting in the
+// pool, is exactly how a wrong-brand match got surfaced as if it were relevant. Asking for a
+// fuller reference instead is what closes the gap for good, independent of how the query lost
+// its identity in the first place.
+test("required: a search with no recognized brand or reference asks for a fuller reference instead of surfacing an unrelated listing", async (t) => {
+  const phone = TEST_PHONE;
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+  // A real, but totally unrelated, listing a token-based fallback could otherwise surface.
+  await inventoryDb.upsertListings(
+    [fsRow("no-identity-1", { brand: "Breitling", ref: "AB0139", item: "item-no-identity-1", description: "Breitling Navitimer, blue dial, brand new" })],
+    new Date().toISOString()
+  );
+
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) =>
+    /blue/i.test(text) ? extracted({ intent: "buy", dial: "blue", condition: "new" }) : NOT_A_REQUEST
+  );
+
+  await handleIncomingMessage(phone, "hi");
+  const result = await handleIncomingMessage(phone, "blue, new");
+
+  assert.ok(
+    !result.messages.some((m) => /Potential Match|Breitling/i.test(m)),
+    "must never surface an unrelated listing just because nothing else in the pool scored either"
+  );
+  assert.match(result.messages.join("\n"), /reference number/i, "must ask for a fuller reference instead of guessing");
+});

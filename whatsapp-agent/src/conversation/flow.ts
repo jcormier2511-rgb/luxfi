@@ -1566,6 +1566,20 @@ async function withSearchIndicator<T>(phone: string, work: () => Promise<T>): Pr
 
 /** Runs a fresh search for `request`, showing Match Cards and arming them for approve/pass. */
 async function startSearch(state: ConversationState, request: ItemRequest, messages: string[]): Promise<void> {
+  // Real reported bug: a query carrying no recognized brand OR reference at all ("blue, new" —
+  // dial/condition preferences with no watch identity behind them, the residue of a reference
+  // that got lost or was never recognized upstream) still ran a full search, whose token-scoring
+  // has nothing to rank against and can surface a completely unrelated listing (wrong brand
+  // entirely) as if it were a real match — worse than showing nothing, since it reads as Fi
+  // having searched and found something relevant when it did not. Asking for the reference
+  // instead of guessing is what a human dealer would do with the same information gap; a query
+  // that DOES carry a brand or reference (even bare, e.g. "Rolex") is unaffected and still
+  // searches exactly as before, including the "always show a good-faith option" trial behavior
+  // for a genuinely brand-scoped browse.
+  if (!carriesProductIdentity(request.query)) {
+    messages.push(`I couldn't match that to a specific watch in our system — could you send the full reference number, or the brand and model?`);
+    return;
+  }
   await logSearchRequest(state.phone, request.action, request.query); // best-effort (catches its own errors internally)
   const hadExistingPending = Boolean(state.pendingMatches);
   // findMatchesHybrid only ever activates AI-assisted matching for the configured test phone
