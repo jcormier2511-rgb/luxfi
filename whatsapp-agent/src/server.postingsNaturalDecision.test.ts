@@ -229,7 +229,7 @@ test('required regression: a bare "buy"/"sell" answer is never routed to match-d
   const { matchId } = await seedMatch(t, TEST_PHONE);
   resetState(TEST_PHONE);
   const state = getState(TEST_PHONE);
-  state.pendingActionClarification = { searchText: "Patek Philippe Nautilus 5712/1A" };
+  state.pendingActionClarification = { searchText: "Patek Philippe Nautilus 5712/1A", originalText: "5712/1a" };
   saveState(state);
 
   const reply = await tryHandleDirectPostingDecision(TEST_PHONE, "buy");

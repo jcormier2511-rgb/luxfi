@@ -326,3 +326,54 @@ test("required: a genuinely new, different request sent in reply to the clarifyi
     "the new request must run on its own terms, not get silently attached to the old 5712/1A item"
   );
 });
+
+// Live-reported bug (real tester feedback): "how about a 5712/1a" (asked which side of the
+// trade) answered with "blue, new" instead of literally "buy"/"sell" -- extra detail, not the
+// one word expected. This used to abandon the clarification and process "blue, new" ALONE as a
+// brand-new search with no reference/brand/model of its own, so Fi matched on dial color alone
+// and surfaced a completely unrelated watch (wrong brand entirely) -- exactly what "it is not my
+// first request" from the live report described.
+test('required regression: a reply that answers with extra detail instead of the bare word ("blue, new") is combined with the original item, never processed alone and losing the reference', async (t) => {
+  const phone = TEST_PHONE;
+  resetState(phone);
+  await inventoryDb._resetDbForTests();
+
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) => {
+    // The combined text (original + the "blue, new" reply) now carries enough for a confident
+    // buy intent, reference intact -- proving the reference was never dropped.
+    if (/5712\/1a/i.test(text) && /blue/i.test(text)) {
+      return extracted({
+        intent: "buy",
+        brand: "Patek Philippe",
+        model: "Nautilus",
+        reference: "5712/1A",
+        searchText: "Patek Philippe Nautilus 5712/1A",
+        dial: "blue",
+        condition: "new",
+        // Only dial/condition were actually stated -- budget/location must still come out
+        // missing below, not silently inherited from extracted()'s own convenience defaults.
+        priceMax: null,
+        location: null,
+      });
+    }
+    // The ORIGINAL bare reference alone: action unclear.
+    if (/5712\/1a/i.test(text)) {
+      return extracted({ intent: "unknown", brand: "Patek Philippe", model: "Nautilus", reference: "5712/1A", searchText: "Patek Philippe Nautilus 5712/1A", confidence: 0 });
+    }
+    // "blue, new" processed ALONE (what the bug used to do) names no watch at all -- proves the
+    // fix isn't accidentally relying on the AI inventing the reference back from nothing.
+    return NOT_A_REQUEST;
+  });
+
+  await handleIncomingMessage(phone, "hi");
+  await handleIncomingMessage(phone, "how about a 5712/1a");
+  const result = await handleIncomingMessage(phone, "blue, new");
+
+  assert.equal(result.state.pendingActionClarification, undefined, "the clarification is consumed");
+  assert.equal(
+    result.state.pendingNaturalFollowUp?.request.query,
+    "Patek Philippe Nautilus 5712/1A",
+    'the item Fi already recognized must survive into the search request -- never lost just because the reply was "blue, new" instead of "buy"'
+  );
+  assert.match(result.messages.join("\n"), /budget/i, "still missing budget/location, so the follow-up question continues as normal");
+});

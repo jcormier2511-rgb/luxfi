@@ -107,9 +107,16 @@ export interface PendingNaturalFollowUp {
 /** Set when AI intent extraction recognized a specific watch (brand/model/reference) but
  *  couldn't tell whether the sender wants to buy or sell it — see flow.ts's resolveItemRequests
  *  and the pendingActionClarification handling right after pendingNaturalFollowUp. `searchText`
- *  is the item to search/list once the sender answers "buy" or "sell". */
+ *  is the item to search/list once the sender answers "buy" or "sell". `originalText` is the raw
+ *  message that triggered the question — real reported bug: a reply that doesn't literally say
+ *  "buy"/"sell" ("blue, new", answering with more detail instead of the expected one word) used
+ *  to abandon the clarification and process that reply ALONE as a brand-new, unrelated search,
+ *  silently losing the reference/brand/model Fi had already recognized. Combined with that reply
+ *  instead (see flow.ts), so the original item is never dropped just because the answer wasn't
+ *  the exact word expected. */
 export interface PendingActionClarification {
   searchText: string;
+  originalText: string;
 }
 
 export type SellIntakeStep = "details" | "price" | "condition" | "location" | "dial" | "photo" | "notes" | "confirm";

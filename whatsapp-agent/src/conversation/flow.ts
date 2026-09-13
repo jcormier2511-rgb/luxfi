@@ -3443,15 +3443,31 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   // looking to buy X, or are you selling one?") with nothing remembered anywhere — a one-word
   // "buy" answer then had no request left to attach to and silently reprocessed as its own
   // unrelated (and unparseable) message, going nowhere. Mirrors pendingNaturalFollowUp just
-  // above: a short buy/sell answer completes the SAME item Fi just asked about; anything longer
-  // or unrelated abandons the clarification rather than trapping a genuinely new message behind
-  // it (real risk otherwise: "wtb rolex daytona 116500" sent in reply would itself match
-  // BUY_KEYWORDS and get silently swapped for the OLD stale item).
+  // above: a short buy/sell answer completes the SAME item Fi just asked about.
+  //
+  // Second live-reported bug, found testing the fix above: a reply that ISN'T the bare word
+  // expected but also doesn't look like its own fresh, unrelated request (no BUY_KEYWORDS/
+  // SELL_KEYWORDS of its own — e.g. "blue, new", answering with more detail instead of literally
+  // saying "buy") used to abandon the clarification and run THAT reply alone as a brand-new
+  // search, silently dropping the reference/brand/model Fi had already recognized — reported
+  // repro: asked about "5711", then answered "blue, new" instead of "buy", and got shown an
+  // unrelated watch (wrong brand entirely) matched on dial color alone, no reference in sight.
+  // Recombined with the original message instead, so the reference is never lost just because
+  // the reply wasn't the exact word expected — only a message that itself looks like a genuinely
+  // new, different request (BUY_KEYWORDS/SELL_KEYWORDS) abandons the old item outright, same
+  // "fresh request wins" rule pendingNaturalFollowUp's own guard above already applies (real risk
+  // otherwise: "wtb rolex daytona 116500" sent in reply would itself match BUY_KEYWORDS and get
+  // silently swapped for the OLD stale item instead of starting its own new search).
   let clarifiedRequest: ItemRequest | undefined;
+  let clarificationFallbackText: string | undefined;
   if (state.pendingActionClarification) {
     const pending = state.pendingActionClarification;
     if (BARE_BUY_ANSWER.test(text)) clarifiedRequest = { action: "buy", query: pending.searchText };
     else if (BARE_SELL_ANSWER.test(text)) clarifiedRequest = { action: "sell", query: pending.searchText };
+    else if (!BUY_KEYWORDS.test(text) && !SELL_KEYWORDS.test(text)) {
+      clarificationFallbackText = `${pending.originalText} ${text}`;
+      text = clarificationFallbackText; // combined text now drives every remaining text-based check below, same as a normal single message would
+    }
     state.pendingActionClarification = undefined;
   }
 
@@ -3533,7 +3549,7 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
 
   if (parsed.length === 0) {
     if (resolved.ambiguousAction) {
-      state.pendingActionClarification = { searchText: resolved.ambiguousAction.searchText };
+      state.pendingActionClarification = { searchText: resolved.ambiguousAction.searchText, originalText: text };
       messages.push(`Are you looking to buy a ${resolved.ambiguousAction.searchText}, or are you selling one?`);
       saveState(state);
       return { state, messages };
