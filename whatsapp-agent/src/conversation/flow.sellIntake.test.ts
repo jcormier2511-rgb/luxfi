@@ -20,11 +20,16 @@ process.env.WEBHOOK_TOKEN = "test";
 // proves that half with this left unset). Must be set before config.ts is first required.
 process.env.ENABLE_V4_POSTINGS = "true";
 process.env.V4_ALLOWED_CHAT_IDS = "*";
+process.env.ENABLE_AI_MATCHING = "true";
+process.env.ANTHROPIC_API_KEY = "test-key";
+process.env.AI_MATCHING_TEST_PHONE = "19992220006";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const postingsDb = require("../postings/db") as typeof import("../postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const whapiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -54,15 +59,37 @@ function mockSends(t: TestContext): { phone: string; message: string }[] {
   return sent;
 }
 
-/** Walks a fresh contact through the once-per-contact preference interview with "any" each
- *  time (same pattern as flow.matching.test.ts), then returns the search's own result. */
-async function freshRequest(phone: string, query: string) {
+/** Drives the AI-matching-test-phone ephemeral search path -- the replacement for the old
+ *  "buy: X" + a few "any" replies shortcut, which no longer reaches a v3 search at all (see
+ *  conversation/flow.ts: `buy:`/`sell:` now creates a monitored posting like any other
+ *  conversational request). A confident, fully-specified intent means the search runs
+ *  immediately with no follow-up question in the way. */
+async function freshBuySearch(t: TestContext, phone: string, searchText: string) {
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) =>
+    text === searchText
+      ? {
+          intent: {
+            intent: "buy" as const,
+            brand: "Rolex",
+            model: "Daytona",
+            reference: "116500LN",
+            dial: "any",
+            condition: "any",
+            year: null,
+            boxPapers: null,
+            priceMin: null,
+            priceMax: 500000,
+            currency: "USD",
+            location: "Global",
+            searchText,
+            confidence: 0.9,
+          },
+          priceUnreliable: false,
+        }
+      : null
+  );
   await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, query);
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  return handleIncomingMessage(phone, "any");
+  return handleIncomingMessage(phone, searchText);
 }
 
 test('required: "I want to sell a watch" asks for identifying details without searching or saving first', async () => {
@@ -388,7 +415,7 @@ test('"cancel" mid-intake clears it without unsubscribing', async () => {
   const result=await handleIncomingMessage(phone,"cancel"); assert.equal(result.state.pendingSellIntake,undefined); assert.notEqual(result.state.stage,"opted_out");
 });
 
-test("a buy search with real matches is completely unaffected by the sell-intake change", async () => {
+test("a buy search with real matches is completely unaffected by the sell-intake change", async (t) => {
   const phone = "19992220006";
   resetState(phone);
   await inventoryDb._resetDbForTests();
@@ -413,7 +440,7 @@ test("a buy search with real matches is completely unaffected by the sell-intake
     new Date().toISOString()
   );
 
-  const result = await freshRequest(phone, "buy: Rolex Daytona 116500LN");
+  const result = await freshBuySearch(t, phone, "looking for a Rolex Daytona 116500LN");
   assert.ok(result.messages.some((m) => /Potential Match/.test(m)));
   assert.equal(result.state.pendingSellIntake, undefined);
 });

@@ -81,14 +81,6 @@ export interface SearchPreferences {
   condition?: string;
 }
 
-export type PreferenceStep = "price" | "location" | "dial" | "condition";
-
-/** Mid-collection state — which question is outstanding and the item request waiting on it. */
-export interface PendingPreferenceCollection {
-  step: PreferenceStep;
-  request: ItemRequest;
-}
-
 /**
  * Fi Concierge Stage 3: a single free-form message can skip the old step-by-step interview
  * (see flow.ts's tryNaturalLanguagePreferences), but a request must still always carry price,
@@ -180,7 +172,6 @@ export interface ConversationState {
   pendingMatches?: PendingMatchSet;
   preferencesCollected: boolean;
   preferences?: SearchPreferences;
-  pendingPreferenceCollection?: PendingPreferenceCollection;
   pendingNaturalFollowUp?: PendingNaturalFollowUp;
   pendingActionClarification?: PendingActionClarification;
   pendingSellIntake?: PendingSellIntake;

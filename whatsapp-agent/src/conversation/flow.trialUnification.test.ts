@@ -1,4 +1,4 @@
-import { test, after } from "node:test";
+import { test, after, TestContext } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs";
 import os from "os";
@@ -17,11 +17,16 @@ process.env.WEBHOOK_TOKEN = "test";
 process.env.TRIAL_MAX_APPROVED_MATCHES = "3";
 process.env.ENABLE_V4_POSTINGS = "true";
 process.env.V4_ALLOWED_CHAT_IDS = "*";
+process.env.ENABLE_AI_MATCHING = "true";
+process.env.ANTHROPIC_API_KEY = "test-key";
+process.env.AI_MATCHING_TEST_PHONE = "19998880001";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const postingsDb = require("../postings/db") as typeof import("../postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const entitlements = require("../billing/entitlementStore") as typeof import("../billing/entitlementStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -64,18 +69,45 @@ function fsRow(id: string): Parameters<typeof inventoryDb.upsertListings>[0][num
   };
 }
 
+const V3_SEARCH_TEXT = "looking for a Rolex Daytona";
+
+/** Arms the AI-matching-test-phone ephemeral search path with a confident, fully-specified
+ *  intent -- call once per test, before any approveViaV3 call (t.mock.method throws if mocked
+ *  twice in the same test). Replaces the old "buy: X" + a few "any" replies shortcut, which no
+ *  longer reaches a v3 search at all (see conversation/flow.ts: `buy:`/`sell:` now creates a
+ *  monitored posting like any other conversational request). */
+function mockConfidentDaytonaIntent(t: TestContext) {
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) =>
+    text === V3_SEARCH_TEXT
+      ? {
+          intent: {
+            intent: "buy" as const,
+            brand: "Rolex",
+            model: "Daytona",
+            reference: null,
+            dial: "any",
+            condition: "any",
+            year: null,
+            boxPapers: null,
+            priceMin: null,
+            priceMax: 500000,
+            currency: "USD",
+            location: "Global",
+            searchText: V3_SEARCH_TEXT,
+            confidence: 0.9,
+          },
+          priceUnreliable: false,
+        }
+      : null
+  );
+}
+
 /** One v3 on-demand search + approve #1 for `phone`. */
 async function approveViaV3(phone: string, firstSearch: boolean): Promise<string[]> {
   const collected: string[] = [];
   const push = (r: { messages: string[] }) => collected.push(...r.messages);
   if (firstSearch) push(await handleIncomingMessage(phone, "hi"));
-  push(await handleIncomingMessage(phone, "buy: Rolex Daytona"));
-  if (firstSearch) {
-    push(await handleIncomingMessage(phone, "any"));
-    push(await handleIncomingMessage(phone, "any"));
-    push(await handleIncomingMessage(phone, "any"));
-    push(await handleIncomingMessage(phone, "any"));
-  }
+  push(await handleIncomingMessage(phone, V3_SEARCH_TEXT));
   push(await handleIncomingMessage(phone, "approve 1"));
   return collected;
 }
@@ -110,13 +142,14 @@ async function approveViaV4(phone: string): Promise<import("../postings/notify")
   return approveMatch(matches.rows[0].id, phone);
 }
 
-test("required: the 3-approval complimentary trial is shared between the v3 on-demand flow and the v4 automatic-matching flow — it cannot be exhausted twice", async () => {
+test("required: the 3-approval complimentary trial is shared between the v3 on-demand flow and the v4 automatic-matching flow — it cannot be exhausted twice", async (t) => {
   await inventoryDb._resetDbForTests();
   await postingsDb._resetDbForTests();
   await entitlements._resetDbForTests();
   const phone = "19998880001";
   resetState(phone);
   v4Counter = 0;
+  mockConfidentDaytonaIntent(t);
 
   await inventoryDb.upsertListings([fsRow("tu-1"), fsRow("tu-2")], new Date().toISOString());
 

@@ -17,6 +17,11 @@ const tmpPersistDir = fs.mkdtempSync(path.join(os.tmpdir(), "luxfi-flow-searchin
 process.env.PERSIST_DIR = tmpPersistDir;
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
+process.env.ENABLE_AI_MATCHING = "true";
+process.env.ANTHROPIC_API_KEY = "test-key";
+const PHONE_1 = "19990004001";
+const PHONE_2 = "19990004002";
+process.env.AI_MATCHING_TEST_PHONE = `${PHONE_1},${PHONE_2}`;
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
@@ -26,6 +31,8 @@ const postingsDb = require("../postings/db") as typeof import("../postings/db");
 const greenApiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const engine = require("../matching/engine") as typeof import("../matching/engine");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -38,18 +45,39 @@ after(async () => {
 });
 
 const INDICATOR = /still searching and loading/i;
+const SEARCH_TEXT = "looking for a Rolex Daytona 116500LN";
 
-// A first-time contact's search is preceded by a one-time price/location/dial/condition
-// interview (see flow.ts's handlePreferenceAnswer) -- the actual search, and so the actual
-// findMatchesHybrid call, only runs once that's answered. Mirrors the exact sequence
-// flow.taskCompletionFallback.test.ts already uses to reach a live search.
+/** A complete, confident buy intent -- every preference already present, so the search runs
+ *  immediately with no follow-up question in the way (that mechanism is covered elsewhere, e.g.
+ *  flow.naturalFollowUp.test.ts; these tests are purely about the search-indicator's timing). */
+function confidentBuyIntent() {
+  return {
+    intent: {
+      intent: "buy" as const,
+      brand: "Rolex",
+      model: "Daytona",
+      reference: "116500LN",
+      dial: "any",
+      condition: "any",
+      year: null,
+      boxPapers: null,
+      priceMin: null,
+      priceMax: 500000,
+      currency: "USD",
+      location: "North America",
+      searchText: "Rolex Daytona 116500LN",
+      confidence: 0.9,
+    },
+    priceUnreliable: false,
+  };
+}
+
+/** Only the AI-matching test phone still reaches findMatchesHybrid via startSearch (see
+ *  conversation/flow.ts's resolveItemRequests) -- the `buy:`/`sell:` command now creates a
+ *  monitored posting like any other conversational request, same as everyone else. */
 async function reachSearch(phone: string): Promise<void> {
   resetState(phone);
   await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
 }
 
 test("required regression: a search that resolves quickly never sends a proactive search indicator", async (t) => {
@@ -62,10 +90,11 @@ test("required regression: a search that resolves quickly never sends a proactiv
     called = true;
     return [];
   });
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) => (/rolex daytona/i.test(text) ? confidentBuyIntent() : null));
 
-  const phone = "19990004001";
+  const phone = PHONE_1;
   await reachSearch(phone);
-  const result = await handleIncomingMessage(phone, "any"); // the 4th answer actually runs the search
+  const result = await handleIncomingMessage(phone, SEARCH_TEXT);
 
   assert.ok(called, "precondition: the search must actually have run");
   assert.match(result.messages.join("\n"), /No live matches yet/);
@@ -83,10 +112,11 @@ test('required regression: a search still running after 2 seconds sends a proact
     resolveSearch = resolve;
   });
   t.mock.method(engine, "findMatchesHybrid", async () => slowSearch);
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) => (/rolex daytona/i.test(text) ? confidentBuyIntent() : null));
 
-  const phone = "19990004002";
+  const phone = PHONE_2;
   await reachSearch(phone);
-  const searchPromise = handleIncomingMessage(phone, "any"); // the 4th answer actually runs the search
+  const searchPromise = handleIncomingMessage(phone, SEARCH_TEXT);
 
   // Real wait, deliberately just past the 2s threshold — the indicator fires off its own
   // setTimeout independent of the search promise, so there's no synchronous hook to await instead.

@@ -1,4 +1,4 @@
-import { test, after } from "node:test";
+import { test, after, TestContext } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs";
 import os from "os";
@@ -8,11 +8,16 @@ const tmpPersistDir = fs.mkdtempSync(path.join(os.tmpdir(), "luxfi-flow-sellinta
 process.env.PERSIST_DIR = tmpPersistDir;
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
+process.env.ENABLE_AI_MATCHING = "true";
+process.env.ANTHROPIC_API_KEY = "test-key";
+process.env.AI_MATCHING_TEST_PHONE = "17775555002";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const postingsDb = require("../postings/db") as typeof import("../postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -28,19 +33,40 @@ const SELLER_PHONE = "17775555001";
 const BUYER_PHONE = "17775555002";
 const SELLER_PHONE_NO_PHOTO = "17775555003";
 
-/** Same pattern as flow.sellIntake.test.ts's freshRequest — walks a brand-new contact through
- *  the once-per-contact price/location/dial/condition interview with "any", then returns the
- *  search's own result (the turn that actually reaches startSearch/startSellIntake). */
-async function freshRequest(phone: string, query: string) {
+/** Drives the AI-matching-test-phone ephemeral search path -- the replacement for the old
+ *  "buy: X" + a few "any" replies shortcut, which no longer reaches a v3 search at all (see
+ *  conversation/flow.ts: `buy:`/`sell:` now creates a monitored posting like any other
+ *  conversational request). A confident, fully-specified intent means the search runs
+ *  immediately with no follow-up question in the way. */
+async function freshBuySearch(t: TestContext, phone: string, searchText: string) {
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) =>
+    text === searchText
+      ? {
+          intent: {
+            intent: "buy" as const,
+            brand: "Rolex",
+            model: "Daytona",
+            reference: "116500LN",
+            dial: "any",
+            condition: "any",
+            year: null,
+            boxPapers: null,
+            priceMin: null,
+            priceMax: 500000,
+            currency: "USD",
+            location: "Global",
+            searchText,
+            confidence: 0.9,
+          },
+          priceUnreliable: false,
+        }
+      : null
+  );
   await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, query);
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  return handleIncomingMessage(phone, "any");
+  return handleIncomingMessage(phone, searchText);
 }
 
-test("required regression: a completed sell-intake is persisted as a live FS listing a later buyer search can find", async () => {
+test("required regression: a completed sell-intake is persisted as a live FS listing a later buyer search can find", async (t) => {
   resetState(SELLER_PHONE);
   resetState(BUYER_PHONE);
   await inventoryDb._resetDbForTests();
@@ -64,8 +90,8 @@ test("required regression: a completed sell-intake is persisted as a live FS lis
   assert.equal(found!.price, "28500");
   assert.equal(found!.source, "WA-DM");
 
-  // A buyer's ordinary "buy:" search must actually surface it, same as any other inventory row.
-  const buyerResult = await freshRequest(BUYER_PHONE, "buy: Rolex Daytona 116500LN");
+  // A buyer's ordinary search must actually surface it, same as any other inventory row.
+  const buyerResult = await freshBuySearch(t, BUYER_PHONE, "looking for a Rolex Daytona 116500LN");
   const buyerMessages = buyerResult.messages.join("\n");
   assert.match(buyerMessages, /persistence-findable-listing/);
   assert.match(buyerMessages, /Private Seller/);

@@ -1,4 +1,4 @@
-import { test, after } from "node:test";
+import { test, after, TestContext } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs";
 import os from "os";
@@ -24,6 +24,9 @@ process.env.TRIAL_MAX_APPROVED_MATCHES = "3";
 // happens in this file (createCheckoutSession never calls Authorize.net itself).
 process.env.AUTHORIZENET_API_LOGIN_ID = "test-login-id";
 process.env.AUTHORIZENET_TRANSACTION_KEY = "test-transaction-key";
+process.env.ENABLE_AI_MATCHING = "true";
+process.env.ANTHROPIC_API_KEY = "test-key";
+process.env.AI_MATCHING_TEST_PHONE = "19990003001,19990003002,19990003004";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
@@ -31,6 +34,8 @@ const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../wa
 const postingsDb = require("../postings/db") as typeof import("../postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const whapiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -63,6 +68,41 @@ function fsRow(id: string, overrides: Partial<Parameters<typeof inventoryDb.upse
     description: "Rolex Daytona 116500LN",
     ...overrides,
   };
+}
+
+const SEARCH_TEXT = "looking for a Rolex Daytona 116500LN";
+
+/** Drives the AI-matching-test-phone ephemeral search path -- the replacement for the old
+ *  "buy: X" + a few "any" replies shortcut, which no longer reaches a v3 search at all (see
+ *  conversation/flow.ts: `buy:`/`sell:` now creates a monitored posting like any other
+ *  conversational request). Scoped to the exact search text so the "hi" warm-up message isn't
+ *  itself mistaken for a confident intent. */
+async function freshSearch(t: TestContext, phone: string): Promise<Awaited<ReturnType<typeof handleIncomingMessage>>> {
+  t.mock.method(intentExtractorModule, "extractIntent", async (text: string) =>
+    text === SEARCH_TEXT
+      ? {
+          intent: {
+            intent: "buy" as const,
+            brand: "Rolex",
+            model: "Daytona",
+            reference: "116500LN",
+            dial: "any",
+            condition: "any",
+            year: null,
+            boxPapers: null,
+            priceMin: null,
+            priceMax: 500000,
+            currency: "USD",
+            location: "Global",
+            searchText: SEARCH_TEXT,
+            confidence: 0.9,
+          },
+          priceUnreliable: false,
+        }
+      : null
+  );
+  await handleIncomingMessage(phone, "hi");
+  return handleIncomingMessage(phone, SEARCH_TEXT);
 }
 
 test("required regression: a message with nothing to parse, with no prior completion, still gets the old canned fallback", async () => {
@@ -108,12 +148,7 @@ test("required regression: approving a match, then an unparseable reply gets 'An
 
   const phone = "19990003001";
   resetState(phone);
-  await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  const searched = await handleIncomingMessage(phone, "any");
+  const searched = await freshSearch(t, phone);
   assert.ok(searched.state.pendingMatches, "precondition: a match set is now pending");
 
   const approved = await handleIncomingMessage(phone, "approve 1");
@@ -145,12 +180,7 @@ test("required regression: passing on a match, then an unparseable reply gets 'A
 
   const phone = "19990003002";
   resetState(phone);
-  await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
+  await freshSearch(t, phone);
 
   const passed = await handleIncomingMessage(phone, "pass 1");
   assert.match(passed.messages.join("\n"), /Passing on #1/);
@@ -176,12 +206,7 @@ test('required regression: passing on all pending matches one at a time only ann
 
   const phone = "19990003004";
   resetState(phone);
-  await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
+  await freshSearch(t, phone);
 
   const firstPass = await handleIncomingMessage(phone, "pass 1");
   assert.match(firstPass.messages.join("\n"), /Passing on #1/);

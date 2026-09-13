@@ -78,7 +78,6 @@ test("START clears conversational work and never repeats the approve/pass dead e
   await handleIncomingMessage(TEST_PHONE, "hi");
   const result = await handleIncomingMessage(TEST_PHONE, "start");
   assert.equal(result.state.pendingMatches, undefined);
-  assert.equal(result.state.pendingPreferenceCollection, undefined);
   assert.equal(result.state.pendingNaturalFollowUp, undefined);
   assert.match(result.messages[0], /personal luxury concierge/i);
   assert.doesNotMatch(result.messages[0], /approve|pass/i);

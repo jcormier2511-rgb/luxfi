@@ -1,4 +1,4 @@
-import { test, after } from "node:test";
+import { test, after, TestContext } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs";
 import os from "os";
@@ -14,6 +14,9 @@ process.env.PERSIST_DIR = tmpPersistDir;
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
 process.env.TRIAL_MAX_APPROVED_MATCHES = "3";
+process.env.ENABLE_AI_MATCHING = "true";
+process.env.ANTHROPIC_API_KEY = "test-key";
+process.env.AI_MATCHING_TEST_PHONE = "19992230009,19992230002,19992230004,19992230005,19992230007";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
@@ -21,6 +24,8 @@ const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../wa
 const postingsDb = require("../postings/db") as typeof import("../postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const entitlements = require("../billing/entitlementStore") as typeof import("../billing/entitlementStore");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -54,14 +59,33 @@ function fsRow(id: string, overrides: Partial<Parameters<typeof inventoryDb.upse
   };
 }
 
-/** Same "once-per-contact" interview pattern used throughout this suite. */
-async function freshRequest(phone: string, query: string) {
+/** Drives the AI-matching-test-phone ephemeral search path to a completed search -- the
+ *  replacement for the old "buy: X" + a few "any" replies shortcut, which no longer reaches a
+ *  v3 search at all (see conversation/flow.ts: `buy:`/`sell:` now creates a monitored posting
+ *  like any other conversational request). A confident, fully-specified intent means the
+ *  search runs immediately with no follow-up question in the way. */
+async function freshRequest(t: TestContext, phone: string) {
+  t.mock.method(intentExtractorModule, "extractIntent", async () => ({
+    intent: {
+      intent: "buy" as const,
+      brand: "Rolex",
+      model: "Daytona",
+      reference: "116500LN",
+      dial: "any",
+      condition: "any",
+      year: null,
+      boxPapers: null,
+      priceMin: null,
+      priceMax: 500000,
+      currency: "USD",
+      location: "Global",
+      searchText: "Rolex Daytona 116500LN",
+      confidence: 0.9,
+    },
+    priceUnreliable: false,
+  }));
   await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, query);
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  return handleIncomingMessage(phone, "any");
+  return handleIncomingMessage(phone, "looking for a Rolex Daytona 116500LN");
 }
 
 test('required: "listings" shows a 1/2/3 menu, and an unrecognized reply falls through normally instead of nagging again', async () => {
@@ -102,7 +126,7 @@ test('required (live-reported bug): natural phrasings like "listing summary" and
   assert.match(c.messages.join("\n"), /1\. Matches I've approved/);
 });
 
-test('required (live-reported bug): "start" (for a contact who was never opted out) shows the full menu instead of a generic fallback reminder', async () => {
+test('required (live-reported bug): "start" (for a contact who was never opted out) shows the full menu instead of a generic fallback reminder', async (t) => {
   const phone = "19992230009";
   resetState(phone);
   await inventoryDb._resetDbForTests();
@@ -111,7 +135,7 @@ test('required (live-reported bug): "start" (for a contact who was never opted o
 
   // Leave a match pending, exactly like the live-reported scenario — a bare "start" used to
   // just repeat "reply approve/pass... or tell me a new item to search" here.
-  await freshRequest(phone, "buy: Rolex Daytona 116500LN");
+  await freshRequest(t, phone);
 
   const result = await handleIncomingMessage(phone, "start");
   assert.match(result.messages.join("\n"), /personal luxury concierge/i);
@@ -131,14 +155,14 @@ test('"start" still reactivates an actually-opted-out contact (unaffected by fol
   assert.notEqual(result.state.stage, "opted_out", "start must still reactivate an opted-out contact");
 });
 
-test("required: option 1 shows an approved match's real contact info (v3 has no confirmation gate — always revealed immediately)", async () => {
+test("required: option 1 shows an approved match's real contact info (v3 has no confirmation gate — always revealed immediately)", async (t) => {
   const phone = "19992230002";
   resetState(phone);
   await inventoryDb._resetDbForTests();
   await postingsDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("list-1")], new Date().toISOString());
 
-  await freshRequest(phone, "buy: Rolex Daytona 116500LN");
+  await freshRequest(t, phone);
   await handleIncomingMessage(phone, "approve 1");
 
   await handleIncomingMessage(phone, "listings");
@@ -159,14 +183,14 @@ test("required: option 1 says nothing has been approved yet when that's true", a
   assert.match(result.messages.join("\n"), /haven't approved any matches yet/i);
 });
 
-test("required: option 2 lists only still-pending matches, keeping their original numbers so approve/pass still works", async () => {
+test("required: option 2 lists only still-pending matches, keeping their original numbers so approve/pass still works", async (t) => {
   const phone = "19992230004";
   resetState(phone);
   await inventoryDb._resetDbForTests();
   await postingsDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("list-2a"), fsRow("list-2b"), fsRow("list-2c")], new Date().toISOString());
 
-  await freshRequest(phone, "buy: Rolex Daytona 116500LN");
+  await freshRequest(t, phone);
   await handleIncomingMessage(phone, "approve 2"); // decide #2, leave #1 and #3 pending
 
   await handleIncomingMessage(phone, "listings");
@@ -177,14 +201,14 @@ test("required: option 2 lists only still-pending matches, keeping their origina
   assert.doesNotMatch(joined, /^2\. /m, "match #2 was already decided and must not be listed as pending");
 });
 
-test("required: option 2 says nothing is pending once everything has been decided", async () => {
+test("required: option 2 says nothing is pending once everything has been decided", async (t) => {
   const phone = "19992230005";
   resetState(phone);
   await inventoryDb._resetDbForTests();
   await postingsDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("list-3")], new Date().toISOString());
 
-  await freshRequest(phone, "buy: Rolex Daytona 116500LN");
+  await freshRequest(t, phone);
   await handleIncomingMessage(phone, "approve 1");
 
   await handleIncomingMessage(phone, "listings");
@@ -212,14 +236,14 @@ test("required: option 3 shows a real active listing created via the sell-intake
   assert.match(joined, /116610LV/);
 });
 
-test("required: option 3 says there are no active listings for a contact who has only ever searched (v3 searches are never persisted as monitors)", async () => {
+test("required: option 3 says there are no active listings for a contact who has only ever searched (v3 searches are never persisted as monitors)", async (t) => {
   const phone = "19992230007";
   resetState(phone);
   await inventoryDb._resetDbForTests();
   await postingsDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("list-4")], new Date().toISOString());
 
-  await freshRequest(phone, "buy: Rolex Daytona 116500LN");
+  await freshRequest(t, phone);
   await handleIncomingMessage(phone, "approve 1"); // approving doesn't create a monitored posting either
 
   await handleIncomingMessage(phone, "listings");

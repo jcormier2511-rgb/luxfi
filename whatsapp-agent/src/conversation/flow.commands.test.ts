@@ -1,4 +1,4 @@
-import { test, after } from "node:test";
+import { test, after, TestContext } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs";
 import os from "os";
@@ -8,6 +8,13 @@ const tmpPersistDir = fs.mkdtempSync(path.join(os.tmpdir(), "luxfi-flow-commands
 process.env.PERSIST_DIR = tmpPersistDir;
 process.env.NODE_ENV = process.env.NODE_ENV ?? "test";
 process.env.WEBHOOK_TOKEN = "test";
+process.env.ENABLE_AI_MATCHING = "true";
+process.env.ANTHROPIC_API_KEY = "test-key";
+// Every phone in this file that reaches a pending-matches precondition via reachPendingMatches
+// below (see conversation/flow.ts: `buy:`/`sell:` no longer runs a one-off search -- it creates
+// a monitored posting like any other conversational request, so the only way left to reach the
+// v3 ephemeral search + its own numbered approve/pass state is the AI-matching-test-phone path).
+process.env.AI_MATCHING_TEST_PHONE = ["19991110004", "19991110018", "19991110006", "19991110009", "19991110010", "19991110007"].join(",");
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
@@ -15,6 +22,8 @@ const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../wa
 const entitlementStore = require("../billing/entitlementStore") as typeof import("../billing/entitlementStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const postingsDb = require("../postings/db") as typeof import("../postings/db");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -44,6 +53,47 @@ function fsRow(id: string, overrides: Partial<Parameters<typeof inventoryDb.upse
     description: "Rolex Daytona 116500LN",
     ...overrides,
   };
+}
+
+const DAYTONA_SEARCH_TEXT = "looking for a Rolex Daytona 116500LN";
+
+/** Arms the AI-matching-test-phone ephemeral search path with a confident, fully-specified
+ *  intent -- the replacement for the old "buy: X" + a few "any" replies shortcut, which no
+ *  longer reaches a v3 search at all (see conversation/flow.ts: `buy:`/`sell:` now creates a
+ *  monitored posting like any other conversational request). Kept separate from actually
+ *  sending the search below so a test can search more than once without re-mocking. */
+function mockConfidentDaytonaIntent(t: TestContext) {
+  t.mock.method(intentExtractorModule, "extractIntent", async () => ({
+    intent: {
+      intent: "buy" as const,
+      brand: "Rolex",
+      model: "Daytona",
+      reference: "116500LN",
+      dial: "any",
+      condition: "any",
+      year: null,
+      boxPapers: null,
+      priceMin: null,
+      priceMax: 500000,
+      currency: "USD",
+      location: "Global",
+      searchText: "Rolex Daytona 116500LN",
+      confidence: 0.9,
+    },
+    priceUnreliable: false,
+  }));
+}
+
+function searchForDaytona(phone: string) {
+  return handleIncomingMessage(phone, DAYTONA_SEARCH_TEXT);
+}
+
+/** Drives the ephemeral search to a completed, pending-matches state -- these tests are about
+ *  what happens once a match is pending, not about the search/follow-up mechanics themselves. */
+async function reachPendingMatches(t: TestContext, phone: string) {
+  mockConfidentDaytonaIntent(t);
+  await handleIncomingMessage(phone, "hi");
+  return searchForDaytona(phone);
 }
 
 test('required: "help" shows the Fi menu', async () => {
@@ -177,18 +227,13 @@ test('required: "status" reports approval usage and pending decisions honestly, 
   assert.match(result.messages[0], /No matches currently awaiting a decision/);
 });
 
-test('required: "cancel" clears a pending match without unsubscribing the contact', async () => {
+test('required: "cancel" clears a pending match without unsubscribing the contact', async (t) => {
   const phone = "19991110004";
   resetState(phone);
   await inventoryDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("cancel-1")], new Date().toISOString());
 
-  await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  const searchResult = await handleIncomingMessage(phone, "any");
+  const searchResult = await reachPendingMatches(t, phone);
   assert.ok(searchResult.state.pendingMatches, "a match must be pending before cancel is tested");
 
   const cancelResult = await handleIncomingMessage(phone, "cancel");
@@ -197,7 +242,7 @@ test('required: "cancel" clears a pending match without unsubscribing the contac
   assert.notEqual(cancelResult.state.stage, "opted_out", "cancel must never unsubscribe the contact");
 
   // Still a fully active contact afterward -- a new search works normally.
-  const stillActive = await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
+  const stillActive = await searchForDaytona(phone);
   assert.ok(stillActive.messages.some((m) => /Potential Match/.test(m)));
 });
 
@@ -234,18 +279,13 @@ test('required (live-reported confusion): "I\'m confused, let\'s start over" esc
   assert.equal(fresh.state.pendingSellIntake?.step, "price");
 });
 
-test('"start over" and "reset" reach the same universal recovery as "I\'m confused"', async () => {
+test('"start over" and "reset" reach the same universal recovery as "I\'m confused"', async (t) => {
   const phone = "19991110018";
   resetState(phone);
   await inventoryDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("reset-1")], new Date().toISOString());
 
-  await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  const searchResult = await handleIncomingMessage(phone, "any");
+  const searchResult = await reachPendingMatches(t, phone);
   assert.ok(searchResult.state.pendingMatches, "a match must be pending before the reset command is tested");
 
   const result = await handleIncomingMessage(phone, "can we start over please");
@@ -258,18 +298,13 @@ test('"start over" and "reset" reach the same universal recovery as "I\'m confus
   assert.match(bareReset.messages[0], /let's start over/i);
 });
 
-test('required (live-reported bug): after the only match is already approved, "hi" gets a personalized greeting, not the stale approve/pass reminder', async () => {
+test('required (live-reported bug): after the only match is already approved, "hi" gets a personalized greeting, not the stale approve/pass reminder', async (t) => {
   const phone = "19991110006";
   resetState(phone);
   await inventoryDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("hi-1")], new Date().toISOString());
 
-  await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
+  await reachPendingMatches(t, phone);
   const approve = await handleIncomingMessage(phone, "approve 1");
   assert.match(approve.messages.join("\n"), /^Approved #1/);
   assert.ok(
@@ -283,18 +318,13 @@ test('required (live-reported bug): after the only match is already approved, "h
   assert.doesNotMatch(hiResult.messages[0], /approve <number>/i, "must never show the stale reminder once nothing is left to decide");
 });
 
-test('required: replying "yes" right after a connection reveal gets the escrow/inspection promo code', async () => {
+test('required: replying "yes" right after a connection reveal gets the escrow/inspection promo code', async (t) => {
   const phone = "19991110009";
   resetState(phone);
   await inventoryDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("escrow-yes-1")], new Date().toISOString());
 
-  await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
+  await reachPendingMatches(t, phone);
   await handleIncomingMessage(phone, "approve 1");
 
   const yesResult = await handleIncomingMessage(phone, "yes");
@@ -307,18 +337,13 @@ test('required: replying "yes" right after a connection reveal gets the escrow/i
   assert.doesNotMatch(followUp.messages.join("\n"), /FI727/, "the offer must not fire again once already consumed");
 });
 
-test('required: a non-affirmative reply right after a connection reveal does not get the promo code, and is still handled normally', async () => {
+test('required: a non-affirmative reply right after a connection reveal does not get the promo code, and is still handled normally', async (t) => {
   const phone = "19991110010";
   resetState(phone);
   await inventoryDb._resetDbForTests();
   await inventoryDb.upsertListings([fsRow("escrow-no-1")], new Date().toISOString());
 
-  await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
+  await reachPendingMatches(t, phone);
   await handleIncomingMessage(phone, "approve 1");
 
   const result = await handleIncomingMessage(phone, "status");
@@ -361,7 +386,7 @@ test('required regression: "escrow" mentioned mid-draft is answered directly, no
   assert.deepEqual(getState(phone).pendingBuyIntake, started.state.pendingBuyIntake, "the draft itself must be completely unaffected by the escrow question");
 });
 
-test('required (live-reported bug): "Photos2" and "approve1" (no space before the number) are recognized the same as with a space', async () => {
+test('required (live-reported bug): "Photos2" and "approve1" (no space before the number) are recognized the same as with a space', async (t) => {
   const phone = "19991110007";
   resetState(phone);
   await inventoryDb._resetDbForTests();
@@ -370,12 +395,7 @@ test('required (live-reported bug): "Photos2" and "approve1" (no space before th
     new Date().toISOString()
   );
 
-  await handleIncomingMessage(phone, "hi");
-  await handleIncomingMessage(phone, "buy: Rolex Daytona 116500LN");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  await handleIncomingMessage(phone, "any");
-  const search = await handleIncomingMessage(phone, "any");
+  const search = await reachPendingMatches(t, phone);
   assert.equal(search.state.pendingMatches!.matches.length, 2, "setup: two candidates must be shown");
 
   const photosNoSpace = await handleIncomingMessage(phone, "Photos2");

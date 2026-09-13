@@ -6,7 +6,6 @@ import { requestPhotosForMatch } from "../matching/photoRequests";
 import { getValidatedListingUrl } from "../watchfacts/urlValidator";
 import { reverseGeocode, Coordinates } from "../geo/reverseGeocode";
 import { getState, saveState } from "./stateStore";
-import { parsePriceRange, parseFreeformPreference } from "./preferences";
 import { recordBillingRequested, getEntitlement, createCheckoutSession, findLatestCheckoutAttempt } from "../billing/entitlementStore";
 import { MEMBERSHIP_PLANS, PlanKey } from "../billing/plans";
 import { isAuthorizeNetConfigured } from "../billing/authorizeNet";
@@ -1092,7 +1091,6 @@ async function handleMembershipCommand(state: ConversationState, messages: strin
 function clearAllPendingState(state: ConversationState): boolean {
   const hadSomethingToCancel = Boolean(
     state.pendingMatches ||
-      state.pendingPreferenceCollection ||
       state.pendingNaturalFollowUp ||
       state.pendingSellIntake ||
       state.pendingBuyIntake ||
@@ -1100,7 +1098,6 @@ function clearAllPendingState(state: ConversationState): boolean {
       state.pendingReplacementRequest
   );
   state.pendingMatches = undefined;
-  state.pendingPreferenceCollection = undefined;
   state.pendingNaturalFollowUp = undefined;
   state.pendingSellIntake = undefined;
   state.pendingBuyIntake = undefined;
@@ -1760,50 +1757,6 @@ async function handlePhotoRequest(state: ConversationState, index: number, messa
   } else {
     messages.push(`Photo request sent for #${index} — I'll forward them here as soon as the seller replies.`);
   }
-}
-
-const PRICE_QUESTION = 'What\'s your price range? (e.g. "$5,000–$8,000", or say "any")';
-const LOCATION_QUESTION = 'Any location preference? (city or country, or say "any")';
-const DIAL_QUESTION = 'Preferred dial color? (or say "any")';
-const CONDITION_QUESTION = "Condition preference — new, pre-owned, or any?";
-
-/**
- * Collected once per contact, on their first search only (spec extension, not in v3 itself).
- * Walks price → location → dial color → condition one question at a time, then runs the
- * item request that triggered it. Later searches reuse `state.preferences` without re-asking.
- */
-async function handlePreferenceAnswer(state: ConversationState, text: string, messages: string[]): Promise<void> {
-  const pending = state.pendingPreferenceCollection!;
-  state.preferences = state.preferences ?? {};
-
-  if (pending.step === "price") {
-    const range = parsePriceRange(text);
-    state.preferences.priceMin = range?.min;
-    state.preferences.priceMax = range?.max;
-    state.preferences.priceCurrency = range ? detectCurrency(text) ?? undefined : undefined;
-    pending.step = "location";
-    messages.push(LOCATION_QUESTION);
-    return;
-  }
-  if (pending.step === "location") {
-    state.preferences.location = parseFreeformPreference(text);
-    pending.step = "dial";
-    messages.push(DIAL_QUESTION);
-    return;
-  }
-  if (pending.step === "dial") {
-    state.preferences.dialColor = parseFreeformPreference(text);
-    pending.step = "condition";
-    messages.push(CONDITION_QUESTION);
-    return;
-  }
-
-  state.preferences.condition = parseFreeformPreference(text);
-  state.preferencesCollected = true;
-  const request = pending.request;
-  state.pendingPreferenceCollection = undefined;
-  messages.push("Got it — searching now.");
-  await startSearch(state, request, messages);
 }
 
 /**
@@ -2927,7 +2880,6 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   if (/^start\b(?!\s+over\b)/i.test(commandText)) {
     state.stage = "active";
     state.pendingMatches = undefined;
-    state.pendingPreferenceCollection = undefined;
     state.pendingNaturalFollowUp = undefined;
     state.pendingSellIntake = undefined;
     state.pendingBuyIntake = undefined;
@@ -3422,12 +3374,6 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     return { state, messages, pendingMatchNotifications };
   }
 
-  if (state.pendingPreferenceCollection) {
-    await handlePreferenceAnswer(state, text, messages);
-    saveState(state);
-    return { state, messages };
-  }
-
   if (state.pendingNaturalFollowUp) {
     // Live-reported bug: a genuinely fresh, well-formed new request sent while an old natural-
     // language follow-up question was still open got silently absorbed as an ANSWER to the old
@@ -3622,18 +3568,21 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     messages.push(`I'll start with the first one — send me the others one at a time whenever you're ready.`);
   }
 
-  // The documented `buy:` / `sell:` command remains a one-off inventory search for backward
-  // compatibility. Conversational WTB/FS language creates a monitored posting and therefore
-  // uses the confirmation-gated intake below. Keeping these two explicit surfaces distinct
-  // avoids turning an existing search command into a draft that intercepts approve/pass.
+  // The `buy:`/`sell:` prefix is just an explicit way to state a WTB/FS request -- it creates
+  // the same monitored posting (in the richer, actively-matched `postings` store) that plain
+  // conversational phrasing already does, rather than the one-off inventory_listings-only search
+  // this used to run. Real reported gap: Fi's own generic-fallback reply recommends this exact
+  // syntax ("say 'buy: <watch>' to search" -- see ai/chatReply.ts's system prompt) whenever it
+  // didn't understand a message, so a customer following that advice was funneled into a
+  // smaller, staler candidate pool than someone who'd just typed "wtb <watch>" instead -- the two
+  // spellings of the same request must behave identically.
   if (/^\s*(?:buy|sell)\s*:/i.test(text)) {
-    if (!state.preferencesCollected) {
-      state.pendingPreferenceCollection = { step: "price", request: parsed[0] };
-      messages.push("Before I search, a few quick preferences — just this once:\n\n" + PRICE_QUESTION);
+    if (parsed[0].action === "sell") {
+      await startSellIntake(state, parsed[0], messages, text, imageUrl);
       saveState(state);
-      return { state, messages };
+      return { state, messages, photoReply: photoReplyForSell(state, messages) };
     }
-    await startSearch(state, parsed[0], messages);
+    await startBuyIntake(state, parsed[0], messages, text);
     saveState(state);
     return { state, messages };
   }

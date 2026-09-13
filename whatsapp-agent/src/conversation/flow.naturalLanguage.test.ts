@@ -69,7 +69,12 @@ function interpreted(overrides: Partial<Awaited<ReturnType<typeof queryInterpret
   };
 }
 
-const PRICE_QUESTION_TEXT = "What's your price range?";
+// The old one-question-at-a-time interview (which used to ask this exact text) was removed
+// along with the `buy:`/`sell:` ephemeral-search shortcut it belonged to -- a buy request that
+// doesn't get a confident AI interpretation now falls through to the posting-intake flow (see
+// conversation/flow.ts's startBuyIntake), whose own first real question (once brand/reference
+// are already known) is this budget question instead.
+const BUDGET_QUESTION_TEXT = "What's your maximum budget?";
 
 test("required regression: a single free-form message on the AI test phone skips the interview and searches immediately, with the stated budget enforced", async (t) => {
   resetState(TEST_PHONE);
@@ -110,7 +115,7 @@ test("required regression: a single free-form message on the AI test phone skips
   push(await handleIncomingMessage(TEST_PHONE, "looking for a rolex daytona 116500 under 27k, black dial, pre-owned, USA"));
 
   assert.ok(
-    !collected.some((m) => m.includes(PRICE_QUESTION_TEXT)),
+    !collected.some((m) => m.includes(BUDGET_QUESTION_TEXT)),
     "the interview must never run for the AI test phone when interpretation succeeds"
   );
   const matchCard = collected.find((m) => /Potential Match/.test(m));
@@ -125,11 +130,13 @@ test("required regression: when AI interpretation fails, the AI test phone falls
   await inventoryDb.upsertListings([fsRow("a", { brand: "Rolex", ref: "116500LN", price: "24500" })], new Date().toISOString());
   t.mock.method(queryInterpreterModule, "interpretQuery", async () => null); // simulates an AI outage
 
+  // Not `buy:`-prefixed -- that prefix now always creates a monitored posting immediately,
+  // bypassing this natural-language preference step entirely (see conversation/flow.ts).
   const first = await handleIncomingMessage(TEST_PHONE, "hi");
-  const second = await handleIncomingMessage(TEST_PHONE, "buy: Rolex Daytona 116500LN");
+  const second = await handleIncomingMessage(TEST_PHONE, "looking for a Rolex Daytona 116500LN");
   assert.ok(
-    [...first.messages, ...second.messages].some((m) => m.includes(PRICE_QUESTION_TEXT)),
-    "an AI outage must fall back to the interview, never skip the price question"
+    [...first.messages, ...second.messages].some((m) => m.includes(BUDGET_QUESTION_TEXT)),
+    "an AI outage must fall back to the posting-intake interview, never skip the budget question"
   );
 });
 
@@ -142,9 +149,9 @@ test("a non-test phone's interview is completely unaffected by this natural-lang
   });
 
   const first = await handleIncomingMessage(OTHER_PHONE, "hi");
-  const second = await handleIncomingMessage(OTHER_PHONE, "buy: Rolex Daytona 116500LN");
+  const second = await handleIncomingMessage(OTHER_PHONE, "looking for a Rolex Daytona 116500LN");
   assert.ok(
-    [...first.messages, ...second.messages].some((m) => m.includes(PRICE_QUESTION_TEXT)),
+    [...first.messages, ...second.messages].some((m) => m.includes(BUDGET_QUESTION_TEXT)),
     "a non-test phone must still get the ordinary interview"
   );
   assert.equal(spy.mock.callCount(), 0);
