@@ -501,6 +501,7 @@ export async function getListingByKey(source: string, type: ListingType, externa
 export interface DiagnosticListingRow {
   externalId: string;
   type: string;
+  source: string;
   ref: string;
   item: string;
   description: string;
@@ -519,7 +520,7 @@ export interface DiagnosticListingRow {
 export async function searchListingsForDiagnostics(term: string): Promise<DiagnosticListingRow[]> {
   await ensureSchema();
   const result = await getPool().query(
-    `SELECT external_id, type, ref, item, description, is_active, first_seen_at, last_seen_at
+    `SELECT external_id, type, source, ref, item, description, is_active, first_seen_at, last_seen_at
      FROM inventory_listings
      WHERE ref ILIKE $1 OR item ILIKE $1 OR description ILIKE $1
      ORDER BY last_seen_at DESC
@@ -529,6 +530,7 @@ export async function searchListingsForDiagnostics(term: string): Promise<Diagno
   return result.rows.map((row) => ({
     externalId: row.external_id,
     type: row.type,
+    source: row.source,
     ref: row.ref,
     item: row.item.length > 200 ? row.item.slice(0, 200) + "…" : row.item,
     description: row.description.length > 200 ? row.description.slice(0, 200) + "…" : row.description,
