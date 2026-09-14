@@ -27,7 +27,7 @@ process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 const db = require("../postings/db") as typeof import("../postings/db");
 const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 const { handleIncomingMessage, parseItemRequests } = require("./flow") as typeof import("./flow");
-const { resetState, getState, _resetContentDedupeForTests, _resetPhantomCompanionForTests } = require("./stateStore") as typeof import("./stateStore");
+const { resetState, getState, _resetContentDedupeForTests, _resetPhantomCompanionForTests, _closeDedupPoolForTests } = require("./stateStore") as typeof import("./stateStore");
 const { getActivePostingsForUser, createDirectPosting } = require("../postings/postingsStore") as typeof import("../postings/postingsStore");
 const { getOrCreateCanonicalUser } = require("../postings/identity") as typeof import("../postings/identity");
 const { platformForIdentity } = require("../channels/identity") as typeof import("../channels/identity");
@@ -37,7 +37,7 @@ const telegram = require("../channels/telegram") as typeof import("../channels/t
 
 before(async () => { await db._resetDbForTests(); await inventory._resetDbForTests(); });
 after(async () => {
-  await db._closePoolForTests(); await inventory._closePoolForTests();
+  await db._closePoolForTests(); await inventory._closePoolForTests(); await _closeDedupPoolForTests();
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
 
@@ -225,7 +225,7 @@ test("old listings and an unfinished draft do not contaminate a new complete req
  */
 test("required regression: a duplicate delivery of the same message under a DIFFERENT id is processed once, not twice", async (t) => {
   const sendTextSpy = t.mock.method(whapi, "sendText", async () => {});
-  _resetContentDedupeForTests();
+  await _resetContentDedupeForTests();
   const phone = fresh("15550779").replace(/[^\d]/g, "");
   resetState(phone);
 
@@ -254,7 +254,7 @@ test("required regression: a duplicate delivery of the same message under a DIFF
  */
 test("required regression: a content-less companion delivered right after a real, complete request adds zero further replies", async (t) => {
   const sendTextSpy = t.mock.method(whapi, "sendText", async () => {});
-  _resetContentDedupeForTests();
+  await _resetContentDedupeForTests();
   _resetPhantomCompanionForTests();
   const phone = fresh("15550780").replace(/[^\d]/g, "");
   resetState(phone);
@@ -282,7 +282,7 @@ test("required regression: a content-less companion delivered right after a real
  */
 test("required regression: a content-less companion listed BEFORE its real sibling in the SAME webhook batch is still recognized as the phantom", async (t) => {
   const sendTextSpy = t.mock.method(whapi, "sendText", async () => {});
-  _resetContentDedupeForTests();
+  await _resetContentDedupeForTests();
   _resetPhantomCompanionForTests();
 
   // Baseline: the real, complete request alone -- establishes how many replies it normally

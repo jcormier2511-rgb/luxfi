@@ -20,7 +20,7 @@ const inventoryDb = require("./watchfacts/inventoryDb") as typeof import("./watc
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const postingsDb = require("./postings/db") as typeof import("./postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { resetState, getState } = require("./conversation/stateStore") as typeof import("./conversation/stateStore");
+const { resetState, getState, _closeDedupPoolForTests } = require("./conversation/stateStore") as typeof import("./conversation/stateStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { requestPhotosForMatch } = require("./matching/photoRequests") as typeof import("./matching/photoRequests");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -29,6 +29,7 @@ const server = require("./server") as typeof import("./server");
 after(async () => {
   await inventoryDb._closePoolForTests();
   await postingsDb._closePoolForTests();
+  await _closeDedupPoolForTests();
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
 

@@ -42,6 +42,7 @@ const { getState, saveState } = stateStore;
 
 after(async () => {
   await db._closePoolForTests();
+  await stateStore._closeDedupPoolForTests();
   fs.rmSync(tmpPersistDir, { recursive: true, force: true });
 });
 

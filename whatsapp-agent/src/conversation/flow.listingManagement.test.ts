@@ -8,9 +8,9 @@ const db = require("../postings/db") as typeof import("../postings/db");
 const inventory = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 const store = require("../postings/postingsStore") as typeof import("../postings/postingsStore");
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
-const { resetState, getState } = require("./stateStore") as typeof import("./stateStore");
+const { resetState, getState, _closeDedupPoolForTests } = require("./stateStore") as typeof import("./stateStore");
 
-after(async () => { await db._closePoolForTests(); await inventory._closePoolForTests(); });
+after(async () => { await db._closePoolForTests(); await inventory._closePoolForTests(); await _closeDedupPoolForTests(); });
 beforeEach(async () => { await db._resetDbForTests(); await inventory._resetDbForTests(); });
 
 /**

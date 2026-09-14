@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { Pool } from "pg";
 import { config } from "../config";
 import { ConversationState } from "../types";
 import { Coordinates } from "../geo/reverseGeocode";
@@ -60,18 +61,65 @@ export function markPendingEscrowOffer(phone: string): void {
   saveState(state);
 }
 
-/** De-dupe Whapi webhook retries by remembering processed message ids. */
-const processedIdsPath = path.join(config.storageDir, "processed-messages.json");
+/**
+ * Both dedup mechanisms below used to live in a JSON file (id-based) and a plain in-memory array
+ * (content-based) -- both wiped by ANY process restart (a deploy, a crash, Railway recycling the
+ * dyno), which is exactly when a provider is most likely to retry a delivery. Backed by Postgres
+ * instead, in their own pool/schema (same pattern as billing/entitlementStore.ts), so a message
+ * already seen before a restart is still recognized as a duplicate after it.
+ */
+let pool: Pool | null = null;
+let schemaReady: Promise<void> | null = null;
 
-export function alreadyProcessed(messageId: string | undefined): boolean {
+const DB_STATEMENT_TIMEOUT_MS = 20_000;
+const DB_CONNECTION_TIMEOUT_MS = 10_000;
+
+function getPool(): Pool {
+  if (!pool) {
+    pool = new Pool({
+      connectionString: config.database.url,
+      statement_timeout: DB_STATEMENT_TIMEOUT_MS,
+      connectionTimeoutMillis: DB_CONNECTION_TIMEOUT_MS,
+    });
+  }
+  return pool;
+}
+
+async function ensureSchema(): Promise<void> {
+  if (!schemaReady) {
+    schemaReady = getPool().query(`
+      CREATE TABLE IF NOT EXISTS processed_message_ids (
+        message_id TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS processed_message_ids_created_at ON processed_message_ids (created_at);
+
+      CREATE TABLE IF NOT EXISTS recent_content_dedup (
+        content_key TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS recent_content_dedup_created_at ON recent_content_dedup (created_at);
+    `).then(() => undefined);
+  }
+  await schemaReady;
+}
+
+/** De-dupe webhook retries by remembering processed message ids. `ON CONFLICT DO NOTHING` makes
+ *  this atomic even across two processes racing on the same id (the old file-based version was
+ *  only ever safe within a single process). */
+export async function alreadyProcessed(messageId: string | undefined): Promise<boolean> {
   if (!messageId) return false;
-  const ids: string[] = fs.existsSync(processedIdsPath)
-    ? JSON.parse(fs.readFileSync(processedIdsPath, "utf-8"))
-    : [];
-  if (ids.includes(messageId)) return true;
-  const trimmed = [...ids.slice(-999), messageId];
-  fs.mkdirSync(path.dirname(processedIdsPath), { recursive: true });
-  fs.writeFileSync(processedIdsPath, JSON.stringify(trimmed));
+  await ensureSchema();
+  const inserted = await getPool().query(
+    `INSERT INTO processed_message_ids (message_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING message_id`,
+    [messageId]
+  );
+  if (inserted.rowCount === 0) return true;
+  // Opportunistic, best-effort bounding of an otherwise ever-growing table -- WhatsApp/Whapi
+  // retries land within seconds, never days, so nothing this old can still be a live duplicate.
+  getPool()
+    .query(`DELETE FROM processed_message_ids WHERE created_at < now() - interval '7 days'`)
+    .catch(() => {});
   return false;
 }
 
@@ -80,7 +128,6 @@ export function alreadyProcessed(messageId: string | undefined): boolean {
  *  same-instant duplicate webhook, short enough that a person who impatiently retypes the same
  *  word because Fi hasn't replied yet (a real, separately reported complaint) still gets through. */
 const DUPLICATE_CONTENT_WINDOW_MS = 5_000;
-let recentContent: { key: string; at: number }[] = [];
 
 /**
  * De-dupes a genuine duplicate delivery that `alreadyProcessed` above cannot catch because it
@@ -93,23 +140,52 @@ let recentContent: { key: string; at: number }[] = [];
  * phone (so two different senders' identical text, e.g. two people both typing "yes" in a group,
  * never collide) plus text plus image, and windowed rather than permanent, so it only ever
  * suppresses a true near-instant repeat.
+ *
+ * The window is anchored to the FIRST sighting, not refreshed by a later duplicate (matching the
+ * original in-memory version): a stale row past the window is overwritten as a brand new sighting
+ * rather than extending an already-expired window.
  */
-export function alreadyProcessedContent(phone: string, text: string, imageUrl?: string, location?: Coordinates): boolean {
+export async function alreadyProcessedContent(phone: string, text: string, imageUrl?: string, location?: Coordinates): Promise<boolean> {
   // A genuinely content-less message (a document/sticker with no caption -- see whapi/client.ts)
   // has nothing to compare: two real, distinct ones would collide on the same empty key. Only
   // id-based dedup (alreadyProcessed above) applies to those.
   if (!text.trim() && !imageUrl && !location) return false;
-  const now = Date.now();
-  recentContent = recentContent.filter((r) => now - r.at < DUPLICATE_CONTENT_WINDOW_MS);
+  await ensureSchema();
   const key = `${phone}:${text.trim().toLowerCase()}:${imageUrl ?? ""}:${location ? `${location.latitude},${location.longitude}` : ""}`;
-  if (recentContent.some((r) => r.key === key)) return true;
-  recentContent.push({ key, at: now });
+  // Compared against Date.now() (not Postgres's own clock) so a test can fast-forward the window
+  // deterministically, the same way the old in-memory version's tests did.
+  const cutoff = new Date(Date.now() - DUPLICATE_CONTENT_WINDOW_MS);
+  const pool = getPool();
+  const existing = await pool.query(`SELECT 1 FROM recent_content_dedup WHERE content_key = $1 AND created_at > $2`, [key, cutoff]);
+  if ((existing.rowCount ?? 0) > 0) return true;
+  await pool.query(
+    `INSERT INTO recent_content_dedup (content_key, created_at) VALUES ($1, $2)
+     ON CONFLICT (content_key) DO UPDATE SET created_at = excluded.created_at`,
+    [key, new Date()]
+  );
+  pool
+    .query(`DELETE FROM recent_content_dedup WHERE created_at < now() - interval '1 hour'`)
+    .catch(() => {});
   return false;
 }
 
-/** Test-only -- clears the in-memory content-dedup window between tests. */
-export function _resetContentDedupeForTests(): void {
-  recentContent = [];
+/** Test-only -- clears the Postgres-backed content-dedup window between tests. */
+export async function _resetContentDedupeForTests(): Promise<void> {
+  await ensureSchema();
+  await getPool().query(`TRUNCATE recent_content_dedup`);
+}
+
+/** Test-only -- clears the Postgres-backed id dedup store between tests. */
+export async function _resetIdDedupeForTests(): Promise<void> {
+  await ensureSchema();
+  await getPool().query(`TRUNCATE processed_message_ids`);
+}
+
+/** Test-only -- closes this module's own pool, mirroring postings/db.ts's _closePoolForTests. */
+export async function _closeDedupPoolForTests(): Promise<void> {
+  await pool?.end();
+  pool = null;
+  schemaReady = null;
 }
 
 /** How long after a REAL message a content-less companion is treated as suspect. Confirmed live

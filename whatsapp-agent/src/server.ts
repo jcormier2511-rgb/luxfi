@@ -305,9 +305,10 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
   // Railway's own deploy logs, whether a live "duplicate reply" report is a genuine second
   // webhook delivery (a different id, same phone/text) versus something else entirely, without
   // needing Whapi's separate Webhook Request Debugger.
-  const filtered = incoming.filter((m) => {
-    const idSeen = alreadyProcessed(m.id);
-    const contentSeen = !idSeen && alreadyProcessedContent(m.phone, m.text, m.imageUrl, m.location);
+  const filtered: NormalizedIncomingMessage[] = [];
+  for (const m of incoming) {
+    const idSeen = await alreadyProcessed(m.id);
+    const contentSeen = !idSeen && (await alreadyProcessedContent(m.phone, m.text, m.imageUrl, m.location));
     const hasContent = Boolean(m.text.trim() || m.imageUrl || m.location);
     const batchSibling = !idSeen && !contentSeen && !hasContent && phonesWithContentInBatch.has(m.phone);
     // Stopgap for a still-not-fully-root-caused bug: a content-less message arriving seconds
@@ -324,8 +325,8 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
     console.log(
       `[webhook] ${duplicate ? `duplicate (${idSeen ? "id" : contentSeen ? "content" : batchSibling ? "phantom-companion-batch" : phantom ? "phantom-companion" : "outbound-echo"}), skipping` : "processing"} id=${m.id} phone=${m.phone} text=${JSON.stringify(m.text.slice(0, 80))}`
     );
-    return !duplicate;
-  });
+    if (!duplicate) filtered.push(m);
+  }
 
   for (const message of filtered) {
     try {
