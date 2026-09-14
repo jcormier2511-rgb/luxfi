@@ -313,8 +313,9 @@ test("required regression: a stated budget/ask on the current-listings step is a
   await handleIncomingMessage(phone, "any"); // dial
   await handleIncomingMessage(phone, "any"); // condition
   await handleIncomingMessage(phone, "any"); // location
-  const result = await handleIncomingMessage(phone, "yes"); // confirm
-  const last = result.messages.join("\n"); // the current-listings text isn't always the very last message (a one-time channel-preference nudge can follow it)
+  await handleIncomingMessage(phone, "yes"); // confirm
+  const result = await handleIncomingMessage(phone, "show current listings");
+  const last = result.messages.at(-1)!;
   assert.match(last, /24,000|24000/, "the in-budget listing must still be shown");
   assert.doesNotMatch(last, /29,500|29500/, "the real reported bug: an over-budget listing must never be surfaced against a stated budget");
 });
@@ -329,8 +330,9 @@ test("required regression: a blank dial or a city-vs-region location mismatch ne
   ]);
   await handleIncomingMessage(phone, "wtb rolex daytona 116500LN black dial in Miami for 25000");
   await handleIncomingMessage(phone, "any"); // condition
-  const result = await handleIncomingMessage(phone, "yes"); // confirm
-  const last = result.messages.join("\n"); // the current-listings text isn't always the very last message (a one-time channel-preference nudge can follow it)
+  await handleIncomingMessage(phone, "yes"); // confirm
+  const result = await handleIncomingMessage(phone, "show current listings");
+  const last = result.messages.at(-1)!;
   assert.doesNotMatch(last, /don.t see any/i, "a listing with no recorded dial and only a region-level location must still be shown, not treated as a conflict");
   assert.match(last, /116500LN/);
 });
@@ -349,8 +351,9 @@ test('required regression: a genuine cross-continent location conflict IS exclud
   await handleIncomingMessage(phone, "wtb rolex daytona 116500LN for 25000");
   await handleIncomingMessage(phone, "any"); // dial
   await handleIncomingMessage(phone, "US"); // location (condition defaults silently, never asked as its own step)
-  const result = await handleIncomingMessage(phone, "yes"); // confirm
-  const last = result.messages.join("\n");
+  await handleIncomingMessage(phone, "yes"); // confirm
+  const result = await handleIncomingMessage(phone, "show current listings");
+  const last = result.messages.at(-1)!;
   assert.doesNotMatch(last, /Hong Kong/, "a listing on the opposite side of the world from the stated location must be excluded, not just ranked lower");
   assert.match(last, /Canada/, "a same-continent listing must still be shown");
 });

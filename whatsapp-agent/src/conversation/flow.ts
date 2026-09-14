@@ -2656,12 +2656,6 @@ function bailOutOfStuckIntake(state: ConversationState, messages: string[]): boo
 async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<PendingMatchNotification[] | undefined> {
   const p=state.pendingSellIntake!; const suppliedPhoto = Boolean(imageUrl); if(imageUrl)p.imageUrl=imageUrl;
   if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
-    // Same principle as the buy side just below: show what WatchFacts already has for this
-    // exact request rather than making the seller ask a second time. Real reported gap — only
-    // the buy side ever did this; a seller got just a bare match COUNT (formatActiveAcknowledgment
-    // above), never the actual current WTB listings/links a buyer gets shown. Runs before the
-    // draft is cleared, so the search is scoped to the request just confirmed.
-    messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
     state.pendingSellIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return result.pendingNotifications; }
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
@@ -2701,10 +2695,6 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<PendingMatchNotification[] | undefined> {
   const p=state.pendingBuyIntake!;
   if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,year:p.year}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
-    // Confirmation is the activation boundary: show what WatchFacts already has for this exact
-    // request rather than making the buyer ask a second time. Runs before the draft is cleared,
-    // so the search is scoped to the request they just confirmed.
-    messages.push(await handleCurrentInventoryCommand(state,"show current listings"));
     state.pendingBuyIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return result.pendingNotifications; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
