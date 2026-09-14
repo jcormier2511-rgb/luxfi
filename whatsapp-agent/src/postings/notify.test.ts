@@ -675,6 +675,41 @@ test("required: a buyer never receives more than maxMatchesPerListing match card
   assert.equal(toBuyer.length, 3, "the buyer's inbox must be capped at maxMatchesPerListing (3), not flooded with every candidate");
 });
 
+test("required: each capped match card names its own running count against the listing's cap", async (t) => {
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+
+  const buyerPhone = "buyer-progress-1";
+  for (let i = 0; i < 5; i++) {
+    await mirrorApiFsPosting({
+      id: `wf-progress-${i}`,
+      item: "Rolex",
+      brand: "Rolex",
+      ref: `PROGREF${i}`,
+      condition: "New",
+      price: "$10,000",
+      contactName: `seller-progress-${i}`,
+      contactPhone: `seller-progress-${i}`,
+      description: "",
+    });
+  }
+  const wtb = await ingestChatPosting({
+    platform: "whatsapp",
+    chatId: "g1",
+    messageId: "wtb-progress-1",
+    senderIdentity: buyerPhone,
+    text: "WTB Rolex budget $50,000",
+  });
+  await runImmediateMatch(wtb.posting!);
+
+  const toBuyer = sent.filter((s) => s.phone === buyerPhone);
+  assert.equal(toBuyer.length, 3, "sanity check: still capped at 3");
+  assert.match(toBuyer[0].message, /🎯 Match ID# \d+\nMatch 1 of 3 for this listing\n\nWatch:/, "the 1st delivered match must say so, with a blank line before the rest of the card");
+  assert.match(toBuyer[1].message, /Match 2 of 3 for this listing/);
+  assert.match(toBuyer[2].message, /Match 3 of 3 for this listing/);
+});
+
 test("required: a paying-member seller's match is never blocked by a buyer's cap, even after free-tier sellers already filled it", async (t) => {
   await resetAll();
   const sent: { phone: string; message: string }[] = [];

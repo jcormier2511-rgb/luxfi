@@ -221,8 +221,13 @@ function presentationFor(posting: PostingRow, photoUrl?: string | null, activeGr
   };
 }
 
-export function formatMatchPresentation(matchId: number, roleLabel: string, match: MatchPresentation, heading = "Match", includeIdentity = true): string {
+export function formatMatchPresentation(matchId: number, roleLabel: string, match: MatchPresentation, heading = "Match", includeIdentity = true, listingProgress?: { position: number; cap: number }): string {
   const lines = [`🎯 ${heading} ${matchId}`];
+  // Lets someone who's hit the per-listing cap (see notifyOneRecipient) understand why matches
+  // for this exact request eventually stop arriving, instead of it just going quiet with no
+  // explanation. Omitted when the counterpart is a paying member (that delivery is exempt from
+  // the cap entirely, so there's no meaningful "of N" to report — see notifyOneRecipient).
+  if (listingProgress) lines.push(`Match ${listingProgress.position} of ${listingProgress.cap} for this listing`, "");
   // The seller/buyer's own name (already shown right below) is the identifier a person actually
   // recognizes — a raw internal id ("Candidate ID: 9fd0c621-53e6-...") added nothing but noise
   // and was the real reported complaint here.
@@ -299,7 +304,8 @@ export function formatMatchMessage(
   counterpart: PostingRow,
   reasons: string[],
   imageUrl: string | null,
-  activeGroupCount?: number
+  activeGroupCount?: number,
+  listingProgress?: { position: number; cap: number }
 ): string {
   const roleLabel = self.type === "FS" ? "Buyer" : "Seller";
   // An exact reference match (scoreMatch's highest-confidence branch, always its first reason —
@@ -312,7 +318,7 @@ export function formatMatchMessage(
     // Keep the established notification discriminator as well as the numeric ID. Besides being
     // useful to people scanning a chat, downstream channel consumers and the PR #20 regression
     // suite intentionally recognize automatic notifications by the "Match ID#" heading.
-    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl, activeGroupCount), "Match ID#", false) +
+    formatMatchPresentation(matchId, roleLabel, presentationFor(counterpart, imageUrl, activeGroupCount), "Match ID#", false, listingProgress) +
     (isLooseMatch && reasons.length ? `\n\n✅ Why it's a good match:\n${reasons.map((r) => `• ${r}`).join("\n")}` : "") +
     // "pass" is deliberately not mentioned as its own step -- doing nothing already has the
     // exact same effect (this candidate still counts toward the per-listing cap either way, see
@@ -328,11 +334,11 @@ export function formatMatchMessage(
   );
 }
 
-function groupMatchMessage(matchId:number,self:PostingRow,counterpart:PostingRow,reasons:string[],imageUrl:string|null,activeGroupCount?:number):string{
+function groupMatchMessage(matchId:number,self:PostingRow,counterpart:PostingRow,reasons:string[],imageUrl:string|null,activeGroupCount?:number,listingProgress?:{position:number;cap:number}):string{
   const watch=[self.brand,self.model,self.reference].filter(Boolean).join(" ")||self.original_text.slice(0,80);
   const intro=self.type==="WTB"?`Hi — I’m Fi from WatchFacts. I saw your request for ${watch} and found a potential match.`:`Hi — I’m Fi from WatchFacts. I saw you’re selling ${watch} and found a potential buyer.`;
   const more=self.type==="WTB"?`I can also show you other available ${watch} listings on WatchFacts. Reply MORE.`:`I can also show you other relevant buyer opportunities on WatchFacts. Reply MORE.`;
-  return `${intro}\n\n${formatMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount)}\n\n${more}`;
+  return `${intro}\n\n${formatMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount,listingProgress)}\n\n${more}`;
 }
 
 /**
@@ -367,6 +373,11 @@ async function notifyOneRecipient(
   // instant a membership lapses, the very next match this account is part of goes back to
   // competing for capped slots like anyone else.
   const counterpartPaying = await isPayingMember(counterpart.contact_phone);
+  // Also handed to the message template below (as "Match N of cap for this listing") so someone
+  // can tell why matches for this exact request will eventually stop, instead of it just going
+  // quiet -- left undefined for a paying counterpart's delivery, which the cap never applies to
+  // (see immediately below), so there's no meaningful "of N" to report for it.
+  let listingProgress: { position: number; cap: number } | undefined;
   if (!counterpartPaying) {
     // A paying recipient (the listing owner being notified, not the counterpart) gets a much
     // higher cap on their OWN listing instead of the same fixed default -- more of their
@@ -375,12 +386,14 @@ async function notifyOneRecipient(
     const recipientPaying = await isPayingMember(self.contact_phone);
     const cap = recipientPaying ? maxMatchesPerListingPaying : maxMatchesPerListing;
     const shown = await withSchema(pool=>pool.query(`SELECT count(*)::int n FROM match_recipients mr JOIN matches m ON m.id=mr.match_id WHERE mr.recipient_canonical_user_id=$1 AND mr.delivered_at IS NOT NULL AND mr.counterpart_was_paying=FALSE AND ($2=m.fs_posting_id OR $2=m.wtb_posting_id)`,[recipientCanonicalUserId,self.id]));
-    if(Number(shown.rows[0]?.n??0)>=cap){
+    const shownCount = Number(shown.rows[0]?.n??0);
+    if(shownCount>=cap){
       // Keep durable ownership/decision state without claiming this candidate was presented.
       // Reconciliation can promote it later if the administrator raises the limit.
       await withSchema(pool=>pool.query(`INSERT INTO match_recipients(match_id,recipient_canonical_user_id,match_revision,counterpart_was_paying) VALUES($1,$2,$3,FALSE) ON CONFLICT(match_id,recipient_canonical_user_id,match_revision) DO NOTHING`,[matchId,recipientCanonicalUserId,revision]));
       return;
     }
+    listingProgress = { position: shownCount + 1, cap };
   }
 
   const claimed = await withSchema((pool) =>
@@ -433,7 +446,7 @@ async function notifyOneRecipient(
 
   try {
     const fromGroup=self.source_type==="chat"&&Boolean(self.source_chat_id);
-    let message = fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl, activeGroupCount);
+    let message = fromGroup?groupMatchMessage(matchId,self,counterpart,reasons,imageUrl,activeGroupCount,listingProgress):formatMatchMessage(matchId, self, counterpart, reasons, imageUrl, activeGroupCount, listingProgress);
     // A match notification is a pure proactive send with no onboarding framing of its own (see
     // consumeFirstContact's doc comment) -- someone whose first-ever contact with Fi is a cold
     // match card (e.g. only ever posted in a monitored group, never messaged Fi directly) would
