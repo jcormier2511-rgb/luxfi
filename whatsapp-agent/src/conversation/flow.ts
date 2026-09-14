@@ -711,6 +711,7 @@ const BUY_INTAKE_STEP_LABELS: Record<PendingBuyIntake["step"], string> = {
   condition: "new, pre-owned, or any condition",
   location: "your location preference",
   dial: "dial color preference",
+  notes: "anything else about your requirements (or say \"skip\")",
   confirm: "your confirmation to start monitoring",
 };
 
@@ -956,12 +957,27 @@ async function handleCurrentInventoryCommand(state: ConversationState, text: str
   return formatCurrentInventory(relevant, label);
 }
 
-function formatActiveAcknowledgment(p: import("../postings/postingsStore").PostingRow, matchesFound: number): string {
+function formatActiveAcknowledgment(p: import("../postings/postingsStore").PostingRow, matchesFound: number, newMatchesFound: number): string {
   const heading = p.type === "FS" ? "Your FS listing is active:" : "Your WTB request is active:";
   const details = formatStructuredPosting(p).replace(/^(?:FS|WTB) —\s*/, "");
-  const outcome = matchesFound
-    ? `I found ${matchesFound} potential ${p.type === "FS" ? "buyer" : "listing"}${matchesFound === 1 ? "" : "s"}.`
-    : `I’ll keep monitoring for a qualifying ${p.type === "FS" ? "buyer" : "seller"}.`;
+  // Real reported confusion: "I found 4 potential listings" named a count that wasn't a promise
+  // -- the per-listing cap (see postings/notify.ts's notifyOneRecipient, default 3) still governs
+  // exactly how many of them actually arrive as their own Match ID# card right after this
+  // message, so a bare count here could read as more than what's about to show up. No count at
+  // all sidesteps that: the Match ID# cards that follow are the real, capped answer.
+  //
+  // Real reported gap this closes: re-confirming a request that already has an existing active
+  // posting for the same item (createDirectPosting updates it in place rather than creating a
+  // duplicate) can find matches without any of them being NEW-or-changed since they were already
+  // delivered earlier (see postings/matching.ts's upsertMatch/isNewOrChanged) -- so matchesFound
+  // is nonzero but zero cards actually follow. Saying "here are the most recent postings" then
+  // delivering nothing reads as the matches vanishing; this says plainly that they already exist.
+  const outcome =
+    matchesFound === 0
+      ? `I’ll keep monitoring for a qualifying ${p.type === "FS" ? "buyer" : "seller"}.`
+      : newMatchesFound > 0
+      ? `Here ${newMatchesFound === 1 ? "is the most recent posting" : "are the most recent postings"} that may match your request.`
+      : `You already have active matches for this request — reply "listings" to review them.`;
   return `${heading}\n\n${details}\n\n${outcome}\n\n${whatHappensNext(p.type)}`;
 }
 
@@ -1903,6 +1919,15 @@ const SELL_PHOTO_QUESTION = 'Would you like to attach a photo? Send it now, or r
 // structured field: whatever the seller says is stored verbatim in `notes` and shown on the
 // listing as-is, same principle as the free-text description itself.
 const SELL_NOTES_QUESTION = 'Anything else buyers should know — box, papers, bracelet links, extra straps, etc.? Reply with details, or say "skip".';
+// Same principle as SELL_NOTES_QUESTION just above, mirrored for a buyer: a WTB draft never
+// asked this at all, so a requirement like "must have box and papers" only ever reached the
+// listing if the buyer happened to volunteer it unprompted in their very first message --
+// otherwise it was silently never asked for, and even when volunteered into `boxPapers`
+// mid-intake, confirm time never actually passed it to ingestDirectBuyPosting (see
+// handleBuyIntakeAnswer's confirm branch). Reusing `notes` (not the narrower `boxPapers` field)
+// keeps this the same open-ended catch-all sellers already get, since a buyer's "anything else"
+// is just as often a hard requirement (dial, warranty card) as a documentation preference.
+const BUY_NOTES_QUESTION = 'Anything else about your requirements — box, papers, bracelet links, must-haves, etc.? Reply with details, or say "skip".';
 /** "any"/"all"/"skip"/etc name no model at all -- used both at the dedicated model-intake step
  *  and for a "model any"/"model none" correction at confirm time, so the two paths treat the
  *  same words the same way rather than one clearing the model and the other literally storing
@@ -2002,7 +2027,12 @@ const DIAL_WORD = "dial{1,2}";
 const NOT_A_PLACE = /^(?:stock|good|great|excellent|mint|new|used|full|box|papers|a|an|the|my|this|that|good|perfect|condition|\d)/i;
 /** Filler that survives slot-stripping but never names a place. Used only for the dealer
  *  shorthand fallback ("max 25k Miami"), where the location is whatever is left over. */
-const LEFTOVER_STOPWORDS = new Set(["with","w","and","but","or","spend","spending","more","than","up","around","about","under","over","max","maximum","budget","located","based","near","ship","shipping","to","in","from","at","of","only","please","pls","thanks","thank","you","ok","okay","hi","hello","hey","if","possible","preferably","ideally","dial","color","colour","condition","set","full","box","papers","paper"]);
+// Live-reported bug: "Yes. I want to buy a 116519" (confirming an earlier ambiguous-intent
+// question, then naming a fresh request in the same message) stripped down to a bare leftover
+// "Yes" -- which looksLikePlace accepts unconditionally, so it was stored as "Location: Yes"
+// despite the location step never having been asked at all. An acknowledgment word is exactly
+// the same kind of filler "ok"/"okay" already are here, just missing from the list.
+const LEFTOVER_STOPWORDS = new Set(["with","w","and","but","or","spend","spending","more","than","up","around","about","under","over","max","maximum","budget","located","based","near","ship","shipping","to","in","from","at","of","only","please","pls","thanks","thank","you","ok","okay","yes","yeah","yep","yup","sure","correct","right","confirm","confirmed","hi","hello","hey","if","possible","preferably","ideally","dial","color","colour","condition","set","full","box","papers","paper"]);
 
 /**
  * Where the buyer is, or wants the watch from — read the way people actually say it.
@@ -2436,7 +2466,7 @@ async function nextSell(p: PendingSellIntake): Promise<string | null> {
 }
 function nextBuy(p: PendingBuyIntake): string | null {
   if (!p.brand && !p.reference) { p.step="details"; return "What would you like to buy? Please include the brand and model."; }
-  if (p.budget === undefined) { p.step="budget"; return BUY_BUDGET_QUESTION; }
+  if (p.budget === undefined) { p.step="budget"; p.neededFollowUp=true; return BUY_BUDGET_QUESTION; }
   // Only asked when NOTHING beyond brand/budget is known yet -- a message that already answered
   // condition or location too clearly front-loaded everything it means to give, and re-asking
   // for a model it never mentioned would contradict that (the live-tested contract: a fully
@@ -2444,14 +2474,19 @@ function nextBuy(p: PendingBuyIntake): string | null {
   // closes: "wtb rolex" alone never got asked for a model at all -- it silently confirmed with
   // "Model: Not provided" with no chance to say "any" and broaden the search on purpose.
   if (!p.model && !p.modelSkipped && !p.reference && !p.condition && !p.location) {
-    p.step = "model";
+    p.step = "model"; p.neededFollowUp=true;
     return `Which model? (or say "any" to consider all ${displayBrand(p.brand) || "matching"} models under your budget)`;
   }
-  if (dialRelevant(p.reference) && !p.dialColor) { p.step="dial"; return DIAL_INTAKE_QUESTION; }
+  if (dialRelevant(p.reference) && !p.dialColor) { p.step="dial"; p.neededFollowUp=true; return DIAL_INTAKE_QUESTION; }
   // Never asked as its own question -- defaults to "pre-owned" unless the buyer's own text
   // already said otherwise (new/BNIB/unworn/etc, parsed by intakeSlots above).
   if (!p.condition) p.condition = "pre-owned";
-  if (!p.location) { p.step="location"; return BUY_LOCATION_QUESTION; }
+  if (!p.location) { p.step="location"; p.neededFollowUp=true; return BUY_LOCATION_QUESTION; }
+  // Same principle as the model question just above -- only interrupt a request that already
+  // needed at least one follow-up question (budget/model/dial/location weren't all given
+  // upfront). A fully detailed one-shot message still goes straight to confirmation unchanged;
+  // this only ever adds a round-trip to a request that was already going to have one.
+  if (p.neededFollowUp && !p.notes && !p.notesSkipped) { p.step="notes"; return BUY_NOTES_QUESTION; }
   p.step="confirm"; return null;
 }
 function levenshteinDistance(a: string, b: string): number {
@@ -2655,7 +2690,7 @@ function bailOutOfStuckIntake(state: ConversationState, messages: string[]): boo
 
 async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<PendingMatchNotification[] | undefined> {
   const p=state.pendingSellIntake!; const suppliedPhoto = Boolean(imageUrl); if(imageUrl)p.imageUrl=imageUrl;
-  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
+  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await withSearchIndicator(state.phone,()=>ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl})); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound,result.pendingNotifications.length));
     state.pendingSellIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return result.pendingNotifications; }
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
@@ -2694,16 +2729,21 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
 
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<PendingMatchNotification[] | undefined> {
   const p=state.pendingBuyIntake!;
-  if(p.step==="confirm" && confirmed(text)){ const result=await ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,year:p.year}); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound));
+  if(p.step==="confirm" && confirmed(text)){ const result=await withSearchIndicator(state.phone,()=>ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,year:p.year,boxPapers:p.boxPapers,notes:p.notes})); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound,result.pendingNotifications.length));
     state.pendingBuyIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return result.pendingNotifications; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;
+  const skippedNotes = p.step === "notes" && /^(?:skip|no|none|n\/a|nothing)\s*[.!]*$/i.test(text.trim());
+  if (skippedNotes) p.notesSkipped = true;
+  const suppliedNotes = p.step === "notes" && !skippedNotes && Boolean(text.trim());
+  if (suppliedNotes) p.notes = text.trim();
   // See the sell handler above: the scoped answer claims the message first, and only what it
-  // leaves unclaimed can become a free-text location.
-  const scopedChange=applyScopedBuyAnswer(p,text);
+  // leaves unclaimed can become a free-text location. Same exception as sell's own notes step:
+  // never re-parsed as item identity/price/dial, which could corrupt fields already settled.
+  const scopedChange=p.step==="notes"?false:applyScopedBuyAnswer(p,text);
   const freeLocation=!scopedChange&&p.step==="location"&&!intakeSlots(text,p.reference).location&&looksLikePlace(text);
   if(freeLocation)p.location=text.trim();
-  const changed=scopedChange||skippedReference||freeLocation;
+  const changed=scopedChange||skippedReference||freeLocation||skippedNotes||suppliedNotes;
   if (!changed && p.step === "details" && looksLikePriceAnswer(text)) { messages.push("That looks like a price, not a reference number. Please send the manufacturer reference, or reply skip."); return; }
   if (changed) state.intakeFallbackCount = 0;
   if(!changed) {

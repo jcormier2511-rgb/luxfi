@@ -34,6 +34,8 @@ const engine = require("../matching/engine") as typeof import("../matching/engin
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const fulfillmentService = require("../fulfillment/service") as typeof import("../fulfillment/service");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { resetState } = require("./stateStore") as typeof import("./stateStore");
@@ -131,4 +133,36 @@ test('required regression: a search still running after 2 seconds sends a proact
     /No live matches yet/,
     "the real result must still arrive normally once the slow search actually finishes"
   );
+});
+
+/**
+ * Real reported gap: the confirm-time match search for an ordinary WTB/FS conversational intake
+ * (ingestDirectBuyPosting/ingestDirectSellPosting, via fulfillment/service.ts's fulfillWtb) never
+ * had the search indicator wired in at all -- only the old v3 startSearch path and the Market
+ * Pulse commands did. A slow confirm-time search (many candidates to score) looked identical to
+ * Fi having stopped responding, the exact complaint the indicator exists to prevent.
+ */
+test('required regression: confirming a WTB whose match search takes over 2 seconds shows the "still searching" indicator', async (t) => {
+  const sent: string[] = [];
+  t.mock.method(greenApiClient, "sendText", async (_phone: string, message: string) => {
+    sent.push(message);
+  });
+
+  let resolveFulfill!: (result: Awaited<ReturnType<typeof fulfillmentService.fulfillWtb>>) => void;
+  const slowFulfill = new Promise<Awaited<ReturnType<typeof fulfillmentService.fulfillWtb>>>((resolve) => {
+    resolveFulfill = resolve;
+  });
+  t.mock.method(fulfillmentService, "fulfillWtb", async () => slowFulfill);
+
+  const phone = "19990004010";
+  resetState(phone);
+  await handleIncomingMessage(phone, "WTB Rolex Daytona 116500LN black dial pre-owned Miami max $35,000");
+  const confirmPromise = handleIncomingMessage(phone, "confirm");
+
+  await new Promise((resolve) => setTimeout(resolve, 2200));
+  assert.ok(sent.some((m) => INDICATOR.test(m)), "the indicator must fire while the confirm-time match search is still pending");
+
+  resolveFulfill({ explicitMatches: 0, opportunities: 0, pendingNotifications: [] });
+  const result = await confirmPromise;
+  assert.match(result.messages.join("\n"), /WTB request is active/, "the real confirmation must still arrive normally once the slow search actually finishes");
 });

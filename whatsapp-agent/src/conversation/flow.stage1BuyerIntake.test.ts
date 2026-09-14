@@ -367,6 +367,9 @@ test('required regression: a stated year is captured and carried through to the 
   await handleIncomingMessage(identity, "US");
   assert.equal(getState(identity).pendingBuyIntake?.year, "2024", "the stated year must be captured into the draft");
 
+  // This request needed budget/location asked explicitly, so it also asks the (otherwise-
+  // skippable) notes question once before confirming -- see nextBuy's neededFollowUp gate.
+  if (getState(identity).pendingBuyIntake?.step === "notes") await handleIncomingMessage(identity, "skip");
   await handleIncomingMessage(identity, "confirm");
   const userId = await getOrCreateCanonicalUser(platformForIdentity(identity), identity);
   const active = await getActivePostingsForUser(userId);
@@ -440,4 +443,48 @@ test("required: a shared location pin is ignored (falls through to normal handli
   await handleIncomingMessage(identity, "hi");
   await handleIncomingMessage(identity, "", undefined, undefined, { latitude: 25.7617, longitude: -80.1918 });
   assert.equal(spy.mock.callCount(), 0, "a location share is only ever meaningful while Fi is actually asking about location");
+});
+
+/**
+ * Real reported confusion: createDirectPosting updates an already-open request for the same
+ * item IN PLACE rather than creating a duplicate (see postingsStore.test.ts's own regression for
+ * that) -- so re-confirming the same complete request finds the same matches again, but none of
+ * them are NEW-or-changed since they were already delivered the first time (upsertMatch), so zero
+ * cards actually go out. The old "Here are the most recent postings..." wording then delivered
+ * nothing, reading as the matches having vanished.
+ */
+test("required regression: re-confirming an already-active WTB with no new matches says so, instead of promising postings that never arrive", async (t) => {
+  t.mock.method(whapi, "sendText", async () => {});
+  const buyerPhone = fresh("15550779re").replace(/[^\d]/g, "");
+  resetState(buyerPhone);
+
+  // A seller's own direct FS posting -- a real, matchable postings row (not v3 inventory_listings).
+  await createDirectPosting({
+    phone: "19990009999", description: "FS Rolex Daytona 116500LN", brand: "Rolex", model: "Daytona",
+    reference: "116500LN", price: 30000, type: "FS", dialColor: "black", condition: "pre-owned", location: "Miami",
+  });
+
+  const COMPLETE_WTB = "WTB Rolex Daytona 116500LN black dial pre-owned Miami max $35,000";
+
+  const first = await handleIncomingMessage(buyerPhone, COMPLETE_WTB);
+  assert.equal(first.state.pendingBuyIntake?.step, "confirm", "precondition: fully detailed, straight to confirmation");
+  const firstConfirm = await handleIncomingMessage(buyerPhone, "confirm");
+  assert.match(firstConfirm.messages.join("\n"), /most recent posting/i, "the first, genuinely new confirmation must say a posting is coming");
+
+  // Same buyer, same exact item -- createDirectPosting updates the SAME posting row rather than
+  // creating a second one, and the FS candidate/score/reasons are unchanged since the first pass.
+  const second = await handleIncomingMessage(buyerPhone, COMPLETE_WTB);
+  assert.equal(second.state.pendingBuyIntake?.step, "confirm");
+  const secondConfirm = await handleIncomingMessage(buyerPhone, "confirm");
+  const text = secondConfirm.messages.join("\n");
+  assert.match(text, /already have active matches for this request/i, "re-confirming with nothing new must say so plainly");
+  assert.doesNotMatch(text, /most recent posting/i, "must never promise a posting that (correctly) never gets sent");
+});
+
+test('required regression: a leading acknowledgment ("Yes. I want to buy a 116519") is never mistaken for a location -- real reported bug: confirmed with "Location: Yes" despite the location step never being asked', async () => {
+  const identity = fresh();
+  resetState(identity);
+  await handleIncomingMessage(identity, "Yes. I want to buy a 116519");
+  assert.equal(getState(identity).pendingBuyIntake?.reference, "116519", "precondition: the reference was still read correctly");
+  assert.equal(getState(identity).pendingBuyIntake?.location, undefined, 'the leftover word "Yes" must never be stored as a location');
 });

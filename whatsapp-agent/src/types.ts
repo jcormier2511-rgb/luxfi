@@ -141,7 +141,7 @@ export interface PendingSellIntake {
 }
 
 export interface PendingBuyIntake {
-  step: "details" | "budget" | "model" | "condition" | "location" | "dial" | "confirm";
+  step: "details" | "budget" | "model" | "condition" | "location" | "dial" | "notes" | "confirm";
   description: string;
   reference: string | null;
   referenceSkipped?: boolean;
@@ -151,6 +151,13 @@ export interface PendingBuyIntake {
   boxPapers?: string;
   year?: string;
   notes?: string;
+  notesSkipped?: boolean;
+  // Set the first time budget/model/dial/location had to be asked for explicitly (see
+  // conversation/flow.ts's nextBuy) -- distinguishes an otherwise-incomplete request (where an
+  // extra notes/box-papers question just adds to round-trips already happening) from a fully
+  // detailed one-shot message, which must keep going straight to confirmation with no new
+  // interruption.
+  neededFollowUp?: boolean;
   budget?: number;
   currency?: string;
   condition?: string;

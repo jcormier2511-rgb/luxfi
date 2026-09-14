@@ -284,9 +284,16 @@ for (const qualifier of BARE_QUALIFIERS) {
     assert.equal(getState(phone).pendingBuyIntake?.step, "location");
 
     await handleIncomingMessage(phone, qualifier);
-    const draft = getState(phone).pendingBuyIntake!;
+    let draft = getState(phone).pendingBuyIntake!;
     assert.equal(draft.location, "Global", `"${qualifier}" must answer location`);
-    assert.equal(draft.step, "confirm", "and must not re-ask it");
+    assert.notEqual(draft.step, "location", "and must not re-ask it");
+    // This interview needed budget/model/location asked explicitly, so it also asks the
+    // (otherwise-skippable) notes question before confirming -- see nextBuy's neededFollowUp gate.
+    if (draft.step === "notes") {
+      await handleIncomingMessage(phone, "skip");
+      draft = getState(phone).pendingBuyIntake!;
+    }
+    assert.equal(draft.step, "confirm");
   });
 }
 
@@ -300,11 +307,14 @@ for (const answer of LOCATION_ANSWERS) {
     await handleIncomingMessage(phone, "WTB Rolex 116500LN, black dial, pre-owned, max $35,000");
     assert.equal(getState(phone).pendingBuyIntake?.step, "location", "precondition: waiting on a location");
 
-    const reply = await handleIncomingMessage(phone, answer);
+    let reply = await handleIncomingMessage(phone, answer);
     const draft = getState(phone).pendingBuyIntake!;
     assert.notEqual(draft.step, "location", `"${answer}" left the interview stuck re-asking`);
     assert.ok(draft.location, "the answer must be stored");
     assert.equal(draft.reference, "116500LN", "identity must survive a location answer");
+    // Missing only a location still counts as needing a follow-up, so the (otherwise-skippable)
+    // notes question is asked once before the summary -- see nextBuy's neededFollowUp gate.
+    if (draft.step === "notes") reply = await handleIncomingMessage(phone, "skip");
     assert.match(reply.messages.join("\n"), /116500LN/, "the summary must still describe the watch");
   });
 }

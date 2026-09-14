@@ -47,6 +47,20 @@ test("a genuinely content-less message (no text, no image -- e.g. a bare documen
   assert.equal(await alreadyProcessedContent("15551234567", ""), false, "two real, distinct content-less messages would otherwise collide on the same empty key");
 });
 
+test("required regression: many genuinely concurrent deliveries of the same content never all get through -- live-reported bug: a SELECT-then-INSERT check let every one of 30 truly concurrent identical deliveries pass, since each SELECT ran before any INSERT finished", async () => {
+  // No await between calls -- every query is in flight before any resolves, the exact shape of
+  // the live bug (a burst of webhook requests processed by the same Node process at once). A
+  // 2-way race wasn't reliable enough to reproduce locally (fast loopback Postgres often
+  // serializes just two calls by chance); 30 concurrent calls reproduced it on every attempt
+  // against the old SELECT-then-INSERT code (all 30 came back "not a duplicate").
+  const CONCURRENT_CALLS = 30;
+  const results = await Promise.all(
+    Array.from({ length: CONCURRENT_CALLS }, () => alreadyProcessedContent("15551234567", "WTB a 116500LN"))
+  );
+  const notDuplicateCount = results.filter((seen) => seen === false).length;
+  assert.equal(notDuplicateCount, 1, `exactly one of ${CONCURRENT_CALLS} truly concurrent identical deliveries must win as the real, non-duplicate one -- got ${notDuplicateCount}`);
+});
+
 test("the dedup window expires -- a genuinely repeated message sent long after is treated as new, not swallowed forever", async () => {
   assert.equal(await alreadyProcessedContent("15551234567", "hi"), false);
   assert.equal(await alreadyProcessedContent("15551234567", "hi"), true);

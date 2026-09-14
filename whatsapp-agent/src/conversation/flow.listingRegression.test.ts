@@ -14,7 +14,10 @@ test("WTB fills fields in any order, accepts multiple slots and corrections, the
  const first=await handleIncomingMessage(p,"WTB Rolex 116500LN in the US for 28000");
  assert.match(first.messages[0],/Fi/); assert.match(first.messages[1],/black dial, white dial, or either/);
  assert.equal(first.state.pendingBuyIntake?.budget,28000); assert.equal(first.state.pendingBuyIntake?.location,"US");
- const multi=await handleIncomingMessage(p,"white dial, pre-owned");
+ const multiRaw=await handleIncomingMessage(p,"white dial, pre-owned");
+ // This request needed the dial question asked explicitly, so it also asks the (otherwise-
+ // skippable) notes question once before the summary -- see nextBuy's neededFollowUp gate.
+ const multi = multiRaw.state.pendingBuyIntake?.step === "notes" ? await handleIncomingMessage(p, "skip") : multiRaw;
  assert.match(multi.messages[0],/^I have:\nWTB — /m); assert.match(multi.messages[0],/White dial[\s\S]*Pre-owned[\s\S]*Maximum: \$28,000[\s\S]*Location: US/);
  const corrected=await handleIncomingMessage(p,"Actually my budget is 30k and I'm in Canada, new, black dial");
  assert.match(corrected.messages[0],/Black dial[\s\S]*New[\s\S]*Maximum: \$30,000[\s\S]*Location: Canada/);
@@ -112,7 +115,7 @@ test("WTB confirmation boundary saves the corrected draft exactly once", async (
   const saved: import("../postings/postingsStore").DirectSellPostingInput[] = [];
   t.mock.method(ingest, "ingestDirectBuyPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => {
     saved.push(input);
-    return { matchesFound: 0, posting: persistedRow(input, "WTB") };
+    return { matchesFound: 0, posting: persistedRow(input, "WTB"), pendingNotifications: [] };
   });
 
   const summary = await handleIncomingMessage(phone, "WTB Rolex 116500LN white dial pre-owned in the US for $28,000");
@@ -158,7 +161,7 @@ test("FS confirmation boundary persists and activates every parsed field exactly
   const inventoryWrites: Parameters<typeof inventory.upsertListings>[0][] = [];
   const activations: import("../postings/postingsStore").DirectSellPostingInput[] = [];
   t.mock.method(inventory, "upsertListings", async (rows: Parameters<typeof inventory.upsertListings>[0]) => { inventoryWrites.push(rows); });
-  t.mock.method(ingest, "ingestDirectSellPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => { activations.push(input); return { matchesFound: 0, posting: persistedRow(input, "FS") }; });
+  t.mock.method(ingest, "ingestDirectSellPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => { activations.push(input); return { matchesFound: 0, posting: persistedRow(input, "FS"), pendingNotifications: [] }; });
 
   const photoPrompt = await handleIncomingMessage(phone, "FS Rolex 116500LN black dial unworn in Canada for 28500");
   assert.match(photoPrompt.messages.at(-1)!, /attach a photo/i);
@@ -195,7 +198,7 @@ test("an original-message FS photo stays in the draft and appears in the confirm
   let inventoryWrites = 0;
   let activations = 0;
   t.mock.method(inventory, "upsertListings", async () => { inventoryWrites++; });
-  t.mock.method(ingest, "ingestDirectSellPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => { activations++; return { matchesFound: 0, posting: persistedRow(input, "FS") }; });
+  t.mock.method(ingest, "ingestDirectSellPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => { activations++; return { matchesFound: 0, posting: persistedRow(input, "FS"), pendingNotifications: [] }; });
 
   const notesPrompt = await handleIncomingMessage(
     phone,
@@ -424,7 +427,7 @@ test('"model any" at confirm time clears the model rather than storing the liter
   const saved: import("../postings/postingsStore").DirectSellPostingInput[] = [];
   t.mock.method(ingest, "ingestDirectBuyPosting", async (input: import("../postings/postingsStore").DirectSellPostingInput) => {
     saved.push(input);
-    return { matchesFound: 0, posting: persistedRow(input, "WTB") };
+    return { matchesFound: 0, posting: persistedRow(input, "WTB"), pendingNotifications: [] };
   });
 
   await handleIncomingMessage(phone, "wtb rolex daytona, pre-owned, usa, maximum $25,000");

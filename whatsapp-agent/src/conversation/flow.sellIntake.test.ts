@@ -378,7 +378,7 @@ test("required: confirmation creates a direct FS posting and immediately matches
   assert.match(summary.messages.at(-1)!, /Photo: none[\s\S]*Should I start monitoring\?/);
   assert.equal(sent.length, 0, "no match notification before confirmation");
   const confirmed = await handleIncomingMessage(phone, "yes");
-  assert.match(confirmed.messages.join("\n"), /listing is active[\s\S]*found 1 potential buyer/i);
+  assert.match(confirmed.messages.join("\n"), /listing is active[\s\S]*most recent posting/i);
   // handleIncomingMessage defers match-card notifications rather than sending them inline (see
   // FlowResult.pendingMatchNotifications) -- the real dispatch layer (server.ts) sends them once
   // this turn's own reply has gone out; calling handleIncomingMessage directly here has to do

@@ -124,6 +124,7 @@ test("required regression: confirming a WTB draft, then an unparseable reply get
       type: "WTB", brand: input.brand ?? "", model: input.model ?? "", reference: input.reference ?? "", dial: input.dialColor ?? "",
       condition: input.condition ?? "", price: input.price === null ? null : String(input.price), currency: input.currency ?? "USD", location: input.location ?? "",
     } as import("../postings/postingsStore").PostingRow,
+    pendingNotifications: [],
   }));
 
   await handleIncomingMessage(phone, "WTB Rolex 116500LN white dial pre-owned in the US for $28,000");

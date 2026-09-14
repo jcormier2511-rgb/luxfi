@@ -156,13 +156,22 @@ export async function alreadyProcessedContent(phone: string, text: string, image
   // deterministically, the same way the old in-memory version's tests did.
   const cutoff = new Date(Date.now() - DUPLICATE_CONTENT_WINDOW_MS);
   const pool = getPool();
-  const existing = await pool.query(`SELECT 1 FROM recent_content_dedup WHERE content_key = $1 AND created_at > $2`, [key, cutoff]);
-  if ((existing.rowCount ?? 0) > 0) return true;
-  await pool.query(
+  // Live-reported bug: the previous SELECT-then-INSERT here raced under two genuinely concurrent
+  // webhook deliveries (confirmed live -- two identical-text messages arriving at the exact same
+  // instant both passed the SELECT before either finished its INSERT, so both were processed).
+  // One atomic upsert instead: the ON CONFLICT ... WHERE clause means a still-fresh existing row
+  // simply refuses the write (Postgres's own row-level locking on the unique index serializes
+  // concurrent attempts, so only one can ever "win"), rather than two connections separately
+  // reading a state that's still true at read time but stale by the time either writes.
+  const result = await pool.query(
     `INSERT INTO recent_content_dedup (content_key, created_at) VALUES ($1, $2)
-     ON CONFLICT (content_key) DO UPDATE SET created_at = excluded.created_at`,
-    [key, new Date()]
+     ON CONFLICT (content_key) DO UPDATE
+       SET created_at = excluded.created_at
+       WHERE recent_content_dedup.created_at <= $3
+     RETURNING content_key`,
+    [key, new Date(), cutoff]
   );
+  if (result.rowCount === 0) return true;
   pool
     .query(`DELETE FROM recent_content_dedup WHERE created_at < now() - interval '1 hour'`)
     .catch(() => {});
