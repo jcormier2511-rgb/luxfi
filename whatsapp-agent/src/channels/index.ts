@@ -1,4 +1,4 @@
-import { sendText as greenApiSendText, sendBannerImage as greenApiSendBannerImage } from "./greenApi";
+import { sendText as whatsappCloudSendText, sendBannerImage as whatsappCloudSendBannerImage } from "./whatsappCloud";
 import * as telegram from "./telegram";
 import * as sms from "./sms";
 import { platformForIdentity } from "./identity";
@@ -41,8 +41,10 @@ export async function sendText(identity: string, message: string): Promise<void>
     default:
       // A bare (unprefixed) identity is always a real 1:1 WhatsApp contact here — a WhatsApp
       // GROUP send never reaches this function at all; postings/groupPublishing.ts calls Green
-      // API's own sendGroupText/sendGroupBannerImage directly for those instead.
-      return greenApiSendText(target.identity, target.message);
+      // API's own sendGroupText/sendGroupBannerImage directly for those instead. 1:1 sends go
+      // through the official Cloud API (channels/whatsappCloud.ts), not Green API — see
+      // config.ts's channels.whatsappCloud comment for why the two providers are permanently split.
+      return whatsappCloudSendText(target.identity, target.message);
   }
 }
 
@@ -56,6 +58,6 @@ export async function sendBannerImage(identity: string, imageUrl: string, captio
     case "sms":
       return sms.sendBannerImage(target.identity, imageUrl, targetCaption);
     default:
-      return greenApiSendBannerImage(target.identity, imageUrl, targetCaption);
+      return whatsappCloudSendBannerImage(target.identity, imageUrl, targetCaption);
   }
 }

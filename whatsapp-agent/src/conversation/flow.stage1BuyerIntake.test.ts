@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { setTimeout as realDelay } from "node:timers/promises";
 
 /**
  * STAGE 1 LAUNCH BLOCKER — live Telegram buyer test.
@@ -32,8 +33,9 @@ const { getActivePostingsForUser, createDirectPosting } = require("../postings/p
 const { getOrCreateCanonicalUser } = require("../postings/identity") as typeof import("../postings/identity");
 const { platformForIdentity } = require("../channels/identity") as typeof import("../channels/identity");
 const server = require("../server") as typeof import("../server");
-const whapi = require("../channels/greenApi") as typeof import("../channels/greenApi");
+const whapi = require("../channels/whatsappCloud") as typeof import("../channels/whatsappCloud");
 const telegram = require("../channels/telegram") as typeof import("../channels/telegram");
+const notify = require("../postings/notify") as typeof import("../postings/notify");
 
 before(async () => { await db._resetDbForTests(); await inventory._resetDbForTests(); });
 after(async () => {
@@ -336,7 +338,18 @@ test("required regression: the WTB confirmation is always sent before any match-
   const order: string[] = [];
   t.mock.method(whapi, "sendText", async (_recipient: string, message: string) => { order.push(message); });
 
+  // The match-card notification is staggered (see scheduleStaggeredMatchNotifications), not sent
+  // inline -- shrunk to a few milliseconds so this test observes it with a short real wait
+  // instead of mocking global setTimeout (which risks stalling Postgres's own internal use of
+  // it) or waiting out the real 20s delay.
+  notify._setStaggerDelaysForTests(5, 5);
+  t.after(() => notify._setStaggerDelaysForTests(20_000, 45_000));
   await server.processIncomingMessages([{ id: "order-confirm-1", phone, text: "confirm", isGroup: false }]);
+
+  assert.ok(order.some((m) => /Your WTB request is active:/.test(m)), "the confirmation itself must be sent immediately");
+  assert.ok(!order.some((m) => /Match ID#/.test(m)), "the match-card notification must not land in the same instant as the confirmation -- it's staggered");
+
+  await realDelay(300); // let the staggered (now near-instant) notification actually fire and complete
 
   assert.ok(order.some((m) => /Match ID#/.test(m)), "precondition: confirming this exact reference must actually trigger a match-card notification");
   const confirmationIndex = order.findIndex((m) => /Your WTB request is active:/.test(m));

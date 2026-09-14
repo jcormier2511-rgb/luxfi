@@ -12,7 +12,7 @@ process.env.WEBHOOK_TOKEN = "test";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const inventoryDb = require("../watchfacts/inventoryDb") as typeof import("../watchfacts/inventoryDb");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const whapiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
+const whapiClient = require("../channels/whatsappCloud") as typeof import("../channels/whatsappCloud");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const photoRequests = require("./photoRequests") as typeof import("./photoRequests");
 

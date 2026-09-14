@@ -31,12 +31,26 @@ export const config = {
   // until its own credentials are set — see channels/telegram.ts / channels/sms.ts's "skip the
   // live call, log instead" fallback, same posture as an unset WHAPI_TOKEN.
   channels: {
-    // Green API (green-api.com) — the actual live WhatsApp provider (channels/index.ts's default
-    // dispatch, and postings/groupPublishing.ts's WhatsApp-group branch: unlike the official
-    // Cloud API, Green API CAN post into groups, so one provider covers both 1:1 and group
-    // sends, no split needed). Only ONE number's credentials go here -- the one Fi actually sends
-    // FROM (1:1 replies, and posting into the push-group list, which requires this number to be a
-    // member of each of those groups). One or two additional numbers used purely to widen
+    // Meta's official WhatsApp Business Cloud API — replaces WHAPI (above) for every 1:1 Fi
+    // conversation (channels/index.ts's default dispatch case, plus the returning-user
+    // campaign's template sends). WHAPI itself is deliberately kept configured and in active use
+    // for exactly one thing it alone can do: sit inside and post into WhatsApp GROUPS (dealer
+    // group listing monitoring, admin/groupSync.ts, postings/groupPublishing.ts) — the official
+    // Cloud API has no group-messaging capability at all, by Meta's own design, so this is a
+    // permanent two-provider split, not a transitional one. See channels/whatsappCloud.ts.
+    whatsappCloud: {
+      accessToken: process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ?? "",
+      phoneNumberId: process.env.WHATSAPP_CLOUD_PHONE_NUMBER_ID ?? "",
+      apiVersion: process.env.WHATSAPP_CLOUD_API_VERSION ?? "v21.0",
+      baseUrl: process.env.WHATSAPP_CLOUD_BASE_URL ?? "https://graph.facebook.com",
+    },
+    // Green API (green-api.com) — now used ONLY for WhatsApp GROUPS (postings/groupPublishing.ts's
+    // WhatsApp-group branch, admin/groupSync.ts): the official Cloud API above has no group-
+    // messaging capability at all, so this provider's role is group monitoring/posting, not 1:1
+    // dispatch (channels/index.ts's default case now goes to whatsappCloud instead). Only ONE
+    // number's credentials go here -- the one Fi actually posts into the push-group list FROM,
+    // which requires this number to be a member of each of those groups. One or two additional
+    // numbers used purely to widen
     // monitoring coverage need no credentials here at all: create their own Green API instance,
     // point ITS webhook at this same deployment's /webhook/greenapi?token=<WEBHOOK_TOKEN>, and
     // Fi ingests from them automatically through the same shared pipeline every other channel

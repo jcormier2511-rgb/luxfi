@@ -17,7 +17,7 @@ const store = require("./postingsStore") as typeof import("./postingsStore");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const remindersModule = require("./reminders") as typeof import("./reminders");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const whapiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
+const whapiClient = require("../channels/whatsappCloud") as typeof import("../channels/whatsappCloud");
 
 const { ingestChatPosting, getPosting, extendPosting } = store;
 const { sendExpirationReminders } = remindersModule;

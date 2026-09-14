@@ -6,6 +6,8 @@ process.env.WEBHOOK_TOKEN = "test";
 process.env.WHAPI_TOKEN = "test-whapi-token";
 process.env.GREEN_API_INSTANCE_ID = "1234567890";
 process.env.GREEN_API_API_TOKEN = "test-green-api-token";
+process.env.WHATSAPP_CLOUD_ACCESS_TOKEN = "test-cloud-token";
+process.env.WHATSAPP_CLOUD_PHONE_NUMBER_ID = "1234567890";
 process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 process.env.TWILIO_ACCOUNT_SID = "AC_test";
 process.env.TWILIO_AUTH_TOKEN = "test-auth-token";
@@ -15,11 +17,12 @@ const channels = require("./index") as typeof import("./index");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { isSuspectedPhantomCompanion, _resetPhantomCompanionForTests } = require("../conversation/stateStore") as typeof import("../conversation/stateStore");
 
-// A plain (unprefixed) identity is always a real 1:1 WhatsApp contact -- routed to Green API
-// (channels/greenApi.ts), the live WhatsApp provider. A WhatsApp GROUP send never goes through
-// this generic identity-based dispatch at all (see postings/groupPublishing.ts, which calls
-// Green API's own group-specific sendGroupText/sendGroupBannerImage directly for that case).
-test("sendText routes a plain (unprefixed) identity to Green API", async (t) => {
+// A plain (unprefixed) identity is always a real 1:1 WhatsApp contact -- routed to the official
+// WhatsApp Business Cloud API (channels/whatsappCloud.ts). A WhatsApp GROUP send never goes
+// through this generic identity-based dispatch at all (see postings/groupPublishing.ts, which
+// still calls Green API's own group-specific sendGroupText/sendGroupBannerImage directly for
+// that case -- the Cloud API has no group-messaging capability at all).
+test("sendText routes a plain (unprefixed) identity to the WhatsApp Cloud API", async (t) => {
   const calls: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: string) => {
     calls.push(url);
@@ -27,7 +30,7 @@ test("sendText routes a plain (unprefixed) identity to Green API", async (t) => 
   });
   await channels.sendText("15551234567", "hi");
   assert.equal(calls.length, 1);
-  assert.match(calls[0], /api\.green-api\.com/);
+  assert.match(calls[0], /graph\.facebook\.com/);
 });
 
 test("sendText routes a telegram: identity to the Telegram Bot API", async (t) => {

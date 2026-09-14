@@ -1,4 +1,5 @@
 import { withSchema, withTransaction } from "./db";
+import type { PendingMatchNotification } from "./matching";
 import { getOrCreateCanonicalUser } from "./identity";
 import { platformForIdentity } from "../channels/identity";
 import { PostingRow, getPrimaryImageUrl } from "./postingsStore";
@@ -497,6 +498,46 @@ export async function notifyMatch(matchId: number, revision: number, initiatingP
   }
   if (wtb.canonical_user_id !== null) {
     await notifyOneRecipient(matchId, wtb.canonical_user_id, revision, wtb, fs, reasons, wtb.id === initiatingPostingId);
+  }
+}
+
+// Real reported ask: the "Your WTB/FS request is active" confirmation and every match card it
+// triggers used to go out back-to-back in the same instant -- read as one confusing wall of
+// messages rather than a confirmation followed by real news arriving over time. The first match
+// now waits after the confirmation has already gone out; each one after that waits behind the
+// one before it. Mutable (not const) only so a test can shrink them to a few milliseconds via
+// _setStaggerDelaysForTests -- mocking the global setTimeout instead (Node's node:test mock
+// timers) risks stalling Postgres's own internal use of it (query/connection timeouts), which is
+// exactly what happened when this was tried.
+let initialMatchNotificationDelayMs = 20_000;
+let subsequentMatchNotificationDelayMs = 45_000;
+
+/** Test-only -- shrinks the stagger delays so a test can observe the staggered behavior with a
+ *  short real wait instead of mocking global timers (see the comment above) or waiting tens of
+ *  seconds. */
+export function _setStaggerDelaysForTests(initialMs: number, subsequentMs: number): void {
+  initialMatchNotificationDelayMs = initialMs;
+  subsequentMatchNotificationDelayMs = subsequentMs;
+}
+
+/**
+ * Fire-and-forget: schedules each of `notifications` (in order) to be delivered with a real,
+ * human-paced gap after the confirmation that already went out, rather than all at once. Never
+ * awaited by the caller -- the webhook response, and this turn's own reply, must not wait on it.
+ * If the process restarts before a given timer fires, that specific notification simply isn't
+ * claimed yet (see notifyOneRecipient's INSERT ... ON CONFLICT claim) -- it's still sitting as an
+ * unclaimed, up-to-date match row, so the periodic reconciliation sweep recovers it within its
+ * own interval, the same safety net as any other missed delivery, not a lost message.
+ */
+export function scheduleStaggeredMatchNotifications(notifications: PendingMatchNotification[]): void {
+  let delay = initialMatchNotificationDelayMs;
+  for (const { matchId, revision, initiatingPostingId } of notifications) {
+    setTimeout(() => {
+      notifyMatch(matchId, revision, initiatingPostingId).catch((err) =>
+        console.error(`[postings] staggered match notification ${matchId} failed:`, err)
+      );
+    }, delay);
+    delay += subsequentMatchNotificationDelayMs;
   }
 }
 

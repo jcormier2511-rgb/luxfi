@@ -2880,7 +2880,18 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   const firstName = contact?.name?.trim().split(/\s+/)[0] || state.providedName?.split(/\s+/)[0] || "there";
   // Telegram commonly prefixes bot commands with "/" (and may append "@botname"). Keep one
   // normalized deterministic-command surface across Telegram, WhatsApp, and SMS.
-  const commandText = text.trim().replace(/^\/([a-z]+)(?:@[a-z0-9_]+)?\b/i, "$1");
+  //
+  // Live-reported bug: Fi's own prompts routinely show a suggested reply in quotes (`Reply
+  // "help" for everything else I can do.`), and a customer retyping or copy-pasting that
+  // literally includes the quote marks -- '"help"' never matched MENU_COMMAND's ^(?:help|menu)
+  // anchor, since the first character was a quote, not "h". Stripped here, once, so every
+  // deterministic command below benefits, not just help.
+  const QUOTE_CHARS = /["'“”‘’]/;
+  const commandText = text
+    .trim()
+    .replace(new RegExp(`^${QUOTE_CHARS.source}+|${QUOTE_CHARS.source}+$`, "g"), "")
+    .trim()
+    .replace(/^\/([a-z]+)(?:@[a-z0-9_]+)?\b/i, "$1");
 
   // Checked before absolutely anything else that might touch this identity's canonical user
   // (getState above is the file-based conversation store, not that — it's safe). Linking must

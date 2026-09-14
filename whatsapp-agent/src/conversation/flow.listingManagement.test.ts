@@ -1,5 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as realDelay } from "node:timers/promises";
 
 process.env.NODE_ENV = "test";
 process.env.WEBHOOK_TOKEN = "test";
@@ -751,7 +752,8 @@ test("required regression: index-less location/price/dial edit shortcuts also to
  */
 test("required regression: an edit's own re-match notification never overtakes the 'Updated:' confirmation for that same edit", async (t) => {
   const server = require("../server") as typeof import("../server");
-  const whapi = require("../channels/greenApi") as typeof import("../channels/greenApi");
+  const whapi = require("../channels/whatsappCloud") as typeof import("../channels/whatsappCloud");
+  const notify = require("../postings/notify") as typeof import("../postings/notify");
 
   const sellerPhone = freshPhone().replace(/[^\d]/g, "");
   const buyerPhone = freshPhone().replace(/[^\d]/g, "");
@@ -762,9 +764,16 @@ test("required regression: an edit's own re-match notification never overtakes t
   const order: string[] = [];
   t.mock.method(whapi, "sendText", async (_recipient: string, message: string) => { order.push(message); });
 
+  // Match notifications are staggered (see notify.ts's scheduleStaggeredMatchNotifications),
+  // not sent inline -- shrink the delay to near-instant for this test instead of waiting out the
+  // real 20s/45s schedule.
+  notify._setStaggerDelaysForTests(5, 5);
+  t.after(() => notify._setStaggerDelaysForTests(20_000, 45_000));
+
   // Correcting the FS listing's reference to the WTB's exact reference creates a brand-new match
   // that did not exist a moment ago.
   await server.processIncomingMessages([{ id: `edit-order-1-${Date.now()}`, phone: sellerPhone, text: "edit listing 1 reference 126710BLRO", isGroup: false }]);
+  await realDelay(300); // let the staggered (now near-instant) notification actually fire and complete
 
   assert.ok(order.some((m) => /Match ID#/.test(m)), "precondition: this edit must actually trigger a new match");
   const updateIndex = order.findIndex((m) => /^Updated:/.test(m));

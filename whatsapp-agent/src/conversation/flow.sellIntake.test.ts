@@ -31,7 +31,7 @@ const postingsDb = require("../postings/db") as typeof import("../postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const whapiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
+const whapiClient = require("../channels/whatsappCloud") as typeof import("../channels/whatsappCloud");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handleIncomingMessage } = require("./flow") as typeof import("./flow");
 // eslint-disable-next-line @typescript-eslint/no-var-requires

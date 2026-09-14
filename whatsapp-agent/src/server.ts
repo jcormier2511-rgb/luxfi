@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { config, isConciergeAdminPhone, isAiMatchingEnabledForPhone } from "./config";
 import { extractIncomingMessages, IncomingWebhook } from "./whapi/client";
+import { extractIncomingMessages as extractWhatsAppCloudMessages } from "./channels/whatsappCloud";
 import { extractIncomingMessages as extractGreenApiMessages, GreenApiWebhook, joinGroupByInviteLink } from "./channels/greenApi";
 import { sendText, sendBannerImage, NormalizedIncomingMessage } from "./channels";
 import { platformForIdentity } from "./channels/identity";
@@ -41,7 +42,7 @@ import {
 } from "./billing/authorizeNet";
 import { recordMembershipPayment } from "./postings/approvalUsage";
 import { handleIncomingSellerPhoto } from "./matching/photoRequests";
-import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, formatPhoneForDisplay, notifyMatch, getPendingMatchesForRecipient, isRealDisplayName } from "./postings/notify";
+import { approveMatch, passMatch, ApprovalOutcome, formatMatchPresentation, formatPhoneForDisplay, scheduleStaggeredMatchNotifications, getPendingMatchesForRecipient, isRealDisplayName } from "./postings/notify";
 import { interpretPostingsDecision } from "./ai/decisionInterpreter";
 import { runCheckoutReconciliation, activateClaimedCheckout } from "./billing/checkoutReconciliation";
 import { cancelOwnMembership, SelfServiceCancellationResult } from "./billing/membershipCancellation";
@@ -398,18 +399,14 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
         }
         await sendText(message.phone, reply);
       }
-      // Sent only now, after every reply above has actually gone out — live-reported bug: a
+      // Scheduled only now, after every reply above has actually gone out — live-reported bug: a
       // match-card notification used to be able to reach this same contact before their own
       // "Your WTB/FS request is active" confirmation, because it used to send inline, deep
       // inside handleIncomingMessage, well before this turn's messages existed at all. See
-      // FlowResult.pendingMatchNotifications.
-      for (const { matchId, revision, initiatingPostingId } of pendingMatchNotifications ?? []) {
-        try {
-          await notifyMatch(matchId, revision, initiatingPostingId);
-        } catch (err) {
-          console.error(`[webhook] failed to send deferred match notification ${matchId} to ${message.phone}:`, err);
-        }
-      }
+      // FlowResult.pendingMatchNotifications. Staggered (not sent immediately) so the
+      // confirmation and every match it triggered don't land as one instant wall of messages --
+      // see scheduleStaggeredMatchNotifications's own doc comment.
+      scheduleStaggeredMatchNotifications(pendingMatchNotifications ?? []);
     } catch (err) {
       console.error(`[webhook] failed handling message from ${message.phone}:`, err);
     }
@@ -839,7 +836,10 @@ export function createServer() {
     return res.sendStatus(403);
   });
 
-  app.post("/webhook/whatsapp", (req, res) => {
+  // Meta WhatsApp Business Cloud API webhook receiver — handles every 1:1 Fi conversation
+  // (channels/whatsappCloud.ts). WhatsApp GROUP monitoring stays on the WHAPI /webhook route
+  // above unchanged: the official Cloud API has no group-messaging capability at all.
+  app.post("/webhook/whatsapp", async (req, res) => {
     if (!config.server.whatsappAppSecret) {
       return res.status(503).json({ error: "WHATSAPP_APP_SECRET is not configured" });
     }
@@ -847,7 +847,13 @@ export function createServer() {
     if (!rawBody || !verifyWhatsAppSignature(rawBody, req.header("x-hub-signature-256"))) {
       return res.sendStatus(401);
     }
-    return res.sendStatus(200);
+    res.sendStatus(200);
+    try {
+      const messages = await extractWhatsAppCloudMessages(req.body);
+      await processIncomingMessages(messages);
+    } catch (err) {
+      console.error("[webhook/whatsapp] failed handling payload:", err);
+    }
   });
 
   // Telegram Bot API webhook receiver. Register via a one-time

@@ -1,7 +1,7 @@
 import { config } from "../config";
 import { initAdminSchema } from "../admin/store";
 import { withSchema } from "../postings/db";
-import { sendTemplate } from "../whapi/client";
+import { sendTemplate } from "../channels/whatsappCloud";
 import { MEMBERSHIP_PLANS } from "../billing/plans";
 
 export const FI_RETURNING_PROMOTIONAL_TASKS = 3;
