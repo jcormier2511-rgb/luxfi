@@ -710,6 +710,47 @@ test("required: each capped match card names its own running count against the l
   assert.match(toBuyer[2].message, /Match 3 of 3 for this listing/);
 });
 
+test("required: a match found later via ongoing monitoring is never capped, even after the listing's own initial batch already filled it", async (t) => {
+  // Real reported ask: the cap only exists to stop one broad INITIAL search from flooding
+  // someone -- a WTB that already used up its 3-slot initial batch must still hear about a
+  // genuinely new listing that appears afterward while Fi is "still monitoring," not go silent
+  // for the rest of the request's active life.
+  await resetAll();
+  const sent: { phone: string; message: string }[] = [];
+  t.mock.method(whapiClient, "sendText", async (phone: string, message: string) => sent.push({ phone, message }));
+
+  const buyerPhone = "buyer-monitoring-1";
+  for (let i = 0; i < 5; i++) {
+    await mirrorApiFsPosting({
+      id: `wf-monitoring-${i}`,
+      item: "Rolex", brand: "Rolex", ref: `MONITORREF${i}`, condition: "New", price: "$10,000",
+      contactName: `seller-monitoring-${i}`, contactPhone: `seller-monitoring-${i}`, description: "",
+    });
+  }
+  const wtb = await ingestChatPosting({
+    platform: "whatsapp", chatId: "g1", messageId: "wtb-monitoring-1", senderIdentity: buyerPhone,
+    text: "WTB Rolex budget $50,000",
+  });
+  // The WTB's own creation is its initial batch -- 5 candidates already exist, so this alone
+  // fills the free-tier cap of 3.
+  await runImmediateMatch(wtb.posting!);
+  assert.equal(sent.filter((s) => s.phone === buyerPhone).length, 3, "precondition: the initial batch already filled the cap");
+
+  // A genuinely NEW listing appears later (a fresh WatchFacts sync, say) -- ITS OWN
+  // runImmediateMatch call is what discovers this match, not the buyer's. From the buyer's side
+  // this is ongoing monitoring finding a match for an already-existing request, not a second
+  // initial batch, so it must never be blocked by the cap that's already full.
+  const later = await mirrorApiFsPosting({
+    id: "wf-monitoring-later", item: "Rolex", brand: "Rolex", ref: "MONITORREFLATER", condition: "New", price: "$10,000",
+    contactName: "seller-monitoring-later", contactPhone: "seller-monitoring-later", description: "",
+  });
+  await runImmediateMatch(later.posting);
+
+  const toBuyer = sent.filter((s) => s.phone === buyerPhone);
+  assert.equal(toBuyer.length, 4, "the later, monitoring-discovered match must still be delivered on top of the already-full initial-batch cap");
+  assert.doesNotMatch(toBuyer[3].message, /Match \d+ of \d+ for this listing/, "an uncapped, ongoing-monitoring delivery has no meaningful \"of N\" cap to report");
+});
+
 test("required: a paying-member seller's match is never blocked by a buyer's cap, even after free-tier sellers already filled it", async (t) => {
   await resetAll();
   const sent: { phone: string; message: string }[] = [];

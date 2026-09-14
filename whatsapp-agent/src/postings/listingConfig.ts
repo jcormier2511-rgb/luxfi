@@ -9,7 +9,7 @@ export const DEFAULT_MAX_PUSH_GROUPS_PER_LISTING = 3;
 // notifyOneRecipient. A free-tier counterpart's delivery still counts against this cap; a
 // paying counterpart's delivery is exempt from either cap entirely (see
 // counterpart_was_paying in postings/db.ts).
-export const DEFAULT_MAX_MATCHES_PER_LISTING_PAYING = 15;
+export const DEFAULT_MAX_MATCHES_PER_LISTING_PAYING = 7;
 
 export interface PushGroup { group_id:string; group_name:string; platform?:"whatsapp"|"telegram"; enabled:boolean; allow_fs:boolean; allow_wtb:boolean; priority:number; notes?:string }
 export const PUSH_GROUP_CSV_HEADER = "group_id,group_name,platform,enabled,allow_fs,allow_wtb,priority,notes";

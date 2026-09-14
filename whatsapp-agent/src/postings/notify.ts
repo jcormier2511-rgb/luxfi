@@ -355,7 +355,8 @@ async function notifyOneRecipient(
   revision: number,
   self: PostingRow,
   counterpart: PostingRow,
-  reasons: string[]
+  reasons: string[],
+  isInitialBatch: boolean
 ): Promise<void> {
   // Checked at send time, not just once at ingestion — a group removed from
   // V4_ALLOWED_CHAT_IDS (or the master flag turned off) after this posting was already stored
@@ -378,7 +379,14 @@ async function notifyOneRecipient(
   // quiet -- left undefined for a paying counterpart's delivery, which the cap never applies to
   // (see immediately below), so there's no meaningful "of N" to report for it.
   let listingProgress: { position: number; cap: number } | undefined;
-  if (!counterpartPaying) {
+  // Real reported ask: the cap only ever governs the INITIAL batch found the moment a listing is
+  // created/materially changed (isInitialBatch, set by the caller to whichever side's own
+  // posting triggered THIS runImmediateMatch pass) -- guarding against one broad initial search
+  // flooding someone. A match discovered LATER, once the listing is just sitting there being
+  // monitored (a new opposite-side posting appears, or a periodic reconciliation sweep finds
+  // one), is never capped at all: that is the entire point of "I'll keep monitoring," and letting
+  // the initial cap silently starve it defeats it.
+  if (!counterpartPaying && isInitialBatch) {
     // A paying recipient (the listing owner being notified, not the counterpart) gets a much
     // higher cap on their OWN listing instead of the same fixed default -- more of their
     // matches get through, without touching how free-tier competitors are capped.
@@ -471,17 +479,24 @@ async function notifyOneRecipient(
   }
 }
 
-/** Notifies both sides of a match that have a canonical WhatsApp user (an API-sourced FS listing has none). */
-export async function notifyMatch(matchId: number, revision: number): Promise<void> {
+/**
+ * Notifies both sides of a match that have a canonical WhatsApp user (an API-sourced FS listing
+ * has none). `initiatingPostingId`, when given, is whichever posting's OWN creation/material
+ * change is what triggered this match to be found right now (see runImmediateMatch) -- the side
+ * whose id matches it is having its INITIAL batch delivered (subject to the per-listing cap);
+ * the other side (and both sides, for a reconciliation-discovered match, which passes nothing
+ * here) is ongoing monitoring finding a match for an already-existing request, never capped.
+ */
+export async function notifyMatch(matchId: number, revision: number, initiatingPostingId?: number): Promise<void> {
   const data = await getMatchWithPostings(matchId);
   if (!data) return;
   const { fs, wtb, reasons } = data;
 
   if (fs.canonical_user_id !== null) {
-    await notifyOneRecipient(matchId, fs.canonical_user_id, revision, fs, wtb, reasons);
+    await notifyOneRecipient(matchId, fs.canonical_user_id, revision, fs, wtb, reasons, fs.id === initiatingPostingId);
   }
   if (wtb.canonical_user_id !== null) {
-    await notifyOneRecipient(matchId, wtb.canonical_user_id, revision, wtb, fs, reasons);
+    await notifyOneRecipient(matchId, wtb.canonical_user_id, revision, wtb, fs, reasons, wtb.id === initiatingPostingId);
   }
 }
 

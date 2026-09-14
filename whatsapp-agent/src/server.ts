@@ -403,9 +403,9 @@ export async function processIncomingMessages(incoming: NormalizedIncomingMessag
       // "Your WTB/FS request is active" confirmation, because it used to send inline, deep
       // inside handleIncomingMessage, well before this turn's messages existed at all. See
       // FlowResult.pendingMatchNotifications.
-      for (const { matchId, revision } of pendingMatchNotifications ?? []) {
+      for (const { matchId, revision, initiatingPostingId } of pendingMatchNotifications ?? []) {
         try {
-          await notifyMatch(matchId, revision);
+          await notifyMatch(matchId, revision, initiatingPostingId);
         } catch (err) {
           console.error(`[webhook] failed to send deferred match notification ${matchId} to ${message.phone}:`, err);
         }

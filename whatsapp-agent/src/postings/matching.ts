@@ -197,6 +197,10 @@ export async function upsertMatch(
 export interface PendingMatchNotification {
   matchId: number;
   revision: number;
+  /** Carried through to the deferred notifyMatch call (see server.ts) so the per-listing cap
+   *  still only ever applies to this posting's own INITIAL batch -- see notifyMatch's own doc
+   *  comment. */
+  initiatingPostingId: number;
 }
 
 export interface ImmediateMatchResult {
@@ -234,8 +238,8 @@ export async function runImmediateMatch(posting: PostingRow, options?: { notify?
     const { matchId, revision, isNewOrChanged } = await upsertMatch(fs.id, wtb.id, result);
     matchesFound++;
     if (isNewOrChanged) {
-      if (notify) await notifyMatch(matchId, revision);
-      else pendingNotifications.push({ matchId, revision });
+      if (notify) await notifyMatch(matchId, revision, posting.id);
+      else pendingNotifications.push({ matchId, revision, initiatingPostingId: posting.id });
     }
   }
 
