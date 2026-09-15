@@ -32,9 +32,9 @@ test("sendText to a non-allowed identity is redirected to the allowed one, notin
 
   assert.equal(calls.length, 1);
   const body = jsonBody(calls[0].init);
-  assert.equal(body.to, "15550001111", "must land on the allowed identity, never the real recipient");
-  assert.match(body.text.body, /Redirected — was for 19998887777 via whatsapp/);
-  assert.match(body.text.body, /Potential Match — Rolex Daytona/, "the original message content must still be visible, just redirected");
+  assert.equal(body.chatId, "15550001111@c.us", "must land on the allowed identity, never the real recipient");
+  assert.match(body.message, /Redirected — was for 19998887777 via whatsapp/);
+  assert.match(body.message, /Potential Match — Rolex Daytona/, "the original message content must still be visible, just redirected");
 });
 
 test("sendText to the allowed identity itself is delivered unchanged, with no redirect note", async (t) => {
@@ -48,8 +48,8 @@ test("sendText to the allowed identity itself is delivered unchanged, with no re
 
   assert.equal(calls.length, 1);
   const body = jsonBody(calls[0].init);
-  assert.equal(body.to, "15550001111");
-  assert.equal(body.text.body, "hello");
+  assert.equal(body.chatId, "15550001111@c.us");
+  assert.equal(body.message, "hello");
 });
 
 test("sendText redirects across channels too — a telegram-bound message still lands on the allowed WhatsApp identity", async (t) => {
@@ -62,10 +62,10 @@ test("sendText redirects across channels too — a telegram-bound message still 
   await channels.sendText("telegram:998877", "hi from telegram");
 
   assert.equal(calls.length, 1);
-  assert.match(calls[0].url, /graph\.facebook\.com/, "redirected sends still route by the ALLOWED identity's own platform");
+  assert.match(calls[0].url, /api\.green-api\.com/, "redirected sends still route by the ALLOWED identity's own platform");
   const body = jsonBody(calls[0].init);
-  assert.equal(body.to, "15550001111");
-  assert.match(body.text.body, /Redirected — was for telegram:998877 via telegram/);
+  assert.equal(body.chatId, "15550001111@c.us");
+  assert.match(body.message, /Redirected — was for telegram:998877 via telegram/);
 });
 
 test("sendBannerImage redirects a caption-less image with a visible redirect note instead of dropping it silently", async (t) => {
@@ -79,6 +79,6 @@ test("sendBannerImage redirects a caption-less image with a visible redirect not
 
   assert.equal(calls.length, 1);
   const body = jsonBody(calls[0].init);
-  assert.equal(body.to, "15550001111");
-  assert.match(body.image.caption, /Redirected — was for 19998887777 via whatsapp/);
+  assert.equal(body.chatId, "15550001111@c.us");
+  assert.match(body.caption, /Redirected — was for 19998887777 via whatsapp/);
 });

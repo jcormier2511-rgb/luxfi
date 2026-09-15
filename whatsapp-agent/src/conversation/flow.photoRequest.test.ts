@@ -21,7 +21,7 @@ const postingsDb = require("../postings/db") as typeof import("../postings/db");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { getOrCreateCanonicalUser } = require("../postings/identity") as typeof import("../postings/identity");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const whapiClient = require("../channels/whatsappCloud") as typeof import("../channels/whatsappCloud");
+const whapiClient = require("../channels/greenApi") as typeof import("../channels/greenApi");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const intentExtractorModule = require("../ai/intentExtractor") as typeof import("../ai/intentExtractor");
 // eslint-disable-next-line @typescript-eslint/no-var-requires

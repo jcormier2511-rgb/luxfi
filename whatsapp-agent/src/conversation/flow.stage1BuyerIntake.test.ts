@@ -33,7 +33,7 @@ const { getActivePostingsForUser, createDirectPosting } = require("../postings/p
 const { getOrCreateCanonicalUser } = require("../postings/identity") as typeof import("../postings/identity");
 const { platformForIdentity } = require("../channels/identity") as typeof import("../channels/identity");
 const server = require("../server") as typeof import("../server");
-const whapi = require("../channels/whatsappCloud") as typeof import("../channels/whatsappCloud");
+const whapi = require("../channels/greenApi") as typeof import("../channels/greenApi");
 const telegram = require("../channels/telegram") as typeof import("../channels/telegram");
 const notify = require("../postings/notify") as typeof import("../postings/notify");
 

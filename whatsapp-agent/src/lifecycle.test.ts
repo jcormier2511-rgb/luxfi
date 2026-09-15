@@ -1,7 +1,8 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as realDelay } from "node:timers/promises";
 process.env.NODE_ENV="test"; process.env.WEBHOOK_TOKEN="test";
-import { formatBriefing, formatDormant, localClock, runMorningBriefings, resendMorningBriefingToAll, setLifecycleSettings, BriefingTrend, pauseMorningBriefing, resumeMorningBriefing, getMorningBriefingPauseStatus, consumeFirstContact } from "./lifecycle";
+import { formatBriefing, formatDormant, localClock, runMorningBriefings, resendMorningBriefingToAll, setLifecycleSettings, BriefingTrend, pauseMorningBriefing, resumeMorningBriefing, getMorningBriefingPauseStatus, consumeFirstContact, previewWelcomeBackBroadcast, scheduleWelcomeBackBroadcast, _setWelcomeBackIntervalForTests, msUntilLocalHour, WELCOME_BACK_MESSAGE } from "./lifecycle";
 import { PostingRow } from "./postings/postingsStore";
 import { _resetDbForTests, withSchema, _closePoolForTests } from "./postings/db";
 import { initAdminSchema } from "./admin/store";
@@ -329,4 +330,62 @@ test("consumeFirstContact works for an identity that already has a user_lifecycl
 
   assert.equal(await consumeFirstContact(phone), true);
   assert.equal(await consumeFirstContact(phone), false);
+});
+
+// --- welcome-back broadcast (post-outage check-in) ---
+
+test("msUntilLocalHour returns time until the next occurrence of that hour, today if it hasn't passed yet, tomorrow otherwise", () => {
+  // 2026-09-01T12:00:00Z is 08:00 America/New_York (EDT, UTC-4).
+  const now = new Date("2026-09-01T12:00:00Z");
+  assert.equal(msUntilLocalHour(now, "America/New_York", 8), 0, "exactly the target hour -- zero wait, not a full day");
+  assert.equal(msUntilLocalHour(now, "America/New_York", 9), 3600_000, "one hour later today");
+  assert.equal(msUntilLocalHour(now, "America/New_York", 7), 23 * 3600_000, "already passed today -- rolls to tomorrow");
+});
+
+test("required: previewWelcomeBackBroadcast only ever considers WhatsApp identities, never Telegram", async () => {
+  await _resetDbForTests();
+  await withSchema(async (db) => {
+    const w = (await db.query("INSERT INTO canonical_users DEFAULT VALUES RETURNING id")).rows[0].id;
+    await db.query(`INSERT INTO user_lifecycle(canonical_user_id,channel,identity,first_name,last_inbound_at,last_direct_inbound_at) VALUES($1,'whatsapp','15559991001','Sam',now(),now())`, [w]);
+    const tg = (await db.query("INSERT INTO canonical_users DEFAULT VALUES RETURNING id")).rows[0].id;
+    await db.query(`INSERT INTO user_lifecycle(canonical_user_id,channel,identity,first_name,last_inbound_at,last_direct_inbound_at) VALUES($1,'telegram','telegram:998877','Dana',now(),now())`, [tg]);
+  });
+
+  const preview = await previewWelcomeBackBroadcast();
+  assert.deepEqual(preview.recipients, ["15559991001"], "a Telegram identity must never be included -- it was never actually offline");
+});
+
+test("required: previewWelcomeBackBroadcast's testRecipient narrows to exactly that one identity", async () => {
+  await _resetDbForTests();
+  await withSchema(async (db) => {
+    for (const phone of ["15559991002", "15559991003"]) {
+      const id = (await db.query("INSERT INTO canonical_users DEFAULT VALUES RETURNING id")).rows[0].id;
+      await db.query(`INSERT INTO user_lifecycle(canonical_user_id,channel,identity,first_name,last_inbound_at,last_direct_inbound_at) VALUES($1,'whatsapp',$2,'X',now(),now())`, [id, phone]);
+    }
+  });
+
+  const preview = await previewWelcomeBackBroadcast("15559991002");
+  assert.deepEqual(preview.recipients, ["15559991002"]);
+});
+
+test("required: scheduleWelcomeBackBroadcast sends the same WELCOME_BACK_MESSAGE to every recipient, spaced by the configured interval, starting after startDelayMs", async (t) => {
+  const sent: { identity: string; message: string; at: number }[] = [];
+  t.mock.method(channels, "sendText", async (identity: string, message: string) => { sent.push({ identity, message, at: Date.now() }); });
+
+  _setWelcomeBackIntervalForTests(50);
+  t.after(() => _setWelcomeBackIntervalForTests(142_200));
+
+  const start = Date.now();
+  scheduleWelcomeBackBroadcast(["15559992001", "15559992002", "15559992003"], 10);
+  // Generous real wait -- the full suite runs 1000+ tests under one Postgres-heavy process, so a
+  // tight margin here is a flake risk under load even though the scheduled delays themselves
+  // total well under 200ms.
+  await realDelay(1500);
+
+  assert.equal(sent.length, 3);
+  assert.deepEqual(sent.map((s) => s.identity), ["15559992001", "15559992002", "15559992003"]);
+  for (const s of sent) assert.equal(s.message, WELCOME_BACK_MESSAGE);
+  assert.ok(sent[0].at - start >= 10, "the first send must not go out before startDelayMs elapses");
+  assert.ok(sent[1].at - sent[0].at >= 25, "each subsequent send must wait roughly the configured interval");
+  assert.ok(sent[2].at - sent[1].at >= 25);
 });

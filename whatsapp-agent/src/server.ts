@@ -79,7 +79,7 @@ import { buildAdminDashboardData } from "./admin/dashboard";
 import { listAllIdentities } from "./admin/metrics";
 import { renderDashboard, renderLoginPage, renderManagementPage, renderPushGroupsPage, renderToolsPage } from "./admin/view";
 import { deletePushGroup, exportPushGroupsCsv, getListingLimits, importPushGroupsCsv, listPushGroups, PUSH_GROUP_CSV_SAMPLE, savePushGroup, setListingLimits } from "./postings/listingConfig";
-import { getLifecycleSettings, recordInboundActivity, resendMorningBriefingToAll, setLifecycleSettings } from "./lifecycle";
+import { getLifecycleSettings, recordInboundActivity, resendMorningBriefingToAll, setLifecycleSettings, previewWelcomeBackBroadcast, scheduleWelcomeBackBroadcast, msUntilLocalHour } from "./lifecycle";
 
 // Fi Build Spec v4 §9: notifications from the new Postgres-backed automatic matching system
 // (src/postings/) carry their own numeric match id — distinct from the v3 on-demand flow's
@@ -1373,6 +1373,34 @@ export function createServer() {
       return res.status(400).json({error:"confirm:true is required to resend to everyone (or pass testRecipient to trial-send to just one identity first)"});
     }
     res.json(await resendMorningBriefingToAll(new Date(),{testRecipient}));
+  });
+
+  // One-time, admin-triggered post-outage check-in broadcast (see lifecycle.ts's
+  // scheduleWelcomeBackBroadcast) -- WhatsApp only, paced ~2.37 minutes apart so the just-
+  // recovered number never sends a burst of near-identical outbound messages. Starts at the next
+  // 8am America/New_York (today if it hasn't happened yet, tomorrow otherwise) unless
+  // startNow:true is passed -- a trial testRecipient send defaults to startNow so it's actually
+  // useful for verification, not something you wait hours for. Preview first (GET, never sends
+  // anything); the real broadcast is POST + confirm:true (or testRecipient for a single trial
+  // send), same bar as every other real-people broadcast in this file. The POST response returns
+  // as soon as every send is SCHEDULED, not once they've all gone out -- a broadcast of any real
+  // size takes hours.
+  app.get("/admin/lifecycle/welcome-back-broadcast/preview", async (req,res)=>{
+    if(isValidAdminToken(String(req.query.token??""))===false)return res.status(401).json({error:"invalid token"});
+    const testRecipient=typeof req.query.testRecipient==="string"?req.query.testRecipient:undefined;
+    res.json(await previewWelcomeBackBroadcast(testRecipient));
+  });
+  app.post("/admin/lifecycle/welcome-back-broadcast", express.json(), async (req,res)=>{
+    if(isValidAdminToken(String(req.query.token??""))===false)return res.status(401).json({error:"invalid token"});
+    const testRecipient=typeof req.body?.testRecipient==="string"?req.body.testRecipient:undefined;
+    if(!testRecipient&&req.body?.confirm!==true){
+      return res.status(400).json({error:"confirm:true is required to broadcast to everyone (or pass testRecipient to trial-send to just one identity first)"});
+    }
+    const {count,recipients}=await previewWelcomeBackBroadcast(testRecipient);
+    const startNow=req.body?.startNow===true||Boolean(testRecipient);
+    const startDelayMs=startNow?0:msUntilLocalHour(new Date(),"America/New_York",8);
+    scheduleWelcomeBackBroadcast(recipients,startDelayMs);
+    res.json({scheduled:count,recipients,intervalMinutes:2.37,startsInMinutes:Math.round(startDelayMs/60000)});
   });
 
   // Every currently-active FS/WTB posting, grouped by type -- built to inspect the REAL stored

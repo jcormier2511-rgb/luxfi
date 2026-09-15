@@ -14,7 +14,7 @@ process.env.ENABLE_MARKET_UPDATES = "true";
 const db = require("./postings/db") as typeof import("./postings/db");
 const entitlementDb = require("./billing/entitlementStore") as typeof import("./billing/entitlementStore");
 const store = require("./postings/postingsStore") as typeof import("./postings/postingsStore");
-const whapi = require("./channels/whatsappCloud") as typeof import("./channels/whatsappCloud");
+const whapi = require("./channels/greenApi") as typeof import("./channels/greenApi");
 const updates = require("./marketUpdates") as typeof import("./marketUpdates");
 
 after(async () => {

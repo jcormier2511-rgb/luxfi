@@ -326,3 +326,58 @@ export async function runDormantReengagement(now=new Date()):Promise<{sent:numbe
 }
 
 export async function runLifecycleScheduler(now=new Date()){const morning=await runMorningBriefings(now);const dormant=await runDormantReengagement(now);return{morning,dormant};}
+
+/** Sent once, admin-triggered, after Fi's WhatsApp number came back from an outage -- WhatsApp
+ *  only (not Telegram, which was never affected, so "I was offline" would be a confusing thing
+ *  to tell a Telegram user). */
+export const WELCOME_BACK_MESSAGE = "Hi, I'm Fi — I was offline for a while. Do you have any tasks for me?";
+
+/** Same exclusions as runDormantReengagement's own `disallowed` check -- a blocked/inactive
+ *  account or an explicit opt-out must never receive this, forced broadcast or not. */
+export async function previewWelcomeBackBroadcast(testRecipient?:string):Promise<{count:number;recipients:string[]}> {
+  const rows=await withSchema(db=>db.query(
+    `SELECT l.identity,u.access_status,u.opt_in_status FROM user_lifecycle l LEFT JOIN approved_users u ON regexp_replace(u.phone,'[^0-9]','','g')=regexp_replace(l.identity,'[^0-9]','','g') WHERE l.channel='whatsapp'${testRecipient?" AND l.identity=$1":""}`,
+    testRecipient?[testRecipient]:[]
+  ));
+  const recipients=rows.rows.filter(u=>!["blocked","inactive"].includes(u.access_status)&&u.opt_in_status!=="opted_out"&&getState(u.identity).stage!=="opted_out").map(u=>u.identity as string);
+  return {count:recipients.length,recipients};
+}
+
+// 2.37 minutes between sends -- deliberately slow, real-reported ask right after the ban: pacing
+// this broadcast out over hours rather than bursting it is the whole point, so WhatsApp's spam
+// detection never sees a burst of near-identical outbound messages from the just-recovered
+// number. A test override shrinks this to near-instant, same pattern as postings/notify.ts's
+// scheduleStaggeredMatchNotifications (and for the same reason -- see that file's own comment on
+// why this is plain setTimeout chaining, not Node's mock timers, which can stall Postgres itself).
+let welcomeBackIntervalMs = 142_200;
+export function _setWelcomeBackIntervalForTests(ms:number):void { welcomeBackIntervalMs = ms; }
+
+/** Milliseconds from `now` until the next time it's `hour`:00 in `timezone` -- today if that
+ *  hour hasn't happened yet locally, tomorrow otherwise. Ignores sub-hour DST-transition edge
+ *  cases (a real concern for a recurring scheduler, not for a one-time broadcast's start time). */
+export function msUntilLocalHour(now:Date, timezone:string, hour:number):number {
+  const parts=new Intl.DateTimeFormat("en-US",{timeZone:timezone,hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(now);
+  const get=(t:string)=>Number(parts.find(p=>p.type===t)!.value);
+  const nowSecondsOfDay=get("hour")*3600+get("minute")*60+get("second");
+  let diffSeconds=hour*3600-nowSecondsOfDay;
+  if (diffSeconds<0) diffSeconds+=86400;
+  return diffSeconds*1000;
+}
+
+/** Fire-and-forget: schedules one send per recipient, `welcomeBackIntervalMs` apart, starting
+ *  `startDelayMs` from now (default 0 -- immediately). Returns as soon as every send is
+ *  SCHEDULED, not once they've all gone out -- a broadcast of any real size takes hours, far
+ *  longer than the admin request that triggers it should ever block for. Not restart-safe (a
+ *  mid-broadcast redeploy loses whatever's still queued) -- acceptable for a one-time operational
+ *  broadcast, same posture already accepted for scheduleStaggeredMatchNotifications; re-running
+ *  the admin endpoint (or just testRecipient for stragglers) is the recovery path, not a
+ *  persisted queue. */
+export function scheduleWelcomeBackBroadcast(recipients:string[], startDelayMs=0):void {
+  let delay=startDelayMs;
+  for (const identity of recipients) {
+    setTimeout(() => {
+      sendText(identity, WELCOME_BACK_MESSAGE).catch(err => console.error(`[lifecycle] welcome-back broadcast failed for ${identity}:`, err));
+    }, delay);
+    delay += welcomeBackIntervalMs;
+  }
+}

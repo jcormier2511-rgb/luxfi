@@ -31,25 +31,34 @@ export const config = {
   // until its own credentials are set — see channels/telegram.ts / channels/sms.ts's "skip the
   // live call, log instead" fallback, same posture as an unset WHAPI_TOKEN.
   channels: {
-    // Meta's official WhatsApp Business Cloud API — replaces WHAPI (above) for every 1:1 Fi
-    // conversation (channels/index.ts's default dispatch case, plus the returning-user
-    // campaign's template sends). WHAPI itself is deliberately kept configured and in active use
-    // for exactly one thing it alone can do: sit inside and post into WhatsApp GROUPS (dealer
-    // group listing monitoring, admin/groupSync.ts, postings/groupPublishing.ts) — the official
-    // Cloud API has no group-messaging capability at all, by Meta's own design, so this is a
-    // permanent two-provider split, not a transitional one. See channels/whatsappCloud.ts.
+    // TEMPORARY ROLLBACK SWITCH — added while Meta's WhatsApp Business Platform registration for
+    // Fi's number is stuck ("already registered to a WhatsApp account", persisting even after a
+    // "Delete My Account" + retry). Controls which provider channels/index.ts's default 1:1
+    // dispatch case actually calls: "greenApi" (current default -- Green API is what's live and
+    // working right now) or "cloud" (the official Cloud API, once Meta's registration actually
+    // completes and WHATSAPP_CLOUD_ACCESS_TOKEN/PHONE_NUMBER_ID are set for real). Flip this back
+    // to "cloud" in Railway once the number registers -- no code change needed, just the env var.
+    whatsapp1to1Provider: (process.env.WHATSAPP_1TO1_PROVIDER ?? "greenApi").trim().toLowerCase(),
+    // Meta's official WhatsApp Business Cloud API — intended to replace WHAPI (above) for every
+    // 1:1 Fi conversation once whatsapp1to1Provider above is flipped to "cloud" (plus the
+    // returning-user campaign's template sends, which switched over already). WHAPI itself is
+    // deliberately kept configured and in active use for exactly one thing it alone can do: sit
+    // inside and post into WhatsApp GROUPS (dealer group listing monitoring, admin/groupSync.ts,
+    // postings/groupPublishing.ts) — the official Cloud API has no group-messaging capability at
+    // all, by Meta's own design, so THAT split is permanent regardless of the switch above. See
+    // channels/whatsappCloud.ts.
     whatsappCloud: {
       accessToken: process.env.WHATSAPP_CLOUD_ACCESS_TOKEN ?? "",
       phoneNumberId: process.env.WHATSAPP_CLOUD_PHONE_NUMBER_ID ?? "",
       apiVersion: process.env.WHATSAPP_CLOUD_API_VERSION ?? "v21.0",
       baseUrl: process.env.WHATSAPP_CLOUD_BASE_URL ?? "https://graph.facebook.com",
     },
-    // Green API (green-api.com) — now used ONLY for WhatsApp GROUPS (postings/groupPublishing.ts's
-    // WhatsApp-group branch, admin/groupSync.ts): the official Cloud API above has no group-
-    // messaging capability at all, so this provider's role is group monitoring/posting, not 1:1
-    // dispatch (channels/index.ts's default case now goes to whatsappCloud instead). Only ONE
-    // number's credentials go here -- the one Fi actually posts into the push-group list FROM,
-    // which requires this number to be a member of each of those groups. One or two additional
+    // Green API (green-api.com) — WhatsApp GROUPS (postings/groupPublishing.ts's WhatsApp-group
+    // branch, admin/groupSync.ts) always go through this provider, permanently: the official
+    // Cloud API above has no group-messaging capability at all. It is ALSO, for now, the live 1:1
+    // provider too -- see whatsapp1to1Provider above for why. Only ONE number's credentials go
+    // here -- the one Fi actually posts into the push-group list FROM, which requires this number
+    // to be a member of each of those groups. One or two additional
     // numbers used purely to widen
     // monitoring coverage need no credentials here at all: create their own Green API instance,
     // point ITS webhook at this same deployment's /webhook/greenapi?token=<WEBHOOK_TOKEN>, and
