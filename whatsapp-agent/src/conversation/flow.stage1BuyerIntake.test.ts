@@ -501,3 +501,16 @@ test('required regression: a leading acknowledgment ("Yes. I want to buy a 11651
   assert.equal(getState(identity).pendingBuyIntake?.reference, "116519", "precondition: the reference was still read correctly");
   assert.equal(getState(identity).pendingBuyIntake?.location, undefined, 'the leftover word "Yes" must never be stored as a location');
 });
+
+test('required regression: naming both model and reference in the answer to "Which model?" stores each in its own field, instead of leaving the reference stuck inside the model text -- real reported bug: a WTB confirmed as "Rolex daytona 116500ln 116500LN" (model "daytona 116500ln", reference "116500LN") because the model step stored its raw reply verbatim', async () => {
+  const identity = fresh();
+  resetState(identity);
+  const first = await handleIncomingMessage(identity, "wtb rolex");
+  assert.match(first.messages.join("\n"), /budget/i, "precondition: budget is asked before model");
+  await handleIncomingMessage(identity, "budget 25000");
+  assert.equal(getState(identity).pendingBuyIntake?.step, "model", "precondition: Fi is now asking which model");
+  await handleIncomingMessage(identity, "Daytona 116500LN");
+  const draft = getState(identity).pendingBuyIntake;
+  assert.equal(draft?.reference, "116500LN", "the reference must be captured from the model answer, not left unset");
+  assert.equal(draft?.model, "Daytona", 'the model must not carry the reference along with it ("Daytona 116500ln" or similar)');
+});

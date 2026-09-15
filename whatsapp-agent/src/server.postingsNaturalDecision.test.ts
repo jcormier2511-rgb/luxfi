@@ -87,6 +87,7 @@ async function seedMatch(t: TestContext, sellerPhone: string): Promise<{ matchId
     reference: `${116610 + n}LV`,
     price: 14500,
   });
+  if ("blockedByItemCap" in result) throw new Error("unexpectedly blocked by the account's active-item cap");
   for (const { matchId, revision } of result.pendingNotifications) await notify.notifyMatch(matchId, revision);
 
   const sellerMsg = sent.find((s) => s.phone === sellerPhone && /Match ID#/.test(s.message));

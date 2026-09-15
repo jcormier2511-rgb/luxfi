@@ -2399,7 +2399,18 @@ function applyScopedBuyAnswer(p: PendingBuyIntake, text: string): boolean {
     const t = text.trim();
     if (NO_MODEL_PREFERENCE.test(t)) { p.modelSkipped = true; return true; }
     if (!t || isOnlyNonModelLanguage(t)) return false;
-    p.model = t.replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
+    // This is the buy flow's only chance to capture a reference -- it's asked exactly when no
+    // reference is known yet either (see nextBuy), so a buyer naming both here ("Daytona
+    // 116500LN") is completely natural. Live-reported bug: the whole raw reply was stored as the
+    // model verbatim, leaving a stray lowercase reference token stuck in the model text (and
+    // never populating p.reference at all) -- same bug class intakeSlots's itemPhrase derivation
+    // already fixes for a natural-language message, applied here for this dedicated question.
+    const ref = extractReference(t);
+    if (ref && !p.reference) p.reference = ref;
+    const cleaned = (ref ? t.replace(new RegExp(ref.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "") : t)
+      .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "");
+    if (cleaned && !isOnlyNonModelLanguage(cleaned)) p.model = cleaned;
+    else p.model = undefined;
     return true;
   }
   if (p.step === "details" && /^\s*\d{6}\s*$/.test(text)) {
@@ -2690,7 +2701,11 @@ function bailOutOfStuckIntake(state: ConversationState, messages: string[]): boo
 
 async function handleSellIntakeAnswer(state: ConversationState, text: string, imageUrl: string | undefined, messages: string[], contact?: Contact): Promise<PendingMatchNotification[] | undefined> {
   const p=state.pendingSellIntake!; const suppliedPhoto = Boolean(imageUrl); if(imageUrl)p.imageUrl=imageUrl;
-  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await withSearchIndicator(state.phone,()=>ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl})); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound,result.pendingNotifications.length));
+  if(p.step==="confirm" && confirmed(text)){ await persistSellIntake(state,p); const result=await withSearchIndicator(state.phone,()=>ingestDirectSellPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,reference:p.reference,price:p.price!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,boxPapers:p.boxPapers,year:p.year,notes:p.notes,imageUrl:p.imageUrl}));
+    // Item-cap refusal: leave the draft open at "confirm" (never persisted) so the same reply
+    // works once the account frees up a slot, instead of forcing the whole intake to be redone.
+    if("blockedByItemCap" in result){ messages.push(config.fiFlow.itemCapMessage(result.plan,result.cap)); return; }
+    messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound,result.pendingNotifications.length));
     state.pendingSellIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return result.pendingNotifications; }
   const skippedPhoto = p.step === "photo" && /^(?:skip|no\s+photo|none)$/i.test(text.trim());
   if (skippedPhoto) p.photoSkipped = true;
@@ -2729,7 +2744,11 @@ async function handleSellIntakeAnswer(state: ConversationState, text: string, im
 
 async function handleBuyIntakeAnswer(state: ConversationState, text: string, messages: string[], contact?: Contact): Promise<PendingMatchNotification[] | undefined> {
   const p=state.pendingBuyIntake!;
-  if(p.step==="confirm" && confirmed(text)){ const result=await withSearchIndicator(state.phone,()=>ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,year:p.year,boxPapers:p.boxPapers,notes:p.notes})); messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound,result.pendingNotifications.length));
+  if(p.step==="confirm" && confirmed(text)){ const result=await withSearchIndicator(state.phone,()=>ingestDirectBuyPosting({phone:state.phone,senderName:contact?.name,description:p.description,brand:p.brand,model:p.model,modelSkipped:p.modelSkipped,reference:p.reference,price:p.budget!,currency:p.currency,dialColor:p.dialColor,condition:p.condition,location:p.location,year:p.year,boxPapers:p.boxPapers,notes:p.notes}));
+    // Item-cap refusal: leave the draft open at "confirm" so the same reply works once the
+    // account frees up a slot, instead of forcing the whole intake to be redone.
+    if("blockedByItemCap" in result){ messages.push(config.fiFlow.itemCapMessage(result.plan,result.cap)); return; }
+    messages.push(formatActiveAcknowledgment(result.posting,result.matchesFound,result.pendingNotifications.length));
     state.pendingBuyIntake=undefined; state.intakeFallbackCount=0; state.lastReplyWasTaskCompletion=true; await maybeNudgeChannelPreference(state,messages); return result.pendingNotifications; }
   if (/\?/.test(text)) { const reply=isAiChatEnabled()?await generateGeneralChatReply(text,0):null; messages.push(reply??"I can help with that while keeping your request draft open."); messages.push(nextBuy(p)??buySummary(p)); return; }
   const skippedReference=p.step==="details"&&!p.reference&&/^(?:skip|no|none|don't know|do not know)$/i.test(text.trim()); if(skippedReference)p.referenceSkipped=true;

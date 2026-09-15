@@ -7,6 +7,7 @@ import {
   createDirectPosting,
   DirectSellPostingInput,
   PostingRow,
+  ActiveItemCapResult,
 } from "./postingsStore";
 import { runImmediateMatch, PendingMatchNotification } from "./matching";
 import { sendText } from "../channels";
@@ -38,7 +39,7 @@ export async function ingestAndMatch(input: ChatPostingInput): Promise<void> {
   }
 }
 
-export interface DirectSellIngestResult {
+export interface DirectSellIngestSuccess {
   matchesFound: number;
   posting: PostingRow;
   /** Match-card notifications this call intentionally did NOT send yet — live-reported bug:
@@ -48,6 +49,13 @@ export interface DirectSellIngestResult {
    *  reply has actually gone out, guaranteeing the confirmation is never overtaken. */
   pendingNotifications: PendingMatchNotification[];
 }
+
+/** A brand-new listing was refused because it would push the account past its plan's active-item
+ *  cap — see createDirectPosting's own doc comment. Never returned for an in-place edit of an
+ *  existing listing. The caller (flow.ts) shows config.fiFlow.itemCapMessage instead of the usual
+ *  "Your WTB/FS request is active" confirmation, and leaves the intake draft open so the same
+ *  confirm reply works once the account frees up a slot. */
+export type DirectSellIngestResult = DirectSellIngestSuccess | ActiveItemCapResult;
 
 /**
  * Fi's own "sell a watch" conversational intake (conversation/flow.ts) completing, not a
@@ -60,7 +68,8 @@ export interface DirectSellIngestResult {
  * stacking a second, redundant one.
  */
 export async function ingestDirectSellPosting(input: DirectSellPostingInput): Promise<DirectSellIngestResult> {
-  const posting = await createDirectPosting(input);
+  const posting = await createDirectPosting(input, { enforceItemCap: true });
+  if ("blockedByItemCap" in posting) return posting;
   await publishConfirmedListing(posting);
   const { matchesFound, pendingNotifications } =
     posting.type === "WTB"
@@ -71,7 +80,8 @@ export async function ingestDirectSellPosting(input: DirectSellPostingInput): Pr
 
 /** Saves a completed private buyer request before attempting any inventory search. */
 export async function ingestDirectBuyPosting(input: DirectSellPostingInput): Promise<DirectSellIngestResult> {
-  const posting = await createDirectPosting({ ...input, type: "WTB" });
+  const posting = await createDirectPosting({ ...input, type: "WTB" }, { enforceItemCap: true });
+  if ("blockedByItemCap" in posting) return posting;
   await publishConfirmedListing(posting);
   const { explicitMatches: matchesFound, pendingNotifications } = await fulfillWtb(posting, { notify: false });
   return { matchesFound, posting, pendingNotifications };

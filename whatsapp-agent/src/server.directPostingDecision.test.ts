@@ -74,6 +74,7 @@ async function seedMatch(t: TestContext, sellerPhone: string) {
     reference: "116610LV",
     price: 14500,
   });
+  if ("blockedByItemCap" in result) throw new Error("unexpectedly blocked by the account's active-item cap");
   // ingestDirectSellPosting defers match-card notifications rather than sending them inline (see
   // FlowResult.pendingMatchNotifications) -- the real dispatch layer (server.ts) sends them once
   // this turn's own reply has gone out; a direct call here has to do that itself.
@@ -225,6 +226,7 @@ test("required (privacy): approving a direct-posting match never shows the raw, 
     reference: "116610LV",
     price: 14500,
   });
+  if ("blockedByItemCap" in result) throw new Error("unexpectedly blocked by the account's active-item cap");
   for (const { matchId, revision } of result.pendingNotifications) await notify.notifyMatch(matchId, revision);
 
   const sellerMsg = sent.find((s) => s.phone === sellerPhone && /Match ID#/.test(s.message));

@@ -4,6 +4,8 @@ import { platformForIdentity } from "../channels/identity";
 import { classifyText, normalizeText, isOnlyNonModelLanguage, PostingType } from "./normalize";
 import { config } from "../config";
 import { inferCurrency } from "../fx/currency";
+import { getEntitlement } from "../billing/entitlementStore";
+import { maxActiveItemsFor, PlanKey } from "../billing/plans";
 
 export interface PostingRow {
   id: number;
@@ -249,7 +251,27 @@ function canonicalIdentity(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-export async function createDirectPosting(input: DirectSellPostingInput): Promise<PostingRow> {
+/** Returned instead of a PostingRow when a brand-new listing would push the account past its
+ *  plan's active-item cap (billing/plans.ts's maxActiveItems) — never returned for an in-place
+ *  update of an existing listing, only for one that would actually add a new row. */
+export interface ActiveItemCapResult {
+  blockedByItemCap: true;
+  cap: number;
+  plan: PlanKey | null;
+}
+
+/**
+ * `enforceItemCap` is opt-in (default false) and ONLY set by ingest.ts's two real Fi-chat
+ * intake entry points (ingestDirectSellPosting/ingestDirectBuyPosting) — the item cap is a
+ * business rule about a user actually confirming a new listing through Fi, not an invariant of
+ * this persistence primitive, which is also used directly as a plain fixture helper throughout
+ * the test suite (often creating more than a plan's cap worth of postings for one test account
+ * to exercise unrelated listing-management scenarios). The overloads below keep every such call
+ * site's return type exactly `PostingRow`, unchanged, unless it explicitly opts in.
+ */
+export async function createDirectPosting(input: DirectSellPostingInput, opts: { enforceItemCap: true }): Promise<PostingRow | ActiveItemCapResult>;
+export async function createDirectPosting(input: DirectSellPostingInput, opts?: { enforceItemCap?: false }): Promise<PostingRow>;
+export async function createDirectPosting(input: DirectSellPostingInput, opts?: { enforceItemCap?: boolean }): Promise<PostingRow | ActiveItemCapResult> {
   const platform = platformForIdentity(input.phone);
   const canonicalUserId = await getOrCreateCanonicalUser(platform, input.phone);
   const normalized = normalizeText(input.description);
@@ -324,6 +346,23 @@ export async function createDirectPosting(input: DirectSellPostingInput): Promis
       );
       await setPostingImagesSafely(old.id, [input.imageUrl]);
       return update.rows[0];
+    }
+
+    // Only a genuinely NEW listing (the branch above already handled an in-place update) counts
+    // against the account's active-item cap -- editing/renewing what's already open must never
+    // be blocked by it.
+    if (opts?.enforceItemCap) {
+      const entitlement = await getEntitlement(input.phone);
+      const cap = maxActiveItemsFor(entitlement);
+      if (cap !== null) {
+        const activeCount = await pool.query<{ n: number }>(
+          `SELECT count(*)::int n FROM postings WHERE canonical_user_id=$1 AND status='active' AND expires_at > now()`,
+          [canonicalUserId]
+        );
+        if (Number(activeCount.rows[0]?.n ?? 0) >= cap) {
+          return { blockedByItemCap: true, cap, plan: entitlement.plan };
+        }
+      }
     }
 
     const insert = await pool.query<PostingRow>(

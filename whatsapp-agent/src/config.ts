@@ -250,6 +250,22 @@ export const config = {
         `It resets on a rolling 7-day basis, or message "upgrade" anytime.`
       );
     },
+    // Sent when a NEW WTB/FS request would push an account past its plan's active-listing cap
+    // (billing/plans.ts's maxActiveItems) — editing/renewing an existing listing never hits this,
+    // only adding another one on top. `plan` is null for an account with no active plan at all
+    // (gets Tier 1's cap — see maxActiveItemsFor's own comment for why).
+    itemCapMessage: (plan: PlanKey | null, cap: number) => {
+      const current = plan ? MEMBERSHIP_PLANS[plan] : null;
+      const upgrades = (Object.values(MEMBERSHIP_PLANS) as (typeof MEMBERSHIP_PLANS)[PlanKey][])
+        .filter((p) => p.key !== plan && p.maxActiveItems > cap)
+        .map((p) => `${p.maxActiveItems} for ${p.priceLabel}`)
+        .join(", or ");
+      return (
+        `You're at your ${current ? `${current.label} plan's` : "account's"} limit of ${cap} active WTB/FS request${cap === 1 ? "" : "s"}.\n` +
+        `Close or let one expire before adding another — reply "listings" to manage your current ones` +
+        (upgrades ? `, or "upgrade" to raise your limit (${upgrades}).` : ".")
+      );
+    },
     // Market Pulse (price/trend look-ups) usage gate — see postings/marketPulseUsage.ts. Kept
     // separate from noPlanMessage/weeklyCapMessage above since a locked-out Market Pulse
     // look-up and a locked-out match approval are two different things happening for two
