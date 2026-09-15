@@ -227,6 +227,9 @@
   .ps-track.tg::before{left:23px; background:#229ED9; box-shadow:0 0 0 3px rgba(34,158,217,.25);}
   .cta .ps{background:rgba(255,255,255,0.06); border-color:#6b6355; box-shadow:none;}
   .cta .ps-lbl{color:#C8C1AF;}
+  /* WhatsApp side is temporarily locked out -- see the platform-switch script below. */
+  .ps-track.is-disabled{cursor:not-allowed;}
+  .ps-lbl.is-disabled{cursor:not-allowed; opacity:.45;}
 
   /* ADMIN TOGGLE — a discreet quick-launcher into the backend admin panel (auth is fully
      enforced there via session login; this is just a bookmarks shortcut, not access control). */
@@ -576,10 +579,12 @@
   }
   el.innerHTML = html;
 
-  // Platform switch — WhatsApp / Telegram — syncs every switch + Fi link on the page
+  // Platform switch — WhatsApp / Telegram — syncs every switch + Fi link on the page.
+  // WhatsApp is temporarily disabled: every switch is locked to Telegram until it's
+  // back -- re-enable by restoring the wa branches this replaced (see git history).
   (function(){
     var STORE_KEY = 'fiPlatform';
-    var current = localStorage.getItem(STORE_KEY) === 'tg' ? 'tg' : 'wa';
+    var current = 'tg';
 
     function apply(platform){
       current = platform;
@@ -596,15 +601,14 @@
     }
 
     document.querySelectorAll('[data-ps-track]').forEach(function(track){
-      track.addEventListener('click', function(){
-        apply(current === 'wa' ? 'tg' : 'wa');
-      });
+      track.classList.add('is-disabled');
     });
     document.querySelectorAll('[data-ps-label]').forEach(function(lbl){
-      lbl.style.cursor = 'pointer';
-      lbl.addEventListener('click', function(){
-        apply(lbl.getAttribute('data-ps-label'));
-      });
+      if (lbl.getAttribute('data-ps-label') === 'wa') {
+        lbl.classList.add('is-disabled');
+      } else {
+        lbl.style.cursor = 'default';
+      }
     });
 
     apply(current);
