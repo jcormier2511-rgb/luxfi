@@ -2989,6 +2989,15 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
     if (normalize(text) === "start") {
       state.stage = "new";
     } else {
+      // This is the ONE place a message from an unopted-out phone still gets zero reply and
+      // zero error -- deliberately silent for a real opted-out user (no unsolicited replies
+      // after STOP), but it also runs before the "deterministic commands always reply" gate
+      // below, including "help" itself, and a stale/wrongly-set opted_out flag never
+      // self-heals otherwise. Logged so a "why isn't Fi replying to help" report is a one-line
+      // grep instead of a multi-hour incident (confirmed live) -- check this phone's stage via
+      // the admin panel's Block/unblock tool, and POST /admin/api/tools/unblock-number to clear
+      // it if it's wrongly set.
+      console.log(`[opted-out] dropped message from phone=${phone} text=${JSON.stringify(text)}`);
       return { state, messages: [] };
     }
   }
@@ -3057,10 +3066,17 @@ async function handleIncomingMessageInner(phone: string, text: string, contact?:
   }
 
   // Required routing order (Fi NLU/routing fix): deterministic action commands — approve, pass,
-  // photos, cancel, status, help — are ALL checked before anything else, unconditionally, so
-  // none of them ever depends on AI, and none of them can be blocked by a mid-interview question
-  // or a pending match. "hi"/"hello"/"menu" are folded into "help" (spec: "'hi' should return
-  // the Fi menu, not force approve/pass").
+  // photos, cancel, status, help — are ALL checked before anything else IN THIS FUNCTION,
+  // unconditionally, so none of them ever depends on AI, and none of them can be blocked by a
+  // mid-interview question or a pending match. "hi"/"hello"/"menu" are folded into "help" (spec:
+  // "'hi' should return the Fi menu, not force approve/pass").
+  //
+  // NOT actually first overall, though: the opted_out gate above (this function, ~40 lines up)
+  // still runs before this and returns silently with zero reply for anything but literal
+  // "start" -- confirmed live as a real incident, "help" included, once a phone's stage was
+  // wrongly stuck on opted_out. That gate now logs when it drops a message (see its own
+  // comment) specifically so this NOT-quite-unconditional ordering doesn't cause the same
+  // multi-hour diagnosis again.
   if (MENU_COMMAND.test(commandText)) {
     messages.push(FI_MENU);
     saveState(state);
