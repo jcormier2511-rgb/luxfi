@@ -2032,7 +2032,11 @@ const NOT_A_PLACE = /^(?:stock|good|great|excellent|mint|new|used|full|box|paper
 // "Yes" -- which looksLikePlace accepts unconditionally, so it was stored as "Location: Yes"
 // despite the location step never having been asked at all. An acknowledgment word is exactly
 // the same kind of filler "ok"/"okay" already are here, just missing from the list.
-const LEFTOVER_STOPWORDS = new Set(["with","w","and","but","or","spend","spending","more","than","up","around","about","under","over","max","maximum","budget","located","based","near","ship","shipping","to","in","from","at","of","only","please","pls","thanks","thank","you","ok","okay","yes","yeah","yep","yup","sure","correct","right","confirm","confirmed","hi","hello","hey","if","possible","preferably","ideally","dial","color","colour","condition","set","full","box","papers","paper"]);
+// Live-reported bug: "FS Rolex submariner, $15k, USA, no box no paper" -- "box"/"paper" were
+// already filtered here, but the negating "no" in front of each was not, so both survived into
+// the leftover and were stored as the location: "USA no no". "nor"/"without" are the same kind
+// of negation word in the same spot ("no box nor papers", "without box or papers").
+const LEFTOVER_STOPWORDS = new Set(["with","w","and","but","or","nor","without","no","spend","spending","more","than","up","around","about","under","over","max","maximum","budget","located","based","near","ship","shipping","to","in","from","at","of","only","please","pls","thanks","thank","you","ok","okay","yes","yeah","yep","yup","sure","correct","right","confirm","confirmed","hi","hello","hey","if","possible","preferably","ideally","dial","color","colour","condition","set","full","box","papers","paper"]);
 
 /**
  * Where the buyer is, or wants the watch from — read the way people actually say it.
@@ -2191,8 +2195,23 @@ function intakeSlots(text: string, reference: string | null, prefer: "max" | "mi
   // "complete"/"complete set" is a dealer synonym for "full set" (box, papers, everything) --
   // recognized as a box/papers signal, same as the model-field cutoff above, and normalized to
   // the same "Full set" display text rather than showing the raw word "complete" back.
-  const boxPapersRaw=/\b(full set|complete(?:\s+set)?|box(?: and | & |\/)?papers?|papers)\b/i.exec(text)?.[1];
-  const boxPapers = boxPapersRaw && /^complete(?:\s+set)?$/i.test(boxPapersRaw) ? "Full set" : boxPapersRaw;
+  const fullSet = /\b(?:full\s+set|complete(?:\s+set)?)\b/i.test(text);
+  // Box and papers, read independently so each can carry its OWN answer -- live-reported bug:
+  // "FS Rolex submariner, $15k, USA, no box no paper" was only ever checked against a single
+  // combined AFFIRMATIVE phrase ("box and papers"/bare "papers"), so a negated statement like
+  // this fell through untouched -- neither field was ever set, and the stray "no"s it left
+  // behind leaked into the location instead (see LEFTOVER_STOPWORDS above). "nor"/"without"/
+  // "w/o" negate the same way "no" does ("no box nor papers", "without box", "w/o papers").
+  // Formatted "Box: Yes, Papers: No" the same way watchfacts/api.ts already joins WatchFacts'
+  // own separate box/papers fields, rather than inventing a second display convention.
+  const NEGATOR = "no|nor|without|w\\/o";
+  const box = fullSet ? true : /\bbox\b/i.test(text) ? !new RegExp(`\\b(?:${NEGATOR})\\s+box\\b`, "i").test(text) : undefined;
+  const papers = fullSet ? true : /\bpapers?\b/i.test(text) ? !new RegExp(`\\b(?:${NEGATOR})\\s+papers?\\b`, "i").test(text) : undefined;
+  const boxPapers = fullSet
+    ? "Full set"
+    : box === undefined && papers === undefined
+    ? undefined
+    : [box !== undefined && `Box: ${box ? "Yes" : "No"}`, papers !== undefined && `Papers: ${papers ? "Yes" : "No"}`].filter(Boolean).join(", ");
   const year=/\b(19\d{2}|20\d{2})\b/.exec(text)?.[1];
   return { reference: reference_, price, currency: price === undefined ? undefined : detectCurrency(text) ?? "USD", location, condition, dial,brand: resolvedBrand,model,boxPapers,year };
 }

@@ -216,6 +216,18 @@ test('required regression: "complete" (a dealer synonym for full set) must never
   assert.doesNotMatch(result.messages.join("\n"), /Rolex complete/i);
 });
 
+test('required regression: "no box no paper" is recorded as an explicit Box: No, Papers: No signal, and its "no"s never leak into the location', async () => {
+  // Live-reported bug: "FS Rolex submariner, $15k, USA, no box no paper" was only ever checked
+  // against a single combined AFFIRMATIVE box/papers phrase, so the negated statement here fell
+  // through untouched -- boxPapers stayed unset, and the two stray "no"s it left behind were
+  // stored as the location instead: "Location: usa no no".
+  const phone = "19992220007"; resetState(phone); await inventoryDb._resetDbForTests();
+  await handleIncomingMessage(phone, "hi");
+  const result = await handleIncomingMessage(phone, "FS Rolex submariner, $15k, USA, no box no paper");
+  assert.equal(result.state.pendingSellIntake?.boxPapers, "Box: No, Papers: No");
+  assert.equal(result.state.pendingSellIntake?.location, "USA");
+});
+
 test("required regression: a fresh, complete sell message is recognized as NEW rather than silently merged into an abandoned draft stuck at the photo step", async () => {
   const phone = "19992220004"; resetState(phone); await inventoryDb._resetDbForTests();
   await handleIncomingMessage(phone, "hi");
